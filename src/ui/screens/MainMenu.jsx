@@ -1,17 +1,29 @@
-import { useEffect, useRef, useState } from 'react';
-import { Play, Volume2, VolumeX } from 'lucide-react';
+import { useEffect, useRef } from 'react';
 import { Showcase } from '../../game/showcase.js';
 import { Snd } from '../../game/audio.js';
+import { COL_BLUE, COL_RED } from '../../game/palette.js';
+
+const GLOWS = ['#43121a', '#2a1a10', '#3b1219', '#241a2c'];
+
+// Случайная кукла из доступных образцов (пока это TEST DUMMY в разных цветах).
+function randomLook() {
+  return {
+    dir: Math.random() < 0.5 ? -1 : 1,
+    glow: GLOWS[(Math.random() * GLOWS.length) | 0],
+    col: Math.random() < 0.5 ? COL_BLUE : COL_RED,
+  };
+}
 
 export default function MainMenu({ onPlay }) {
   const canvasRef = useRef(null);
-  const [soundOn, setSoundOn] = useState(Snd.on);
 
   useEffect(() => {
+    const look = randomLook();
     const show = new Showcase(canvasRef.current, {
-      cx: 0.76,
-      dir: -1,
-      glow: '#43121a',
+      cx: 0.3,
+      dir: look.dir,
+      glow: look.glow,
+      col: look.col,
     });
     show.resize();
     const spawnT = setTimeout(() => show.spawn(0.2), 300);
@@ -44,35 +56,19 @@ export default function MainMenu({ onPlay }) {
     onPlay();
   };
 
-  const toggleSound = () => {
-    Snd.init();
-    Snd.on = !Snd.on;
-    setSoundOn(Snd.on);
-    if (Snd.on) Snd.ui();
-  };
-
   return (
     <section className="screen menu active">
-      <canvas ref={canvasRef} className="showCv menuCv" />
-      <div className="menuUI pad">
-        <div>
-          <div className="sub">Кулачный бой · Дуэль</div>
-          <h1 className="title">
-            DUMMY
-            <br />
-            FURY
-          </h1>
-        </div>
-        <div>
-          <button className="btn" onClick={play}>
-            <Play /> Играть
-          </button>
-        </div>
+      <canvas ref={canvasRef} className="showCv" />
+      <div className="menuPanel">
+        <img className="menuLogo" src="/dummyfury.png" alt="DUMMY FURY" draggable="false" />
+        <button className="btn btnPlay" onClick={play}>
+          ИГРАТЬ
+        </button>
+        <button className="linkBtn" type="button">
+          НАСТРОЙКИ
+        </button>
       </div>
-      <button className="fab" onClick={toggleSound} aria-label="Звук">
-        {soundOn ? <Volume2 /> : <VolumeX />}
-      </button>
-      <div className="ver">v0.1 · TEST DUMMY</div>
+      <div className="verAlpha">АЛЬФА v0.0.5</div>
     </section>
   );
 }

@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react';
 import Spinner from '../components/Spinner.jsx';
 
-const MIN_MS = 1700;
+const MIN_MS = 6000; // загрузка с картинкой держится минимум 6 секунд
 const FADE_MS = 420;
 
-// Полноэкранная картинка public/loading.png + колёсико в правом нижнем углу.
-// Появляется резко (без фейда), уходить из него — плавно и быстро.
+// Картинка встаёт по высоте целиком; боковые полосы закрывает размытая копия.
 export default function LoadingScreen({ onDone }) {
   const [leaving, setLeaving] = useState(false);
 
@@ -18,15 +17,11 @@ export default function LoadingScreen({ onDone }) {
     async function prep() {
       try {
         if (document.fonts && document.fonts.load) {
-          await Promise.race([
-            document.fonts.load("20px 'Russo One'"),
-            wait(1200),
-          ]);
+          await Promise.race([document.fonts.load("20px 'Dela Gothic One'"), wait(1500)]);
         }
       } catch (e) {
         /* шрифт не критичен */
       }
-      // декодируем картинку заранее, чтобы она уже лежалa в кеше
       const img = new Image();
       img.src = '/loading.png';
       try {
@@ -57,7 +52,10 @@ export default function LoadingScreen({ onDone }) {
 
   return (
     <div className={`screen loading active ${leaving ? 'leaving' : ''}`}>
-      <img className="loadingImg" src="/loading.png" alt="" draggable="false" />
+      <img className="loadingBlur" src="/loading.png" alt="" draggable="false" />
+      <div className="loadingFg">
+        <img className="loadingImg" src="/loading.png" alt="" draggable="false" />
+      </div>
       <Spinner />
     </div>
   );

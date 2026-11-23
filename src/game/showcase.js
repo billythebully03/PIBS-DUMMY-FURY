@@ -18,7 +18,7 @@ export class Showcase {
       minX: -9999,
       maxX: 9999,
       spawnY: 340,
-      col: COL_BLUE,
+      col: opt.col || COL_BLUE,
       x: 100,
       dir: opt.dir || 1,
     });

@@ -1,91 +1,56 @@
-import { useState } from 'react';
-import { ArrowLeft, Flame, Lock, Play, Swords, Trophy } from 'lucide-react';
+import { ArrowLeft, Lock, Swords } from 'lucide-react';
 import { Snd } from '../../game/audio.js';
 
+// Режимы: доступна только дуэль, остальные — «СКОРО».
 const MODES = [
-  {
-    id: 'duel',
-    name: 'ДУЭЛЬ 1×1',
-    desc: 'Лучший из трёх раундов против умного соперника. Кровь, синяки и ничего лишнего.',
-    icon: Swords,
-    playable: true,
-  },
-  {
-    id: 'tournament',
-    name: 'ТУРНИР',
-    desc: 'Серия боёв с растущей сложностью. Откроем позже.',
-    icon: Trophy,
-    playable: false,
-  },
-  {
-    id: 'survival',
-    name: 'ВЫЖИВАНИЕ',
-    desc: 'Бесконечная череда соперников до первого поражения.',
-    icon: Flame,
-    playable: false,
-  },
+  { id: 'duel', name: 'ДУЭЛЬ', desc: '1х1', icon: Swords, playable: true },
+  { id: 'soon-1', name: 'СКОРО', desc: 'Тут что-то будет', icon: Lock, playable: false },
+  { id: 'soon-2', name: 'СКОРО', desc: 'В Процессе!', icon: Lock, playable: false },
 ];
 
 export default function ModeSelect({ onBack, onPlay }) {
-  const [selected, setSelected] = useState('duel');
-
-  const pick = (m) => {
-    if (!m.playable) return;
+  const back = () => {
     Snd.init();
     Snd.ui();
-    setSelected(m.id);
+    onBack();
   };
 
   return (
     <section className="screen modes active">
-      <div className="pad modesWrap">
-        <button
-          className="btn ghost backBtn"
-          onClick={() => {
-            Snd.init();
-            Snd.ui();
-            onBack();
-          }}
-        >
-          <ArrowLeft /> Назад
+      <header className="screenHead">
+        <button className="headBack" onClick={back}>
+          <ArrowLeft /> НАЗАД
         </button>
-        <div className="sub">Выберите режим</div>
-        <div className="modeList">
-          {MODES.map((m) => {
-            const Icon = m.icon;
-            return (
-              <button
-                key={m.id}
-                className={`modeCard ${selected === m.id ? 'sel' : ''} ${m.playable ? '' : 'disabled'}`}
-                onClick={() => pick(m)}
-                aria-disabled={!m.playable}
-              >
-                <div className="ic">
-                  <Icon />
-                </div>
-                <div className="modeBody">
-                  <h3>{m.name}</h3>
-                  <p>{m.desc}</p>
-                </div>
-                {!m.playable && (
-                  <span className="soonBadge">
-                    <Lock size={14} /> СКОРО
-                  </span>
-                )}
-              </button>
-            );
-          })}
+        <div className="headCenter">
+          <span className="headLine left" />
+          <h2 className="headTitle">ВЫБЕРИ РЕЖИМ</h2>
+          <span className="headLine right" />
         </div>
-        <button
-          className="btn"
-          onClick={() => {
-            Snd.init();
-            Snd.ui();
-            onPlay();
-          }}
-        >
-          <Play /> Играть
-        </button>
+      </header>
+
+      <div className="modeRow">
+        {MODES.map((m) => {
+          const Icon = m.icon;
+          return (
+            <button
+              key={m.id}
+              className={'modeCard' + (m.playable ? ' sel' : ' locked')}
+              onClick={() => {
+                if (!m.playable) return;
+                Snd.init();
+                Snd.ui();
+                onPlay();
+              }}
+              aria-disabled={!m.playable}
+            >
+              <span className="mIcon">
+                <Icon />
+              </span>
+              <span className="mName">{m.name}</span>
+              <span className="mDesc">{m.desc}</span>
+            </button>
+          );
+        })}
       </div>
     </section>
   );
