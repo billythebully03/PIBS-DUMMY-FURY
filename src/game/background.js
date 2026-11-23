@@ -28,7 +28,7 @@ export function makeBG(W, H, gy, S) {
 
   // неон
   x.save();
-  x.font = "900 56px 'Russo One',Impact,sans-serif";
+  x.font = "900 56px 'Dela Gothic One','Russo One',sans-serif";
   x.textAlign = 'center';
   x.shadowColor = '#ff2a44';
   x.shadowBlur = 28;
