@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+:root{--amber:#ffb300;--red:#e11d2e;--blue:#2f7bff;--ink:#09090d}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;touch-action:none}
+html,body{margin:0;height:100%;overflow:hidden;background:#05050a;color:#fff;font-family:'Russo One','Segoe UI',system-ui,sans-serif;overscroll-behavior:none}
+canvas{display:block}
+#game{position:fixed;inset:0;overflow:hidden;background:#000}
+#gameCv{position:absolute;top:0;left:50%;transform:translateX(-50%);height:100%;cursor:crosshair;image-rendering:pixelated}
+#topBar{
+  position:absolute;left:0;right:0;top:0;
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:max(10px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) 10px max(16px,env(safe-area-inset-left));
+  background:linear-gradient(180deg,rgba(5,5,10,.82) 0%,rgba(5,5,10,.35) 70%,transparent 100%);
+  pointer-events:none;z-index:6;flex-wrap:wrap;
+}
+#topBar > *{pointer-events:auto}
+.ctrlGroup{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sbtn{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:7px 13px;border-radius:6px;
+  font-family:inherit;font-size:clamp(11px,1.7vh,13px);letter-spacing:.06em;text-transform:uppercase;
+  color:#fff;background:rgba(20,20,28,.82);border:1px solid rgba(255,255,255,.18);
+  cursor:pointer;transition:transform .1s,background .15s,border-color .15s;
+  backdrop-filter:blur(4px);
+}
+.sbtn:hover{background:rgba(38,38,52,.92);border-color:rgba(255,179,0,.55)}
+.sbtn:active{transform:scale(.95)}
+.sbtn.primary{
+  color:#1a0f00;background:linear-gradient(180deg,#ffd45a,#ff9d00 60%,#e07800);
+  border-color:#ffe28a;box-shadow:0 0 14px rgba(255,157,0,.28);
+}
+.sbtn.activeToggle{border-color:var(--amber);color:var(--amber);background:rgba(255,179,0,.14)}
+.sbtn svg{width:15px;height:15px}
+.hintBadge{
+  font-family:'Segoe UI',system-ui,sans-serif;font-weight:600;
+  font-size:clamp(11px,1.6vh,13px);color:rgba(255,255,255,.7);
+  background:rgba(10,10,16,.65);border:1px solid rgba(255,255,255,.12);
+  padding:5px 12px;border-radius:20px;pointer-events:none;
+  display:flex;align-items:center;gap:8px;
+}
+.hintBadge .dot{width:7px;height:7px;border-radius:50%;background:#ff3b4e;box-shadow:0 0 8px #ff3b4e;animation:pulse 1.4s infinite}
+@keyframes pulse{50%{opacity:.35;transform:scale(.85)}}
+#rosterHud{
+  position:absolute;left:max(16px,env(safe-area-inset-left));right:max(16px,env(safe-area-inset-right));top:max(54px,7.2vh);
+  display:flex;justify-content:center;gap:10px;flex-wrap:wrap;pointer-events:none;z-index:5;
+}
+.fcard{
+  width:clamp(130px,16vw,190px);background:rgba(8,8,14,.72);
+  border:1px solid rgba(255,255,255,.18);padding:5px 8px;
+  transform:skewX(-12deg);backdrop-filter:blur(2px);
+  transition:opacity .25s,transform .2s;
+}
+.fcard.dead{opacity:.38;border-color:rgba(255,60,60,.3)}
+.fcard .top{display:flex;justify-content:space-between;align-items:center;font-size:10px;letter-spacing:.1em;margin-bottom:3px;color:#ddd}
+.fcard .bar{position:relative;height:8px;background:#000a;border:1px solid rgba(255,255,255,.65);overflow:hidden}
+.fcard .lag{position:absolute;inset:0;background:#fff;width:100%;transition:width .25s ease}
+.fcard .fill{position:absolute;inset:0;width:100%}
