@@ -5,6 +5,3 @@
 export const FX_NAMES = [
   'smoke', 'blood', 'spark', 'impact', 'landing', 'burnSurface', 'crack', 'fragment',
 ] as const;
-
-// Фиолетовый контур ментального воздействия (см. ABILITIES/janeMental.ts).
-export const MENTAL_GLOW = '#a855f7';
