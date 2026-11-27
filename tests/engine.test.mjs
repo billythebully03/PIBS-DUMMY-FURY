@@ -8,7 +8,7 @@ import { transformWithEsbuild } from 'vite';
 // rendering exceptions and important draw calls remain observable.
 function makeCanvas(width = 960, height = 540) {
   const canvas = { width, height, style: {} };
-  const stats = { drawImage: 0, fillRect: 0, stroke: 0, arc: 0, colors: new Set() };
+  const stats = { drawImage: 0, fillRect: 0, stroke: 0, arc: 0, colors: new Set(), texts: [] };
   let fillStyle = '#000';
   const ctx = {
     canvas, stats,
@@ -17,7 +17,8 @@ function makeCanvas(width = 960, height = 540) {
     save() {}, restore() {}, setTransform() {}, transform() {}, translate() {},
     rotate() {}, scale() {}, clearRect() {}, beginPath() {}, closePath() {},
     moveTo() {}, lineTo() {}, quadraticCurveTo() {}, bezierCurveTo() {},
-    ellipse() {}, fill() {}, fillText() {}, strokeText() {}, setLineDash() {},
+    ellipse() {}, fill() {}, fillText(text, x, y) { stats.texts.push({ text, x, y, color: fillStyle, font: this.font }); },
+    strokeText() {}, setLineDash() {},
     fillRect() { stats.fillRect++; }, strokeRect() { stats.stroke++; },
     stroke() { stats.stroke++; }, arc() { stats.arc++; },
     drawImage() { stats.drawImage++; },
@@ -103,6 +104,25 @@ function grabPair(skin = 'jane', dir = 1, victimFirst = false) {
   a.update(1 / 60, null, [a, v]);
   Game.fighters = victimFirst ? [v, a] : [a, v];
   return { a, v };
+}
+
+function hypnosisPair(dir = 1, victimFirst = false, targetSkin = 'walt') {
+  const a = fighter(dir === 1 ? 330 : 630, dir, 'jane');
+  const v = fighter(a.x + dir * 220, -dir, targetSkin);
+  a.hypCD = 0;
+  // Freeze only the autonomous decisions, not the actual fighter physics.
+  a.autopilot.update = () => {};
+  v.autopilot.update = () => {};
+  Game.fighters = victimFirst ? [v, a] : [a, v];
+  return { a, v };
+}
+
+function advanceUntil(predicate, maxFrames = 900, dt = 1 / 60) {
+  for (let i = 0; i < maxFrames; i++) {
+    if (predicate()) return i;
+    Game.update(dt);
+  }
+  assert.fail(`condition not reached after ${maxFrames} frames`);
 }
 
 function distance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
@@ -329,4 +349,390 @@ test('autonomous matches maintain finite physics and valid grab ownership', () =
       }
     }
   }
+});
+
+test('Jane completes every hypnosis phase with a real projectile at several frame rates', () => {
+  for (const dir of [1, -1]) {
+    for (const dt of [1 / 30, 1 / 60, 1 / 144]) {
+      seedRandom(4321);
+      Game.init(); Game.autoSpawn = false; Game.fighters = [];
+      const { a, v } = hypnosisPair(dir, dir < 0);
+      assert.equal(a.startHypnosis(v), true);
+      assert.ok(a.hypCD >= 5 && a.hypCD <= 9, 'cooldown should match the laser');
+      const phases = new Set(), gunIDs = new Set();
+      let shotSeen = false, knockedKnee = false, quietPose = null;
+      for (let i = 0; i < Math.ceil(9 / dt); i++) {
+        Game.update(dt);
+        if (a.hypPhase) phases.add(a.hypPhase);
+        if (a.hypGun) gunIDs.add(a.hypGun.id);
+        if (Game.bullets.length || Game.tracers.length) shotSeen = true;
+        if (v.state === 'trance' && v.st > 1) {
+          if (!quietPose) quietPose = { x: v.x, dir: v.dir, head: { ...v.rig.head }, pel: { ...v.rig.pel } };
+          assert.equal(v.x, quietPose.x, 'tranced fighter must remain stationary');
+          assert.equal(v.dir, quietPose.dir, 'tranced fighter must keep facing forward');
+          assert.deepEqual(v.rig.head, quietPose.head, 'held trance pose should not bob');
+          assert.deepEqual(v.rig.pel, quietPose.pel, 'held trance pose should not bob');
+          if (Math.abs(v.rig.kN.y - (v.gy - 6.5)) < 5 || Math.abs(v.rig.kF.y - (v.gy - 6.5)) < 5) knockedKnee = true;
+        }
+        if (phases.has('recover') && a.state === 'idle') break;
+      }
+      const label = `dir=${dir}, dt=${dt}`;
+      for (const p of ['focus', 'holster', 'draw', 'aim', 'raise', 'recoil', 'recover']) {
+        assert.ok(phases.has(p), `${label}: missing phase ${p}`);
+      }
+      assert.ok(shotSeen, `${label}: a visible projectile or trail must exist`);
+      assert.ok(knockedKnee, `${label}: victim must kneel`);
+      assert.equal(v.hp, 91, `${label}: bullet deals 9 damage once`);
+      assert.equal(v.state, 'trance', `${label}: hypnosis outlives the cast`);
+      assert.ok(v.tranceT > 1, `${label}: hypnosis must remain for a while`);
+      assert.equal(gunIDs.size, 1, `${label}: cast creates one gun`);
+      assert.equal(Game.droppedGuns.length, 1, `${label}: gun is thrown exactly once`);
+      assert.equal(Game.droppedGuns[0].id, [...gunIDs][0]);
+      assert.equal(a.hypGun, null);
+      assert.ok(a.hypCD > 0, `${label}: cannot immediately recast`);
+    }
+  }
+});
+
+test('the phrase is static and readable, while the separate trance label pulses and expires', () => {
+  const { a, v } = hypnosisPair();
+  assert.equal(a.startHypnosis(v), true);
+  advanceUntil(() => v.state === 'trance');
+  assert.ok(v.trancePhrase && v.trancePhrase.length <= 24);
+  const textStats = Game.textLayer.ctx.stats;
+  textStats.texts.length = 0;
+  Game.render();
+  const phrase = v.trancePhrase;
+  assert.ok(textStats.texts.some(t => t.text === phrase));
+  const firstLabel = textStats.texts.find(t => t.text === 'In trance');
+  assert.ok(firstLabel && firstLabel.color.startsWith('rgb(255,'));
+  for (let i = 0; i < 25; i++) Game.update(1 / 60);
+  textStats.texts.length = 0;
+  Game.render();
+  assert.equal(v.trancePhrase, phrase, 'the phrase must not cycle or animate');
+  assert.ok(textStats.texts.some(t => t.text === phrase));
+  const secondLabel = textStats.texts.find(t => t.text === 'In trance');
+  assert.notEqual(secondLabel.color, firstLabel.color, 'yellow label should gently pulse');
+  advanceUntil(() => v.speechT <= 0);
+  textStats.texts.length = 0;
+  Game.render();
+  assert.ok(textStats.texts.some(t => t.text === 'In trance'));
+  assert.ok(!textStats.texts.some(t => t.text === phrase), 'the speech cloud goes away independently');
+  advanceUntil(() => v.tranceT <= 0);
+  assert.equal(v.state, 'idle');
+  textStats.texts.length = 0;
+  Game.render();
+  assert.ok(!textStats.texts.some(t => t.text === 'In trance'));
+});
+
+test('camera follows Jane, briefly slows time and returns smoothly after interruption', () => {
+  const { a, v } = hypnosisPair();
+  a.x = 430; v.x = 650;
+  a.buildRig(1 / 60); v.buildRig(1 / 60);
+  assert.equal(a.startHypnosis(v), true);
+  for (let i = 0; i < 20; i++) Game.update(1 / 60);
+  assert.ok(a.st < 20 / 60 - 0.03, 'initial cinematic slowdown should affect game time');
+  assert.ok(Game.camera.zoom > 1.1 && Game.camera.zoom < 1.2);
+  assert.ok(Game.camera.vignette > 0.5);
+  assert.ok(Math.abs(Game.screenToWorldX(Game.W / 2) - Game.camera.x) < 1e-8);
+  const oldCameraX = Game.camera.x;
+  a.x += 45;
+  for (let i = 0; i < 15; i++) Game.update(1 / 60);
+  assert.ok(Game.camera.x > oldCameraX, 'camera should follow the caster');
+  const interrupter = fighter(250, 1, 'saul');
+  interrupter.autopilot.update = () => {};
+  a.takeHit(interrupter, { dmg: 5, zone: 'head', pw: .4, stun: .3, kb: 80 });
+  assert.equal(Game.camera.owner, null);
+  const zoom = Game.camera.zoom;
+  Game.update(1 / 60);
+  assert.ok(Game.camera.zoom < zoom && Game.camera.zoom > 1, 'camera must ease out, not jump');
+  for (let i = 0; i < 180; i++) Game.update(1 / 60);
+  assert.ok(Math.abs(Game.camera.zoom - 1) < .001);
+  assert.ok(Game.camera.vignette < .001);
+  assert.equal(Game.camera.slowLeft, 0);
+});
+
+test('interrupting before induction cancels the cast without spawning a gun or trance', () => {
+  const { a, v } = hypnosisPair();
+  assert.equal(a.startHypnosis(v), true);
+  for (let i = 0; i < 5; i++) Game.update(1 / 60);
+  const enemy = fighter(200, 1, 'saul');
+  a.takeHit(enemy, { dmg: 5, zone: 'head', pw: .4, stun: .3, kb: 80 });
+  assert.equal(a.state, 'hit');
+  assert.equal(a.hypGun, null);
+  assert.equal(Game.droppedGuns.length, 0, 'there is no gun to drop before it is drawn');
+  assert.equal(v.tranceT, 0);
+  assert.ok(a.hypCD > 0, 'an interrupted attempt still consumes cooldown');
+  assert.equal(Game.camera.owner, null);
+  assert.equal(Game.bullets.length, 0);
+});
+
+test('interruption drops the unique gun but does not break an established trance', () => {
+  const { a, v } = hypnosisPair();
+  assert.equal(a.startHypnosis(v), true);
+  advanceUntil(() => a.hypPhase === 'aim');
+  const gunID = a.hypGun.id, hp = v.hp;
+  const enemy = fighter(230, 1, 'saul');
+  enemy.autopilot.update = () => {};
+  a.takeHit(enemy, { dmg: 5, zone: 'head', pw: .4, stun: .3, kb: 80 });
+  assert.equal(a.state, 'hit');
+  assert.equal(a.hypGun, null);
+  assert.equal(Game.droppedGuns.length, 1);
+  assert.equal(Game.droppedGuns[0].id, gunID);
+  assert.equal(v.state, 'trance');
+  assert.ok(v.tranceT > 2);
+  assert.ok(a.hypCD > 0);
+  assert.equal(Game.bullets.length, 0);
+  v.takeHit(enemy, { dmg: 5, zone: 'torso', pw: .4, stun: .3, kb: 80 });
+  assert.equal(v.hp, hp - 5, 'tranced fighter can still take damage');
+  assert.equal(v.state, 'trance', 'ordinary damage does not remove the trance');
+  const remaining = v.tranceT;
+  for (let i = 0; i < 30; i++) Game.update(1 / 60);
+  assert.ok(v.tranceT > 0 && v.tranceT < remaining);
+  assert.equal(Game.droppedGuns.length, 1, 'a cancelled gun must not respawn');
+  assert.equal(a.hypGun, null);
+
+  // Expire the cooldown explicitly to test that the next cast draws a new gun,
+  // rather than fetching the old physical object off the floor.
+  a.state = 'idle'; a.vx = 0; a.hypCD = 0;
+  const next = fighter(a.x + 250, -1, 'homelander');
+  next.autopilot.update = () => {};
+  Game.fighters.push(next);
+  assert.equal(a.startHypnosis(next), true);
+  advanceUntil(() => a.hypPhase === 'draw');
+  assert.ok(a.hypGun && a.hypGun.id !== gunID);
+  assert.equal(Game.droppedGuns[0].id, gunID);
+  a.cancelHypnosis();
+  a.cancelHypnosis();
+  assert.equal(Game.droppedGuns.length, 2, 'repeated cleanup must not duplicate the gun');
+  assert.notEqual(Game.droppedGuns[0].id, Game.droppedGuns[1].id);
+});
+
+test('lasers, trips and KOs interrupt a cast and leave the victim hypnotized', () => {
+  for (const kind of ['laser', 'trip', 'ko']) {
+    seedRandom(7788);
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const { a, v } = hypnosisPair();
+    assert.equal(a.startHypnosis(v), true);
+    advanceUntil(() => a.hypPhase === 'aim');
+    const enemy = fighter(190, 1, 'homelander');
+    enemy.autopilot.update = () => {};
+    if (kind === 'laser') a.takeLaser(enemy, a.rig.pel, true);
+    if (kind === 'trip') enemy.trip(a);
+    if (kind === 'ko') Game.ko(a, enemy, { lvx: 300, lvy: 400, pw: 1 });
+    assert.notEqual(a.state, 'hypnosis', kind);
+    assert.equal(a.hypGun, null, kind);
+    assert.equal(Game.droppedGuns.length, 1, kind);
+    assert.equal(v.state, 'trance', kind);
+    assert.ok(v.tranceT > 0, kind);
+    assert.equal(Game.camera.owner, null, kind);
+    if (kind === 'laser') assert.ok(a.burns.length > 0, 'laser burn remains on Jane');
+  }
+});
+
+test('a launched tranced opponent remains incapacitated until the debuff expires', () => {
+  const { a, v } = hypnosisPair();
+  assert.equal(a.startHypnosis(v), true);
+  advanceUntil(() => v.state === 'trance');
+  const enemy = fighter(230, 1, 'saul'); enemy.autopilot.update = () => {};
+  v.takeHit(enemy, { dmg: 8, zone: 'head', pw: 1, launch: true, lvx: 200, lvy: 420 });
+  assert.equal(v.state, 'ragdoll');
+  assert.ok(v.tranceT > 0);
+  for (let i = 0; i < 120; i++) Game.update(1 / 60);
+  assert.equal(v.state, 'ragdoll', 'tranced ragdoll cannot get up early');
+  assert.ok(v.tranceT > 0);
+  advanceUntil(() => v.tranceT <= 0);
+  advanceUntil(() => v.state === 'getup' || v.state === 'idle');
+});
+
+test('the projectile can hit an intervening fighter instead of magically reaching its target', () => {
+  const { a, v } = hypnosisPair();
+  a.x = 280; v.x = 560; a.buildRig(1 / 60); v.buildRig(1 / 60);
+  const blocker = fighter(450, -1, 'saul'); blocker.autopilot.update = () => {};
+  assert.equal(a.startHypnosis(v), true);
+  advanceUntil(() => a.hypPhase === 'recoil');
+  advanceUntil(() => blocker.hp < 100 || v.hp < 100);
+  assert.equal(blocker.hp, 91);
+  assert.equal(v.hp, 100, 'a body in the projectile path absorbs the shot');
+  assert.equal(v.state, 'trance');
+});
+
+test('a lethal bullet emits fragments before transitioning into a normal ragdoll', () => {
+  const { a, v } = hypnosisPair(-1, true, 'negan');
+  v.hp = 9;
+  const originalKOs = Game.koCount;
+  assert.equal(a.startHypnosis(v), true);
+  advanceUntil(() => v.hp <= 0);
+  assert.equal(v.state, 'fragmenting');
+  assert.equal(v.rag, null);
+  assert.ok(Game.fx.bits.length > 0);
+  assert.equal(Game.koCount, originalKOs + 1);
+  assert.equal(v.tranceT, 0);
+  Game.render();
+  advanceUntil(() => v.state === 'ragdoll');
+  assert.ok(v.rag);
+  assert.equal(v.hp, 0);
+  assert.equal(Game.koCount, originalKOs + 1);
+});
+
+test('aim duration and spoken lines vary across casts without changing within one cast', () => {
+  const delays = new Set(), phrases = new Set();
+  for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
+    seedRandom(seed * 997);
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const { a, v } = hypnosisPair();
+    assert.equal(a.startHypnosis(v), true);
+    advanceUntil(() => a.hypPhase === 'aim');
+    assert.ok(a.hypAimWait >= .55 && a.hypAimWait <= 1.8);
+    delays.add(a.hypAimWait.toFixed(3));
+    phrases.add(v.trancePhrase);
+    const wait = a.hypAimWait, phrase = v.trancePhrase;
+    for (let i = 0; i < 10; i++) Game.update(1 / 60);
+    assert.equal(a.hypAimWait, wait);
+    assert.equal(v.trancePhrase, phrase);
+  }
+  assert.ok(delays.size > 3, 'shot timing should vary');
+  assert.ok(phrases.size > 2, 'spoken lines should vary');
+});
+
+test('blood impacts during the cast stick to Jane, darken over time and can be cleared', () => {
+  const { a, v } = hypnosisPair();
+  assert.equal(a.startHypnosis(v), true);
+  for (let i = 0; i < 12; i++) Game.update(1 / 60);
+  const p = a.rig.pel;
+  Game.fx.bl.push({ x: p.x, y: p.y, vx: 0, vy: 0, r: 2, fy: a.gy + 30, life: 2, shape: 'block' });
+  Game.update(1 / 60);
+  assert.equal(a.bloodStains.length, 1);
+  assert.ok(a.bloodStains[0].kind === 'blood' && a.bloodStains[0].layer);
+  const mark = a.bloodStains[0];
+  const before = mark.age;
+  for (let i = 0; i < 60; i++) Game.update(1 / 60);
+  assert.ok(mark.age > before + .5);
+  assert.equal(a.bloodStains[0], mark, 'a fleck should follow the same body segment');
+  const body = Game.bodyLayer.ctx.stats;
+  body.colors.clear(); Game.render();
+  assert.ok([...body.colors].some(c => typeof c === 'string' && c.startsWith('rgb(')), 'stain must be painted on the fighter layer');
+  const enemy = fighter(230, 1, 'saul');
+  a.takeHit(enemy, { dmg: 5, zone: 'torso', pw: .4, stun: .3, kb: 80 });
+  assert.ok(a.bloodStains.length >= 2, 'a direct hit also leaves a mark when it interrupts');
+  Game.clearBlood();
+  assert.equal(a.bloodStains.length, 0);
+});
+
+test('the AI uses hypnosis with a cooldown and can switch the camera between simultaneous casts', () => {
+  const a = fighter(330, 1, 'jane'), v = fighter(550, -1, 'walt');
+  Game.fighters = [a, v];
+  a.hypCD = 0;
+  Math.random = () => .001;
+  a.autopilot.update(1 / 60, a, v, [a, v]);
+  assert.equal(a.state, 'hypnosis');
+  assert.ok(a.hypCD >= 5 && a.hypCD <= 9);
+  assert.equal(Game.camera.owner, a);
+  const other = fighter(600, -1, 'jane'), target = fighter(380, 1, 'negan');
+  Game.fighters.push(other, target);
+  other.hypCD = 0;
+  assert.equal(other.startHypnosis(target), true);
+  assert.equal(Game.camera.owner, a, 'simultaneous casts should not cause a camera jump');
+  a.cancelHypnosis();
+  assert.equal(Game.camera.owner, other, 'camera transfers to the remaining active cast');
+  other.cancelHypnosis();
+  assert.equal(Game.camera.owner, null);
+});
+
+test('portrait sizing keeps the entire arena and both fighters visible', () => {
+  const oldWidth = innerWidth, oldHeight = innerHeight;
+  try {
+    globalThis.innerWidth = 390; globalThis.innerHeight = 844;
+    Game.resize();
+    assert.equal(Game.W, 800);
+    assert.ok(parseFloat(Game.cv.style.width) <= innerWidth + 0.01);
+    assert.ok(parseFloat(Game.cv.style.height) < innerHeight);
+    assert.ok(parseFloat(Game.cv.style.top) > 0, 'letterboxed arena is vertically centered');
+    const { a, v } = hypnosisPair();
+    v.x = a.x + 350; v.buildRig(1 / 60);
+    assert.equal(a.startHypnosis(v), true);
+    advanceUntil(() => a.hypPhase === 'aim');
+    const c = Game.camera;
+    const screenX = worldX => (worldX - c.x) * c.zoom + Game.W / 2;
+    assert.ok(screenX(a.x) > 0 && screenX(a.x) < Game.W);
+    assert.ok(screenX(v.x) > 0 && screenX(v.x) < Game.W);
+    assert.ok(Math.abs(Game.screenToWorldX(screenX(v.x)) - v.x) < 1e-8);
+    const texts = Game.textLayer.ctx.stats.texts;
+    texts.length = 0;
+    Game.render();
+    const phrase = texts.find(t => t.text === v.trancePhrase);
+    const label = texts.find(t => t.text === 'In trance');
+    assert.ok(phrase && label);
+    const fontWorld = Number(phrase.font.match(/([\d.]+)px/)[1]);
+    assert.ok(fontWorld * Game.displayScale * c.zoom >= 10.9, 'phone text stays readable');
+    const left = c.x - Game.W / (2 * c.zoom), right = c.x + Game.W / (2 * c.zoom);
+    const estimatedHalfWidth = (v.trancePhrase.length * 7.25 + 20) * fontWorld / 24;
+    assert.ok(phrase.x - estimatedHalfWidth >= left + 3);
+    assert.ok(phrase.x + estimatedHalfWidth <= right - 3, 'cloud stays inside the camera view');
+  } finally {
+    globalThis.innerWidth = oldWidth; globalThis.innerHeight = oldHeight;
+    Game.resize();
+  }
+});
+
+test('removing the target before induction cancels, and removing a caster clears camera slowdown', () => {
+  const { a, v } = hypnosisPair();
+  assert.equal(a.startHypnosis(v), true);
+  Game.fighters = [a];
+  Game.update(1 / 60);
+  assert.equal(a.state, 'idle');
+  assert.equal(v.tranceT, 0);
+  assert.equal(Game.camera.owner, null);
+  assert.equal(Game.camera.slowLeft, 0);
+  assert.equal(Game.droppedGuns.length, 0);
+
+  Game.fighters = [a, v]; a.hypCD = 0;
+  assert.equal(a.startHypnosis(v), true);
+  Game.fighters = [v];
+  Game.update(1 / 60);
+  assert.equal(Game.camera.owner, null);
+  assert.equal(Game.camera.slowLeft, 0);
+});
+
+test('a projectile may miss and hit the arena rather than damaging a removed target', () => {
+  const { a, v } = hypnosisPair();
+  assert.equal(a.startHypnosis(v), true);
+  advanceUntil(() => a.hypPhase === 'raise');
+  Game.fighters = [a];
+  advanceUntil(() => a.hypPhase === 'recoil');
+  assert.ok(Game.bullets.length > 0, 'shot still leaves the gun');
+  advanceUntil(() => Game.bullets.length === 0);
+  assert.equal(v.hp, 100);
+  assert.ok(Game.tracers.length > 0, 'miss leaves a visible trail at the wall');
+});
+
+test('a seeded autonomous match actually induces a trance and fires', () => {
+  seedRandom(3 * 982451653);
+  Game.init();
+  let sawFocus = false, sawTrance = false, sawBullet = false;
+  for (let i = 0; i < 40 * 60; i++) {
+    Game.update(1 / 60);
+    if (Game.fighters.some(f => f.skin === 'jane' && f.hypPhase === 'focus')) sawFocus = true;
+    if (Game.fighters.some(f => f.tranceT > 0)) sawTrance = true;
+    if (Game.bullets.some(p => p.owner.skin === 'jane')) sawBullet = true;
+  }
+  assert.ok(sawFocus, 'Jane should choose the ability on her own');
+  assert.ok(sawTrance, 'the opposing AI should be put into trance');
+  assert.ok(sawBullet, 'the autonomous sequence should reach a real shot');
+});
+
+test('a flying Homelander settles to the floor in trance and remains targetable', () => {
+  const { a, v } = hypnosisPair(1, false, 'homelander');
+  // Start him from his normal hover so the trance must bring him down.
+  for (let i = 0; i < 60; i++) Game.update(1 / 60);
+  assert.ok(v.hoverY > 10);
+  assert.equal(a.startHypnosis(v), true);
+  advanceUntil(() => a.hypPhase === 'aim');
+  for (let i = 0; i < 30; i++) Game.update(1 / 60);
+  assert.equal(v.state, 'trance');
+  assert.ok(v.hoverY < .1, `hover should settle, got ${v.hoverY}`);
+  assert.ok(Math.abs(v.rig.kN.y - (v.gy - 6.5)) < 5 || Math.abs(v.rig.kF.y - (v.gy - 6.5)) < 5);
+  assert.ok(v.canBeHit());
+  advanceUntil(() => v.hp < 100);
+  assert.equal(v.hp, 91);
 });

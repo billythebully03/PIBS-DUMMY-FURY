@@ -12,6 +12,18 @@ const CAPE_N=7, CAPE_SEG=19;
 const HL_HOVER=19;
 const RUN_SPD=520, RUN_ACC=1250;
 const GRAB_PREP_DUR=1.35, GRAB_THROW_DUR=.84;
+// Jane's ability uses game time for its phases and real time for the brief
+// cinematic slowdown, so it composes safely with hit-stop and knockout slow-mo.
+const HYPNO_FOCUS=.42, HYPNO_HOLSTER=.42, HYPNO_DRAW=.42, HYPNO_RAISE=.2;
+const HYPNO_RECOIL=.22, HYPNO_RECOVER=.34, TRANCE_KNEEL=.78;
+const HYPNO_RANGE=350, BULLET_SPEED=1800, BULLET_DAMAGE=9, FRAGMENT_DUR=.42;
+const HYPNO_LINES=[
+  'Calm down.', 'Sleep, sleep, sleep.', 'Follow my voice.',
+  'Let the noise fade.', 'Breathe. Just breathe.', 'Nothing to worry about.',
+  'Rest for a moment.', 'Drift away.', 'There is only quiet.',
+  'Close your eyes.', 'Let it all go.', 'You are safe here.',
+  'That is it... relax.', 'Just one quiet thought.'
+];
 /* ============================ AUDIO ============================ */
 const Snd={ac:null,on:true,nb:null,
 init(){ if(this.ac){ if(this.ac.state==='suspended')this.ac.resume(); return;}
@@ -29,7 +41,9 @@ ui(){ this.tone(520,820,.08,.18,'square'); },
 ko(){ this.tone(120,30,1,.9); this.noise(.8,1500,80,.5,.6,'lowpass'); },
 spawn(){ this.noise(.3,6000,300,.6,.25,'bandpass'); this.tone(900,100,.4,.2,'sawtooth'); },
 laserCharge(){ this.tone(300,1300,.4,.1,'sawtooth'); this.noise(.4,800,3200,1,.1,'bandpass'); },
-laser(){ this.tone(220,170,.7,.14,'sawtooth'); this.tone(880,640,.7,.05,'square'); this.noise(.7,5000,2500,.8,.12,'highpass'); }
+laser(){ this.tone(220,170,.7,.14,'sawtooth'); this.tone(880,640,.7,.05,'square'); this.noise(.7,5000,2500,.8,.12,'highpass'); },
+hypnotize(){ this.tone(380,240,.55,.08,'sine'); this.tone(570,360,.7,.035,'sine'); },
+shot(){ this.noise(.11,3600,280,.8,.48,'lowpass'); this.tone(180,55,.16,.48,'triangle'); }
 };
 /* ============================ POSES / FK / PROPORTIONS ============================ */
 // Neck slightly shorter than before (22.5 -> 20).
@@ -147,6 +161,39 @@ function pinHandsWorld(R,tx,ty){
   R.wF={x:R.sh.x+J.wF.x*d,y:R.sh.y+J.wF.y};
   R.cN=1;R.cF=1;R.bd=null;
 }
+function poseHypnosisArm(R,f){
+  const v=f.hypTarget,vr=v&&v.rig,sh=R.sh,d=R.dir,phase=f.hypPhase,t=f.hypPhaseT;
+  if(phase==='recover'||!phase)return;
+  const head=vr?vr.head:{x:sh.x+d*200,y:sh.y-10};
+  const body=vr?pointBetween(vr.sh,vr.pel,.3):head;
+  const reach=target=>{
+    const dx=target.x-sh.x,dy=target.y-sh.y,L=Math.hypot(dx,dy)||1;
+    return {x:sh.x+dx/L*60,y:sh.y+dy/L*60};
+  };
+  const extended=reach(head),aimBody=reach(body),hip={x:R.pel.x-d*8,y:R.pel.y+2};
+  const between=(a,b,k)=>({x:lerp(a.x,b.x,k),y:lerp(a.y,b.y,k)});
+  let hand,aimPoint=head;
+  if(phase==='focus')hand=between(R.wN,extended,ease(clamp(t/.34,0,1)));
+  else if(phase==='holster')hand=between(extended,hip,ease(clamp(t/HYPNO_HOLSTER,0,1)));
+  else if(phase==='draw'){hand=between(hip,aimBody,ease(clamp(t/HYPNO_DRAW,0,1)));aimPoint=body;}
+  else if(phase==='aim'){hand=aimBody;aimPoint=body;}
+  else if(phase==='raise'){hand=between(aimBody,extended,ease(clamp(t/HYPNO_RAISE,0,1)));aimPoint=between(body,head,ease(clamp(t/HYPNO_RAISE,0,1)));}
+  else hand=extended;
+  const J={sh:{x:0,y:0}};
+  armIK(J,'N',{x:(hand.x-sh.x)*d,y:hand.y-sh.y});
+  R.eN={x:sh.x+J.eN.x*d,y:sh.y+J.eN.y};
+  R.wN={x:sh.x+J.wN.x*d,y:sh.y+J.wN.y};
+  R.cN=f.hypGun?1:0;
+  if(f.hypGun){
+    let dx=aimPoint.x-R.wN.x,dy=aimPoint.y-R.wN.y,L=Math.hypot(dx,dy)||1;
+    dx/=L;dy/=L;
+    if(phase==='draw'){
+      const k=ease(clamp(t/HYPNO_DRAW,0,1));
+      dx=lerp(d*.2,dx,k);dy=lerp(1,dy,k);L=Math.hypot(dx,dy)||1;dx/=L;dy/=L;
+    }
+    f.hypGunDir={x:dx,y:dy};
+  }
+}
 /* poses */
 const AIRL={f1x:24,f1h:30,f2x:-12,f2h:22};
 const T_POSE=P({H:92,tl:0,hd:0,a1:90,e1:0,c1:0,a2:-90,e2:0,c2:0,f1x:3,f2x:-3,bg:0});
@@ -193,6 +240,10 @@ const GETUP_HL=KF([
 [2.3,HL_IDLE]
 ]);
 const GETUP_DUR=2.3;
+// The kneeling pose is held without idle bobbing; the existing leg IK puts the
+// knees on the floor and folds the lower legs back underneath the fighter.
+const TRANCE_POSE=P({H:40,tl:3,hd:0,px:0,a1:4,e1:22,c1:0,a2:-4,e2:20,c2:0,f1x:-18,f2x:-24,fa1:0,fa2:0,mo:0,ey:0,bg:0});
+const HYPNO_POSE=P({H:84,tl:4,hd:1,px:0,a1:30,e1:58,c1:0,a2:16,e2:105,c2:0,f1x:20,f2x:-20,mo:0});
 const GRAB_PREP_POSE=P({H:72,tl:34,hd:22,px:6,a1:26,e1:24,c1:0,a2:32,e2:26,c2:0,f1x:28,f2x:-20,mo:.2,bg:0});
 const GRAB_THROW_KF=KF([
   [0,{H:66,tl:46,hd:24,px:8,a1:32,e1:18,c1:1,a2:26,e2:22,c2:1,f1x:32,f2x:-22,mo:.4,bg:0}],
@@ -428,6 +479,33 @@ function drawDroppedBat(g,b){
   g.translate(b.x,b.y);g.rotate(b.ang);
   if(b.flip<0)g.scale(1,-1);
   g.drawImage(BAT_SPR,-39,-13.5,78,27);
+  g.restore();
+}
+// A small dark-gray pixel pistol; every draw creates a new physical weapon
+// when the hand reaches the holster rather than reusing a discarded one.
+const GUN_SPR=(()=>{
+  const c=mk();c.width=12;c.height=8;const g=c.getContext('2d');
+  g.fillStyle='#101217';g.fillRect(1,1,10,4);g.fillRect(2,4,4,4);
+  g.fillStyle='#363b43';g.fillRect(2,1,8,2);g.fillRect(3,3,5,1);
+  g.fillStyle='#656d76';g.fillRect(3,1,6,1);g.fillRect(9,2,2,1);
+  g.fillStyle='#292d33';g.fillRect(3,4,2,3);
+  g.fillStyle='#181b20';g.fillRect(4,5,2,3);g.fillRect(10,3,2,1);
+  return c;
+})();
+function drawHeldGun(g,f){
+  if(!f.hypGun||!f.rig)return;
+  const v=f.hypGunDir||{x:f.dir,y:0},w=f.rig.wN;
+  g.save();g.imageSmoothingEnabled=false;
+  g.translate(w.x,w.y);g.rotate(Math.atan2(v.y,v.x));
+  if(v.x<0)g.scale(1,-1);
+  g.drawImage(GUN_SPR,-7,-6,30,20);
+  g.restore();
+}
+function drawDroppedGun(g,b){
+  g.save();g.imageSmoothingEnabled=false;
+  g.translate(b.x,b.y);g.rotate(b.ang);
+  if(b.flip<0)g.scale(1,-1);
+  g.drawImage(GUN_SPR,-15,-10,30,20);
   g.restore();
 }
 /* ============================ WOUNDS ============================ */
@@ -829,6 +907,27 @@ const BURN_SEGS=[
   ['fN','eN','wN',6,'front']
 ];
 const BURN_MAP=Object.fromEntries(BURN_SEGS.map(s=>[s[0],s]));
+// Store marks in the struck joint's local coordinates so they follow animated
+// limbs, ragdolls and kneeling fighters rather than remaining in world space.
+function locateSurface(R,x,y){
+  if(!R)return null;
+  let seg='head',layer='head',hw=15,best=Math.hypot(x-R.head.x,y-(R.head.y-6))-15;
+  for(const [name,kA,kB,width,part] of BURN_SEGS){
+    const A=R[kA],B=R[kB];if(!A||!B)continue;
+    const d=distSeg(x,y,A.x,A.y,B.x,B.y)-width;
+    if(d<best){best=d;seg=name;layer=part;hw=width;}
+  }
+  if(seg==='head'){
+    const angle=Math.atan2(R.head.y-R.neck.y,R.head.x-R.neck.x)+Math.PI/2;
+    const ca=Math.cos(angle),sa=Math.sin(angle),dx=x-R.head.x,dy=y-R.head.y;
+    return {seg,layer,lx:clamp(dx*ca+dy*sa+rnd(-2,2),-13,13),ly:clamp(-dx*sa+dy*ca+rnd(-2,2),-22,14)};
+  }
+  const info=BURN_MAP[seg],A=R[info[1]],B=R[info[2]],dx=B.x-A.x,dy=B.y-A.y,len=Math.hypot(dx,dy)||1;
+  const t=clamp(((x-A.x)*dx+(y-A.y)*dy)/(len*len)+rnd(-.04,.04),.08,.92);
+  const nx=R.dir*dy/len,ny=-R.dir*dx/len;
+  const perp=(x-(A.x+dx*t))*nx+(y-(A.y+dy*t))*ny;
+  return {seg,layer,t,s:clamp(perp+rnd(-1.5,1.5),-hw*.78,hw*.78)};
+}
 function paintBurnSpot(g,wx,wy,b){
   const k=b.life/b.max, a=Math.min(1,k*1.6);
   const x=Math.round(wx/3)*3, y=Math.round(wy/3)*3;
@@ -839,27 +938,36 @@ function paintBurnSpot(g,wx,wy,b){
   if(b.sz>.38)g.fillRect(x+(b.sz>.7?3:-6),y,3,3);
   if(k>.42){g.fillStyle=k>.74?'#fff0b3':'#ffc857';g.fillRect(x-3+(b.sz>.5?3:0),y-3,3,3);}
 }
+function paintBloodSpot(g,wx,wy,b){
+  const x=Math.round(wx/3)*3,y=Math.round(wy/3)*3;
+  // Fresh flecks darken gradually but stay attached until the blood is cleared.
+  const k=clamp(b.age/4,0,1);
+  g.globalAlpha=.78;g.fillStyle=`rgb(${Math.round(168-79*k)},${Math.round(23-5*k)},${Math.round(38-11*k)})`;
+  g.fillRect(x-3,y-3,6,6);
+  if(b.sz>.45)g.fillRect(x+3,y,3,3);
+  if(b.age<1.2){g.globalAlpha=.85*(1-b.age/1.2);g.fillStyle='#dc3740';g.fillRect(x-3,y-3,3,3);}
+}
 function drawLayerBurns(g,R,f,layer){
-  if(!R||!f.burns||!f.burns.length)return;
-  let any=false;
-  for(const b of f.burns)if(b.layer===layer){any=true;break;}
-  if(!any)return;
+  if(!R||(!(f.burns&&f.burns.length)&&!(f.bloodStains&&f.bloodStains.length)))return;
+  const marks=[...(f.burns||[]),...(f.bloodStains||[])];
+  if(!marks.some(b=>b.layer===layer))return;
   g.save();
   g.globalCompositeOperation='source-atop';
-  for(const b of f.burns){
+  for(const b of marks){
     if(b.layer!==layer)continue;
+    let wx,wy;
     if(b.seg==='head'){
       const angle=Math.atan2(R.head.y-R.neck.y,R.head.x-R.neck.x)+Math.PI/2;
       const ca=Math.cos(angle),sa=Math.sin(angle);
-      const wx=R.head.x+b.lx*ca-b.ly*sa, wy=R.head.y+b.lx*sa+b.ly*ca;
-      paintBurnSpot(g,wx,wy,b);
+      wx=R.head.x+b.lx*ca-b.ly*sa;wy=R.head.y+b.lx*sa+b.ly*ca;
     }else{
       const info=BURN_MAP[b.seg];if(!info)continue;
       const A=R[info[1]],B=R[info[2]];if(!A||!B)continue;
       const dx=B.x-A.x,dy=B.y-A.y,len=Math.hypot(dx,dy)||1;
       const nx=R.dir*dy/len,ny=-R.dir*dx/len;
-      paintBurnSpot(g,A.x+dx*b.t+nx*b.s,A.y+dy*b.t+ny*b.s,b);
+      wx=A.x+dx*b.t+nx*b.s;wy=A.y+dy*b.t+ny*b.s;
     }
+    if(b.kind==='blood')paintBloodSpot(g,wx,wy,b);else paintBurnSpot(g,wx,wy,b);
   }
   g.restore();
 }
@@ -946,7 +1054,7 @@ function injure(f,zone,pw){
 }
 /* ============================ FX / PIXEL BLOOD ============================ */
 class FX{
-  constructor(){this.sm=[];this.bl=[];this.sp=[];this.fl=[];this.rg=[];this.marks=[];this.decal=null;this.floorY=468;}
+  constructor(){this.sm=[];this.bl=[];this.sp=[];this.fl=[];this.rg=[];this.marks=[];this.bits=[];this.decal=null;this.floorY=468;}
   smoke(x,y,vx,vy,r,gr,life,a,spr){
     if(this.sm.length>110)this.sm.shift();
     const n=3+((Math.random()*4)|0), cells=[];
@@ -988,6 +1096,22 @@ class FX{
   }
   spark(x,y,n,col){for(let i=0;i<n;i++){const a=rnd(TAU),s=rnd(80,380);this.sp.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:rnd(.15,.35),col:col||'255,210,90'});}}
   impact(x,y,dir,pw){this.fl.push({x,y,life:.16,max:.16,r:24+pw*30});this.spark(x,y,6+pw*8|0);}
+  fragment(R,skin,dir){
+    if(!R)return;
+    const palette=[(SKIN_META[skin]||SKIN_META.jane).color,'#ddd5c8','#33343b','#8d1c28','#f3cf7a'];
+    const segments=[['head','neck'],['neck','pel'],['sh','eN'],['eN','wN'],['sh','eF'],['eF','wF'],['pel','kN'],['kN','aN'],['pel','kF'],['kF','aF']];
+    for(const [ka,kb] of segments){
+      const A=R[ka],B=R[kb];if(!A||!B)continue;
+      for(let i=0;i<6;i++){
+        const t=rnd(1),life=rnd(.48,1.05);
+        this.bits.push({x:lerp(A.x,B.x,t)+rnd(-7,7),y:lerp(A.y,B.y,t)+rnd(-7,7),
+          vx:dir*rnd(35,170)+rnd(-125,125),vy:rnd(-250,50),life,max:life,
+          size:Math.random()<.7?3:6,color:palette[(Math.random()*palette.length)|0]});
+      }
+    }
+    if(this.bits.length>240)this.bits.splice(0,this.bits.length-240);
+    this.spark(R.pel.x,R.pel.y,12,'255,212,80');
+  }
   // Laser scorch on a floor/wall: orange blocks that cool down and fade.
   burnSurface(x,y,surf){
     if(this.marks.length>70)this.marks.shift();
@@ -1051,7 +1175,7 @@ class FX{
     d.strokeStyle='rgba(0,0,0,.65)';d.lineWidth=1.3;
     for(let k=0;k<4;k++){let cx=x,cy=y;d.beginPath();d.moveTo(cx,cy);for(let i=0;i<7;i++){cx+=(dir*(k<2?1:-1))*rnd(8,18);cy+=rnd(-4,4);d.lineTo(cx,cy);}d.stroke();}
   }
-  update(dt){
+  update(dt,fighters=[]){
     for(const s of this.sm){
       const k=Math.exp(-s.drag*dt);
       s.vx*=k; s.vy*=k;
@@ -1061,14 +1185,25 @@ class FX{
       s.life-=dt;
     }
     this.sm=this.sm.filter(s=>s.life>0);
+    const exposed=fighters.filter(f=>f.skin==='jane'&&f.state==='hypnosis'&&f.hp>0&&f.rig);
     for(const b of this.bl){
+      const oldX=b.x,oldY=b.y;
       b.vy+=1600*dt;b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;
-      if(b.y>=b.fy){
+      for(const f of exposed){
+        for(let s=0;s<=2;s++){
+          const x=lerp(oldX,b.x,s/2),y=lerp(oldY,b.y,s/2);
+          if(bodyHit(f,x,y)){f.addBloodStain(x,y);b.dead=true;break;}
+        }
+        if(b.dead)break;
+      }
+      if(!b.dead&&b.y>=b.fy){
         this.stamp(b.x,b.fy,b.r,b.vx);
         b.dead=true;
       }
     }
     this.bl=this.bl.filter(b=>!b.dead&&b.life>0);
+    for(const b of this.bits){b.vy+=650*dt;b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;}
+    this.bits=this.bits.filter(b=>b.life>0);
     for(const s of this.sp){s.x+=s.vx*dt;s.y+=s.vy*dt;s.vy+=500*dt;s.life-=dt;}
     this.sp=this.sp.filter(s=>s.life>0);
     for(const f of this.fl)f.life-=dt;this.fl=this.fl.filter(f=>f.life>0);
@@ -1122,6 +1257,11 @@ class FX{
       ctx.fillStyle='#FFF0C5';ctx.fillRect(Math.round(f.x/q)*q,Math.round(f.y/q)*q,q,q);ctx.globalAlpha=1;
     }
     for(const s of this.sp){ctx.fillStyle=`rgba(${s.col},${clamp(s.life*5,0,1)})`;ctx.fillRect(Math.round(s.x/q)*q,Math.round(s.y/q)*q,q,q);}
+    for(const b of this.bits){
+      ctx.globalAlpha=clamp(b.life*3,0,1);ctx.fillStyle=b.color;
+      ctx.fillRect(Math.round(b.x/q)*q,Math.round(b.y/q)*q,b.size,b.size);
+    }
+    ctx.globalAlpha=1;
   }
 }
 /* ============================ RAGDOLL ============================ */
@@ -1218,7 +1358,7 @@ class Ragdoll{
   }
 }
 /* ============================ FIGHTER ============================ */
-let NEXT_ID=1;
+let NEXT_ID=1, NEXT_GUN_ID=1;
 function distSeg(px,py,ax,ay,bx,by){
   const sx=bx-ax,sy=by-ay,l2=sx*sx+sy*sy||1;const t=clamp(((px-ax)*sx+(py-ay)*sy)/l2,0,1);
   return Math.hypot(px-(ax+sx*t),py-(ay+sy*t));
@@ -1261,13 +1401,89 @@ class Fighter{
       lz:null,lzSnd:false,burns:[],dive:false,diveT:0,diveHit:false,kickExt:0,fastGetup:false,
       hoverY:0,hlBrake:0,hlBrakeDir:1,hlBrakeFrom:null,hlLiftFx:false,hopDur:.38,
       batLost:false,dizzyAlpha:0,dizzyPh:Math.random()*TAU,
-      grabCD:0,grabTarget:null,grabbedBy:null,grabInitDir:1,grabAnkle:'aN',grabTurned:false,grabSlammed:false,grabHand:null
+      grabCD:0,grabTarget:null,grabbedBy:null,grabInitDir:1,grabAnkle:'aN',grabTurned:false,grabSlammed:false,grabHand:null,
+      hypCD:this.skin==='jane'?rnd(1,3):0,hypTarget:null,hypPhase:null,hypPhaseT:0,hypAimWait:0,
+      hypGun:null,hypGunDir:null,hypFirePending:false,
+      tranceT:0,tranceFrom:null,trancePhrase:'',speechT:0,bloodStains:[],fragmentDir:1
     });
   }
   spawn(delay){this.state='spawn';this.sp=0;this.spT=delay||.05;this.visible=false;this.y=this.spawnY;this.vy=0;this.vx=0;this.st=0;this.cur=null;this.hoverY=0;}
   canBeHit(){return this.hp>0&&this.state!=='ragdoll'&&this.state!=='getup'&&this.state!=='spawn'&&this.state!=='win'&&this.invT<=0;}
   faceOpp(o){if(this.ctrl.noFace)return;if(this.skin==='homelander'&&this.hlBrake>.42)return;if(o&&this.y<2&&Math.abs(o.x-this.x)>10)this.dir=o.x>this.x?1:-1;}
   speedMul(){return this.hp<30?.85:1;}
+  canHypnotize(v){
+    return !!(this.skin==='jane'&&this.hp>0&&this.state==='idle'&&this.y<5&&this.hypCD<=0&&
+      v&&v!==this&&Game.fighters.includes(v)&&v.hp>0&&v.rig&&v.canBeHit()&&v.y<35&&!v.tranceT&&!v.grabbedBy&&
+      Math.abs(v.x-this.x)>=75&&Math.abs(v.x-this.x)<=HYPNO_RANGE);
+  }
+  startHypnosis(v){
+    if(!this.canHypnotize(v))return false;
+    this.dir=v.x>this.x?1:-1;this.vx=0;this.state='hypnosis';this.st=0;
+    this.hypTarget=v;this.hypPhase='focus';this.hypPhaseT=0;this.hypAimWait=0;
+    this.hypGun=null;this.hypGunDir={x:this.dir,y:0};this.hypFirePending=false;
+    // Match Homelander's 5–9 second laser cooldown, including interrupted casts.
+    this.hypCD=rnd(5,9);
+    Game.beginHypnosisCamera(this);
+    Snd.hypnotize();
+    return true;
+  }
+  enterTrance(){
+    if(!this.canBeHit()||this.y>=35||this.tranceT>0||this.grabbedBy)return false;
+    if(this.state==='hypnosis')this.cancelHypnosis();
+    if(this.state==='grab_prep'||this.state==='grab_throw')this.cancelGrab(true);
+    this.tranceFrom=Object.assign({},this.cur||this.targetPose());
+    this.tranceT=rnd(5.8,7.2);
+    this.trancePhrase=HYPNO_LINES[(Math.random()*HYPNO_LINES.length)|0];
+    this.speechT=1.8;
+    this.state='trance';this.st=0;this.vx=0;this.vy=0;this.y=0;this.lz=null;this.dive=false;
+    this.invT=0;this.fastGetup=false;
+    return true;
+  }
+  cancelHypnosis(){
+    if(this.hypGun)Game.dropGun(this,false);
+    this.hypTarget=null;this.hypPhase=null;this.hypPhaseT=0;this.hypFirePending=false;
+    if(this.state==='hypnosis'){this.state='idle';this.st=0;this.comboT=9;}
+    Game.endHypnosisCamera(this);
+  }
+  updateHypnosis(dt){
+    this.vx=0;this.hypPhaseT+=dt;
+    const v=this.hypTarget;
+    switch(this.hypPhase){
+      case 'focus':
+        if(!v||!Game.fighters.includes(v)||!v.canBeHit()||v.y>=35||v.tranceT>0||(v.x-this.x)*this.dir<35||Math.abs(v.x-this.x)>HYPNO_RANGE+25){this.cancelHypnosis();break;}
+        if(this.hypPhaseT>=HYPNO_FOCUS){
+          if(!v.enterTrance()){this.cancelHypnosis();break;}
+          this.hypPhase='holster';this.hypPhaseT=0;
+        }
+        break;
+      case 'holster':
+        if(this.hypPhaseT>=HYPNO_HOLSTER){
+          this.hypGun={id:NEXT_GUN_ID++};this.hypPhase='draw';this.hypPhaseT=0;
+        }
+        break;
+      case 'draw':
+        if(this.hypPhaseT>=HYPNO_DRAW){
+          this.hypAimWait=rnd(.55,1.8);this.hypPhase='aim';this.hypPhaseT=0;
+        }
+        break;
+      case 'aim':
+        if(this.hypPhaseT>=this.hypAimWait){this.hypPhase='raise';this.hypPhaseT=0;}
+        break;
+      case 'raise':
+        if(this.hypPhaseT>=HYPNO_RAISE){this.hypPhase='recoil';this.hypPhaseT=0;this.hypFirePending=true;}
+        break;
+      case 'recoil':
+        if(this.hypPhaseT>=HYPNO_RECOIL){
+          if(this.hypGun)Game.dropGun(this,true);
+          this.hypPhase='recover';this.hypPhaseT=0;
+        }
+        break;
+      case 'recover':
+        if(this.hypPhaseT>=HYPNO_RECOVER)this.cancelHypnosis();
+        break;
+      default:this.cancelHypnosis();
+    }
+  }
   canThrowFromHere(o){
     if(!o||o.hp<=0||o.state!=='ragdoll'||!o.rag||o.grabbedBy)return false;
     const d0=Math.abs(o.x-this.x)>8?(o.x>this.x?1:-1):this.dir;
@@ -1337,7 +1553,9 @@ class Fighter{
   }
   trip(o){
     Snd.thud();this.fastGetup=true;
-    if(o.state==='grab_prep'||o.state==='grab_throw'){
+    if(o.state==='hypnosis'){
+      o.cancelHypnosis();o.state='hit';o.st=0;o.stunT=.35;o.vx=this.dir*220;
+    }else if(o.state==='grab_prep'||o.state==='grab_throw'){
       o.cancelGrab(true);o.state='hit';o.st=0;o.stunT=.35;o.vx=this.dir*220;
     }else if(o.state==='idle')o.vx=this.dir*220;
     this.fx&&this.fx.puff(this.x+this.dir*20,this.gy-20,3,1.2);
@@ -1366,14 +1584,27 @@ class Fighter{
     }
     return hitAny;
   }
-  takeHit(att,a){
+  takeHit(att,a,point){
+    const wasHypnotizing=this.state==='hypnosis';
+    if(wasHypnotizing)this.cancelHypnosis();
     if(this.grabTarget)this.cancelGrab(true);
     this.hp=Math.max(0,this.hp-a.dmg);
-    const px=this.x-att.dir*10,py=this.gy-this.y-(a.zone==='head'?166:a.zone==='torso'?122:38);
+    const impact=point&&typeof point.x==='number'?point:null;
+    const trancePoint=this.state==='trance'&&this.rig?(a.zone==='head'?this.rig.head:pointBetween(this.rig.sh,this.rig.pel,.4)):null;
+    const px=impact?impact.x:trancePoint?trancePoint.x:this.x-att.dir*10;
+    const py=impact?impact.y:trancePoint?trancePoint.y:this.gy-this.y-(a.zone==='head'?166:a.zone==='torso'?122:38);
     Game.hitFX(att,this,a,px,py);
     injure(this,a.zone,a.pw);
+    if(wasHypnotizing)this.addBloodStain(px,py);
     att.handDamage(a,this);
     if(this.hp<=0){Game.ko(this,att,a);return;}
+    // Ordinary hits damage a hypnotized fighter without breaking the trance;
+    // launching attacks and lasers can still move them into ragdoll physics.
+    if(this.state==='trance'&&this.tranceT>0&&!a.launch){this.vx=0;return;}
+    if(this.state==='ragdoll'&&this.rag){
+      for(const k of RK)this.rag.p[k].px-=att.dir*.65;
+      return;
+    }
     if(this.state==='run'||this.dive){
       // caught while running / flying: keeps going forward in a ragdoll by inertia
       const iv=clamp(this.vx*.9,-640,640);this.dive=false;
@@ -1387,6 +1618,7 @@ class Fighter{
   }
   handDamage(a,vic){}
   toRagdoll(vx,vy){
+    if(this.state==='hypnosis')this.cancelHypnosis();
     if(this.grabTarget)this.cancelGrab(true);
     if(this.grabbedBy)this.grabbedBy.cancelGrab(false);
     if(!this.rig)return;
@@ -1412,35 +1644,19 @@ class Fighter{
   /* ---------------- Homelander's eye laser ---------------- */
   laserEye(){const h=this.rig.head;return {x:h.x+this.dir*9,y:h.y-5};}
   addBurn(x,y){
-    const R=this.rig;if(!R)return;
-    let bestSeg='torso',bestLayer='body',bestHw=15,bestD=Math.hypot(x-R.head.x,y-(R.head.y-6))-15;
-    if(bestD<=3){
-      bestSeg='head';bestLayer='head';
-    }
-    for(const [seg,kA,kB,hw,layer] of BURN_SEGS){
-      const A=R[kA],B=R[kB];if(!A||!B)continue;
-      const d=distSeg(x,y,A.x,A.y,B.x,B.y)-hw;
-      if(d<bestD){bestD=d;bestSeg=seg;bestLayer=layer;bestHw=hw;}
-    }
-    if(bestSeg==='head'){
-      const angle=Math.atan2(R.head.y-R.neck.y,R.head.x-R.neck.x)+Math.PI/2;
-      const ca=Math.cos(angle),sa=Math.sin(angle),dx=x-R.head.x,dy=y-R.head.y;
-      const lx=clamp(dx*ca+dy*sa+rnd(-2,2),-13,13), ly=clamp(-dx*sa+dy*ca+rnd(-2,2),-22,14);
-      this.burns.push({seg:'head',layer:'head',lx,ly,life:3.4,max:3.4,sz:Math.random()});
-    }else{
-      const info=BURN_MAP[bestSeg];
-      const A=R[info[1]],B=R[info[2]],dx=B.x-A.x,dy=B.y-A.y,len=Math.hypot(dx,dy)||1;
-      const t=clamp(((x-A.x)*dx+(y-A.y)*dy)/(len*len)+rnd(-.04,.04),.08,.92);
-      const nx=R.dir*dy/len,ny=-R.dir*dx/len;
-      const perp=(x-(A.x+dx*t))*nx+(y-(A.y+dy*t))*ny;
-      const s=clamp(perp+rnd(-1.5,1.5),-bestHw*.78,bestHw*.78);
-      this.burns.push({seg:bestSeg,layer:bestLayer,t,s,life:3.4,max:3.4,sz:Math.random()});
-    }
+    const mark=locateSurface(this.rig,x,y);if(!mark)return;
+    this.burns.push(Object.assign(mark,{life:3.4,max:3.4,sz:Math.random()}));
     if(this.burns.length>20)this.burns.shift();
+  }
+  addBloodStain(x,y){
+    const mark=locateSurface(this.rig,x,y);if(!mark)return;
+    this.bloodStains.push(Object.assign(mark,{kind:'blood',age:0,sz:Math.random()}));
+    if(this.bloodStains.length>36)this.bloodStains.shift();
   }
   takeLaser(att,pt,first){
     this.addBurn(pt.x,pt.y);
     if(this.hp<=0||this.state==='spawn'||this.invT>0)return;
+    if(this.state==='hypnosis')this.cancelHypnosis();
     if(this.grabTarget)this.cancelGrab(true);
     this.hp=Math.max(0,this.hp-(first?3.5:1.6));
     if(this.fx){this.fx.spark(pt.x,pt.y,2,'255,150,40');if(first)this.fx.blood(pt.x,pt.y,att.dir,6,.5);}
@@ -1594,9 +1810,16 @@ class Fighter{
     this.lagHp=Math.max(this.hp,this.lagHp-dt*28);
     this.dashCD=Math.max(0,this.dashCD-dt);
     this.grabCD=Math.max(0,this.grabCD-dt);
+    this.hypCD=Math.max(0,this.hypCD-dt);
+    if(this.tranceT>0){
+      this.tranceT=Math.max(0,this.tranceT-dt);
+      if(this.tranceT===0&&this.state==='trance'){this.state='idle';this.st=0;this.comboT=9;}
+    }
+    if(this.speechT>0)this.speechT=Math.max(0,this.speechT-dt);
     if(this.invT>0)this.invT-=dt;if(this.landT>0)this.landT-=dt;if(this.blend>0)this.blend-=dt;
     if(this.state!=='attack')this.comboT+=dt;
     if(this.burns.length){for(const b of this.burns)b.life-=dt;this.burns=this.burns.filter(b=>b.life>0);}
+    for(const b of this.bloodStains)b.age+=dt;
     if(this.lz&&!(this.state==='attack'&&this.atk&&this.atk.laser))this.lz=null;
     if(this.state!=='ragdoll'&&this.state!=='spawn'&&(this.y>0||this.vy>0)){
       this.vy-=2200*dt;this.y+=this.vy*dt;
@@ -1715,6 +1938,16 @@ class Fighter{
       if(this.queued&&this.st>=a.cancel&&this.ak<3&&!a.air){this.startAttack(this.ak+1);break;}
       if(this.st>=a.dur){this.comboStep=(this.ak<3&&!a.air)?this.ak+1:0;this.comboT=0;this.state=this.y>0?'air':'idle';this.st=0;this.lz=null;}
       break;}
+     case 'hypnosis':{
+      this.updateHypnosis(dt);
+      break;}
+     case 'trance':{
+      this.vx=0;this.vy=0;this.y=0;
+      break;}
+     case 'fragmenting':{
+      this.vx=0;this.vy=0;
+      if(this.st>=FRAGMENT_DUR)this.toRagdoll(this.fragmentDir*180,260);
+      break;}
      case 'grab_prep':{
       this.vx*=Math.exp(-dt*14);
       const vic=this.grabTarget;
@@ -1808,7 +2041,7 @@ class Fighter{
           this.fx.pool(bPt.x,this.gy+rnd(1,13),clamp((85-this.hp)/9,2.5,10));
         }
       }
-      if(this.hp>0&&!this.grabbedBy){
+      if(this.hp>0&&!this.grabbedBy&&this.tranceT<=0){
         if(this.fastGetup){ if((r.t>.35&&r.settle>.08)||r.t>1.2)this.startGetup(); }
         else if(r.t>.9&&r.settle>.35)this.startGetup();
         else if(r.t>4.2)this.startGetup();
@@ -1835,9 +2068,9 @@ class Fighter{
         this.hoverY=(HL_HOVER+Math.sin(this.t*2.7+this.seed)*2.2)*lift;
       }
     }else{
-      const baseH=this.state==='grab_prep'?8:this.state==='run'?HL_HOVER+8:HL_HOVER;
-      const tgtH=baseH+Math.sin(this.t*2.7+this.seed)*2.2;
-      this.hoverY+=(tgtH-this.hoverY)*Math.min(1,dt*14);
+      const baseH=this.state==='trance'?0:this.state==='grab_prep'?8:this.state==='run'?HL_HOVER+8:HL_HOVER;
+      const tgtH=baseH+(this.state==='trance'?0:Math.sin(this.t*2.7+this.seed)*2.2);
+      this.hoverY+=(tgtH-this.hoverY)*Math.min(1,dt*(this.state==='trance'?7:14));
     }
     // Orbiting pixel yellow stars while unconscious in temporary knockdown (fade out when getting up).
     if(this.hp>0&&this.state==='ragdoll'&&!this.fastGetup&&this.rag&&(this.rag.t>.12||this.dizzyAlpha>.2)){
@@ -1847,6 +2080,11 @@ class Fighter{
     }
     if(this.dizzyAlpha>0)this.dizzyPh+=dt*4.4;
     this.buildRig(dt);
+    // Fire only after this frame's aiming rig is built, so the projectile starts
+    // at the visible muzzle even at different frame rates and facing directions.
+    if(this.hypFirePending&&this.state==='hypnosis'&&this.hypGun){
+      this.hypFirePending=false;Game.fireHypBullet(this);
+    }
     this.updateTie(dt);
     this.updateCape(dt);
     if(this.hp<=0&&this.state==='ragdoll'&&this.rag&&this.rag.frozen){this.corpseFade=Math.min(.14,this.corpseFade+dt*.018);}
@@ -1912,6 +2150,8 @@ class Fighter{
       if(this.sp<3){const p=Object.assign({},T_POSE);if(this.sp===2){p.H+=Math.sin(this.st*38)*1.2*(this.spT/.55);p.tl+=Math.sin(this.st*30)*2*(this.spT/.55);}p.ey=0;return p;}
       return mix(T_POSE,isHL?HL_IDLE:D,ease(1-this.spT/.45));}
      case 'getup':return sampleKF(this.skin==='negan'?GETUP_NEGAN:isHL?GETUP_HL:GETUP,this.st);
+     case 'hypnosis':return HYPNO_POSE;
+     case 'trance':return mix(this.tranceFrom||D,TRANCE_POSE,ease(clamp(this.st/TRANCE_KNEEL,0,1)));
      case 'grab_prep':{
       const p=Object.assign({},GRAB_PREP_POSE);
       if(isHL){p.f1x=12;p.f1h=10;p.fa1=34;p.f2x=-10;p.f2h=2;p.fa2=42;}
@@ -2010,12 +2250,14 @@ class Fighter{
   }
   buildRig(dt){
     if(this.state==='ragdoll'){this.rig=this.rag.toRig(this);return;}
+    if(this.state==='fragmenting')return; // retain the impact pose for the eventual ragdoll
     const tp=this.targetPose();
-    const hard=this.state==='getup'||this.state==='spawn'||this.state==='grab_throw';
+    const hard=this.state==='getup'||this.state==='spawn'||this.state==='grab_throw'||this.state==='trance';
     const k=hard?1:(this.state==='attack'||this.state==='hit')?1-Math.exp(-dt*45):1-Math.exp(-dt*24);
     this.cur=(this.cur&&!hard)?mix(this.cur,tp,k):Object.assign({},tp);
     const hasBat=this.skin==='negan'&&this.hp>0&&!this.batLost&&!(this.state==='grab_throw'&&this.st<.68);
     let R=computeRig(this.cur,this.x,this.gy,this.y+(this.hoverY||0),this.dir,hasBat);
+    if(this.state==='hypnosis')poseHypnosisArm(R,this);
     if(this.state==='grab_throw'&&this.grabHand&&!this.grabSlammed)pinHandsWorld(R,this.grabHand.x,this.grabHand.y);
     if(this.state==='getup'&&this.blend>0&&this.blendFrom)R=blendRig(this.blendFrom,R,ease(1-this.blend/.3));
     this.rig=R;
@@ -2055,7 +2297,7 @@ class AutoCombat{
     this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.modeT+=dt;
     if(!o||f.hp<=0){this.mode='engage';return;}
     const st=f.state;
-    if(st==='grab_prep'||st==='grab_throw'){c.noFace=true;return;}
+    if(st==='grab_prep'||st==='grab_throw'||st==='hypnosis'||st==='trance'){c.noFace=true;return;}
     const dx=o.x-f.x,dist=Math.abs(dx),toward=dx>=0?1:-1;
     if(st==='ragdoll'||st==='getup'||st==='spawn'||st==='hit'){
       this.mode='engage';this.reactT=-1;
@@ -2089,6 +2331,11 @@ class AutoCombat{
       }
     }
 
+    // Jane decides autonomously, just like Homelander's laser, but the
+    // cooldown is consumed only when an eligible standing target is acquired.
+    if(st==='idle'&&dist>=150&&f.canHypnotize(o)&&Math.random()<dt*(dist>=190?4:1.8)){
+      if(f.startHypnosis(o)){this.setMode('engage');this.attackWait=Math.max(this.attackWait,.8);return;}
+    }
     const oppDown=o.state==='ragdoll'||o.state==='getup'||o.state==='spawn';
     if(this.mode==='grab_approach'){
       if(o.hp<=0||o.state!=='ragdoll'||!o.rag||o.grabbedBy||f.grabCD>0||this.modeT>2.3||!f.canThrowFromHere(o)){
@@ -2335,12 +2582,50 @@ function drawGrabCircle(g,f){
   }
   g.restore();
 }
+function drawHypBullet(g,p,alpha=1){
+  const x0=p.prevX===undefined?p.x0:p.prevX,y0=p.prevY===undefined?p.y0:p.prevY;
+  const x1=p.x===undefined?p.x1:p.x,y1=p.y===undefined?p.y1:p.y;
+  g.save();g.globalAlpha=alpha;g.lineCap='square';
+  g.strokeStyle='#bd7608';g.lineWidth=9;g.beginPath();g.moveTo(x0,y0);g.lineTo(x1,y1);g.stroke();
+  g.strokeStyle='#ffe52f';g.lineWidth=5;g.beginPath();g.moveTo(x0,y0);g.lineTo(x1,y1);g.stroke();
+  g.fillStyle='#fff9a6';g.fillRect(Math.round(x1/3)*3-3,Math.round(y1/3)*3-3,6,6);
+  g.restore();
+}
+function drawTranceText(g,f,W,camera,displayScale){
+  if(!f.rig||f.hp<=0||f.tranceT<=0)return;
+  const z=camera?camera.zoom:1;
+  const left=camera?Math.max(0,camera.x-W/(2*z)):0,right=camera?Math.min(W,camera.x+W/(2*z)):W;
+  const top=camera?Math.max(0,camera.y-270/z):0;
+  // Keep a minimum readable CSS-pixel size on a letterboxed phone canvas.
+  const fontSize=clamp(11/((displayScale||1)*z),12,30),k=fontSize/12;
+  const head=f.rig.head;
+  if(head.x<left-25||head.x>right+25)return;
+  const cx=clamp(head.x,left+45*k,right-45*k);
+  const hasSpeech=f.speechT>0&&f.trancePhrase;
+  const labelY=Math.max(top+(hasSpeech?45:14)*k,head.y-27*k);
+  const pulse=(1+Math.sin(f.t*4.2))*.5;
+  g.save();g.textAlign='center';g.textBaseline='middle';g.font=`bold ${fontSize}px monospace`;
+  g.lineWidth=3*k;g.strokeStyle='#31200a';g.fillStyle=`rgb(255,${Math.round(190+pulse*55)},${Math.round(30+pulse*68)})`;
+  g.strokeText('In trance',cx,labelY);g.fillText('In trance',cx,labelY);
+  if(hasSpeech){
+    const text=f.trancePhrase,w=Math.min(right-left-16,Math.ceil((text.length*7.25+20)*k/3)*3),h=27*k;
+    const x=clamp(Math.round((head.x-w/2)/3)*3,left+8,right-w-8),y=Math.max(top+5,labelY-h-13*k);
+    const tail=clamp(cx,x+6*k,x+w-6*k);
+    // Rectilinear, static pixel cloud; the line itself is never animated.
+    g.fillStyle='#181821';g.fillRect(x+3*k,y,w-6*k,h);g.fillRect(x,y+3*k,w,h-6*k);
+    g.fillStyle='#fff9e9';g.fillRect(x+5*k,y+3*k,w-10*k,h-6*k);g.fillRect(x+3*k,y+6*k,w-6*k,h-12*k);
+    g.fillStyle='#181821';g.fillRect(tail-3*k,y+h-k,6*k,6*k);
+    g.fillStyle='#fff9e9';g.fillRect(tail-3*k,y+h-3*k,3*k,4*k);
+    g.fillStyle='#232027';g.fillText(text,x+w/2,y+h/2+.5);
+  }
+  g.restore();
+}
 /* ============================ SANDBOX GAME ENGINE ============================ */
 const Game={
   W:960,H:540,gy:468,S:1,cv:null,
   shake:0,hs:0,ts:1,tsT:0,
   fighters:[],
-  droppedBats:[],
+  droppedBats:[],droppedGuns:[],bullets:[],tracers:[],camera:null,
   autoSpawn:true,
   respawnTimer:0,
   koCount:0,
@@ -2349,12 +2634,15 @@ const Game={
     this.cv=document.querySelector('#gameCv');
     this.ctx=this.cv.getContext('2d');
     this.ctx.imageSmoothingEnabled=false;
-    this.fighters=[];this.droppedBats=[];this.koCount=0;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;this.respawnTimer=0;this.autoSpawn=true;
+    this.fighters=[];this.droppedBats=[];this.droppedGuns=[];this.bullets=[];this.tracers=[];
+    this.koCount=0;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;this.respawnTimer=0;this.autoSpawn=true;
+    this.camera={x:this.W/2,y:270,zoom:1,vignette:0,owner:null,slowLeft:0,slowDuration:1.05};
     skinCursor=0;
     this.fx=new FX();
     this.dc=document.createElement('canvas');
     this.dctx=this.dc.getContext('2d');
     this.resize();
+    this.camera.x=this.W/2;
     this.fx.decal=this.dctx;
     this.fx.floorY=this.gy;
     this.spawnPair();
@@ -2362,9 +2650,18 @@ const Game={
   resize(){
     const iw=innerWidth,ih=innerHeight;if(!iw||!ih)return;
     const asp=iw/ih;this.W=clamp(asp*540,800,1300);
-    const ratio=Math.min(devicePixelRatio||1,1.5,810/ih);this.S=ratio*ih/540;
+    // On narrow/portrait screens fitting to height cropped most of the arena,
+    // hiding the trance target. Fit the whole canvas in the viewport instead.
+    const displayH=Math.min(ih,iw*540/this.W);this.displayScale=displayH/540;
+    const ratio=Math.min(devicePixelRatio||1,1.5,810/displayH);this.S=ratio*this.displayScale;
     this.cv.width=Math.round(this.W*this.S);this.cv.height=Math.round(540*this.S);
-    this.cv.style.height=ih+'px';this.cv.style.width=(this.W*ih/540)+'px';
+    this.cv.style.height=displayH+'px';this.cv.style.width=(this.W*displayH/540)+'px';
+    this.cv.style.top=((ih-displayH)/2)+'px';
+    if(this.camera){
+      const halfW=this.W/(2*this.camera.zoom),halfH=270/this.camera.zoom;
+      this.camera.x=clamp(this.camera.x,halfW,this.W-halfW);
+      this.camera.y=clamp(this.camera.y,halfH,540-halfH);
+    }
     this.buildBG();
     for(const f of this.fighters){f.minX=70;f.maxX=this.W-70;}
   },
@@ -2386,6 +2683,8 @@ const Game={
     this.frontLayer=makeLayer(bodyScale);
     this.fxLayer=makeLayer(bodyScale);
     this.markLayer=makeLayer(bodyScale);
+    // Text needs full canvas resolution even though its surrounding cloud is pixel art.
+    this.textLayer=makeLayer(this.S);
     this.dc.width=Math.ceil(this.W*bodyScale);this.dc.height=Math.ceil(540*bodyScale);
     this.dctx=this.dc.getContext('2d');this.dctx.imageSmoothingEnabled=false;
     if(keep){this.dctx.setTransform(1,0,0,1,0,0);this.dctx.drawImage(old,0,0,this.dc.width,this.dc.height);}
@@ -2417,12 +2716,94 @@ const Game={
     this.spawnFighter(this.W*.32,1,.08);
     this.spawnFighter(this.W*.68,-1,.32);
   },
+  beginHypnosisCamera(f){
+    const c=this.camera;if(!c)return;
+    // One camera cannot frame simultaneous casts; keep following the first
+    // uninterrupted caster rather than jumping between several Janes.
+    if(!c.owner||c.owner.state!=='hypnosis'){
+      c.owner=f;c.slowLeft=c.slowDuration;
+    }
+  },
+  endHypnosisCamera(f){
+    const c=this.camera;
+    if(c&&c.owner===f){
+      c.owner=this.fighters.find(other=>other!==f&&other.hp>0&&other.state==='hypnosis')||null;
+      c.slowLeft=0;
+    }
+  },
+  updateCamera(dt){
+    const c=this.camera;if(!c)return;
+    let active=c.owner&&c.owner.hp>0&&c.owner.state==='hypnosis'&&this.fighters.includes(c.owner);
+    // A removed caster cannot keep the initial slowdown alive indefinitely.
+    if(!active){c.owner=this.fighters.find(f=>f.hp>0&&f.state==='hypnosis')||null;c.slowLeft=0;active=!!c.owner;}
+    const k=1-Math.exp(-dt*(active?4:3));
+    c.zoom+=((active?1.2:1)-c.zoom)*k;
+    const halfW=this.W/(2*c.zoom),halfH=this.H/(2*c.zoom);
+    const target=active?c.owner.hypTarget:null;
+    // Favor Jane while keeping the hypnotized opponent visible at long range.
+    const offset=target?clamp((target.x-c.owner.x)*.14,-35,35):0;
+    const tx=active?clamp(c.owner.x+offset,halfW,this.W-halfW):this.W/2;
+    const ty=active?clamp(c.owner.gy-125,halfH,this.H-halfH):this.H/2;
+    c.x+=(tx-c.x)*k;c.y+=(ty-c.y)*k;
+    c.vignette+=((active?1:0)-c.vignette)*k;
+  },
+  screenToWorldX(x){
+    const c=this.camera;return c?(x-this.W/2)/c.zoom+c.x:x;
+  },
+  dropGun(f,thrown){
+    if(!f.hypGun)return;
+    const R=f.rig,v=f.hypGunDir||{x:f.dir,y:0};
+    this.droppedGuns.push({id:f.hypGun.id,x:R?R.wN.x:f.x,y:R?R.wN.y:f.gy-85,
+      vx:f.dir*(thrown?rnd(80,180):rnd(-80,-30)),vy:thrown?-rnd(170,250):-rnd(60,120),
+      ang:Math.atan2(v.y,v.x),va:(thrown?1:-1)*f.dir*rnd(5,11),flip:f.dir,settled:false});
+    if(this.droppedGuns.length>16)this.droppedGuns.shift();
+    f.hypGun=null;
+  },
+  fireHypBullet(f){
+    if(!f.rig||!f.hypGun)return;
+    const v=f.hypGunDir||{x:f.dir,y:0},muzzle={x:f.rig.wN.x+v.x*23,y:f.rig.wN.y+v.y*23};
+    this.bullets.push({x:muzzle.x,y:muzzle.y,prevX:muzzle.x,prevY:muzzle.y,
+      vx:v.x*BULLET_SPEED,vy:v.y*BULLET_SPEED,life:1,owner:f});
+    this.fx.impact(muzzle.x,muzzle.y,f.dir,.35);
+    this.fx.spark(muzzle.x,muzzle.y,5,'255,231,92');
+    this.shake=Math.max(this.shake,3.5);Snd.shot();
+  },
+  updateBullets(dt){
+    for(const p of this.bullets){
+      const x0=p.x,y0=p.y,x1=x0+p.vx*dt,y1=y0+p.vy*dt;
+      const steps=Math.max(1,Math.ceil(Math.hypot(x1-x0,y1-y0)/4));
+      p.prevX=x0;p.prevY=y0;
+      for(let i=1;i<=steps;i++){
+        const x=lerp(x0,x1,i/steps),y=lerp(y0,y1,i/steps);
+        p.x=x;p.y=y;
+        let hit=null;
+        for(const f of this.fighters){
+          if(f===p.owner||f.hp<=0||!f.rig||!f.visible||f.state==='spawn'||f.invT>0)continue;
+          if((f.canBeHit()||f.state==='ragdoll')&&bodyHit(f,x,y)){hit=f;break;}
+        }
+        if(hit){
+          hit.takeHit(p.owner,{dmg:BULLET_DAMAGE,zone:'head',pw:.72,stun:.4,kb:95,fragmentOnKo:true},{x,y});
+          p.dead=true;
+        }else if(x<34||x>this.W-34||y<8||y>this.gy+3){
+          this.fx.spark(x,y,4,'255,220,80');p.dead=true;
+        }
+        if(p.dead){
+          this.tracers.push({x0,y0,x1:x,y1:y,life:.11,max:.11});
+          break;
+        }
+      }
+      p.life-=dt;
+    }
+    this.bullets=this.bullets.filter(p=>!p.dead&&p.life>0);
+    for(const t of this.tracers)t.life-=dt;
+    this.tracers=this.tracers.filter(t=>t.life>0);
+  },
   clearBodies(){
     for(const f of this.fighters){
       if(f.grabTarget&&f.grabTarget.hp<=0)f.cancelGrab(false);
     }
     this.fighters=this.fighters.filter(f=>f.hp>0);
-    this.droppedBats=[];
+    this.droppedBats=[];this.droppedGuns=[];
     this.syncHudCards();
   },
   clearBlood(){
@@ -2430,7 +2811,7 @@ const Game={
     this.dctx.setTransform(1,0,0,1,0,0);
     this.dctx.clearRect(0,0,this.dc.width,this.dc.height);
     this.dctx.restore();
-    for(const f of this.fighters)if(f.hp>0)f.wounds=newWounds();
+    for(const f of this.fighters)if(f.hp>0){f.wounds=newWounds();f.bloodStains=[];}
   },
   // Ray against the arena: stops at the first fighter body, the floor, a wall post or the ceiling.
   castRay(x,y,ux,uy,self){
@@ -2456,9 +2837,10 @@ const Game={
     if(a.pw>.6)Snd.splat(a.pw);
   },
   ko(v,att,a){
+    if(v.state==='hypnosis')v.cancelHypnosis();
     if(v.grabTarget)v.cancelGrab(false);
     if(v.grabbedBy)v.grabbedBy.cancelGrab(false);
-    v.hp=0;
+    v.hp=0;v.tranceT=0;v.speechT=0;
     if(v.skin==='negan'&&!v.batLost){
       const R=v.rig;
       const bx=R&&R.bd?R.wN.x+R.bd.x*24:v.x+v.dir*26;
@@ -2476,7 +2858,13 @@ const Game={
       });
     }
     this.koCount++;
-    if(a&&a.keepRag&&v.state==='ragdoll'&&v.rag){
+    if(a&&a.fragmentOnKo&&v.rig){
+      // Keep the struck pose while pixel fragments fly, then let the same body
+      // fall as a normal ragdoll instead of making the KO a cosmetic cutscene.
+      this.fx.fragment(v.rig,v.skin,att.dir);
+      this.fx.blood(v.rig.pel.x,v.rig.pel.y,att.dir,16,.75);
+      v.rag=null;v.state='fragmenting';v.st=0;v.vx=0;v.vy=0;v.fragmentDir=att.dir;
+    }else if(a&&a.keepRag&&v.state==='ragdoll'&&v.rag){
       v.rag.t=0;v.rag.settle=0;
       this.fx.blood(v.x,v.gy-22,att.dir,16,.75);
     }else{
@@ -2489,6 +2877,7 @@ const Game={
     this.respawnTimer=2.4;
   },
   findBestOpponent(f){
+    if(f.hypTarget&&f.state==='hypnosis'&&f.hypTarget.hp>0)return f.hypTarget;
     if(f.grabTarget&&f.grabTarget.hp>0)return f.grabTarget;
     let best=null,bestScore=1e9;
     for(const o of this.fighters){
@@ -2502,9 +2891,16 @@ const Game={
     return best;
   },
   update(dt){
-    const rdt=dt;
+    const rdt=dt,koSlow=this.tsT>0;
     if(this.hs>0){this.hs-=rdt;dt*=.05;}
     if(this.tsT>0){this.tsT-=rdt;dt*=this.ts;if(this.tsT<=0)this.ts=1;}
+    const camera=this.camera;
+    if(camera&&camera.slowLeft>0){
+      const elapsed=camera.slowDuration-camera.slowLeft;
+      const strength=ease(clamp(Math.min(elapsed/.18,camera.slowLeft/.25),0,1));
+      if(!koSlow)dt*=1-.38*strength;
+      camera.slowLeft=Math.max(0,camera.slowLeft-rdt);
+    }
     this.shake*=Math.exp(-rdt*9);
     const alive=this.fighters.filter(f=>f.hp>0);
     if(this.autoSpawn&&alive.length<2){
@@ -2531,6 +2927,18 @@ const Game={
         const c=f.ctrl;c.mx=0;c.jump=false;c.punch=false;c.run=false;c.hop=false;c.laser=false;c.noFace=false;
       }
       f.update(dt,opp,this.fighters);
+    }
+    this.updateBullets(dt);
+    for(const b of this.droppedGuns){
+      if(b.settled)continue;
+      b.vy+=1650*dt;b.x+=b.vx*dt;b.y+=b.vy*dt;b.ang+=b.va*dt;
+      if(b.x<42){b.x=42;b.vx=Math.abs(b.vx)*.4;}
+      else if(b.x>this.W-42){b.x=this.W-42;b.vx=-Math.abs(b.vx)*.4;}
+      if(b.y>this.gy-5){
+        b.y=this.gy-5;
+        if(b.vy>0){b.vy=-b.vy*.3;b.vx*=.65;b.va*=.65;}
+        if(Math.abs(b.vy)<35&&Math.abs(b.vx)<18){b.vy=0;b.vx=0;b.va=0;b.ang=b.flip<0?Math.PI:0;b.settled=true;}
+      }
     }
     for(const b of this.droppedBats){
       if(b.settled){b.fade=Math.min(.14,b.fade+dt*.018);continue;}
@@ -2559,22 +2967,24 @@ const Game={
     }
     for(let i=0;i<alive.length;i++){
       const A=alive[i];
-      if(A.y>=60||A.state==='ragdoll'||A.state==='spawn'||A.state==='run'||A.state==='grab_throw')continue;
+      if(A.hp<=0||A.y>=60||A.state==='ragdoll'||A.state==='spawn'||A.state==='run'||A.state==='grab_throw')continue;
       for(let j=i+1;j<alive.length;j++){
         const B=alive[j];
-        if(B.y>=60||B.state==='ragdoll'||B.state==='spawn'||B.state==='run'||B.state==='grab_throw')continue;
+        if(B.hp<=0||B.y>=60||B.state==='ragdoll'||B.state==='spawn'||B.state==='run'||B.state==='grab_throw')continue;
         const dx=B.x-A.x,m=54;
         if(Math.abs(dx)<m){
           const s=dx>=0?1:-1,push=(m-Math.abs(dx))/2;
-          const ok1=A.x-s*push>=A.minX&&A.x-s*push<=A.maxX;
-          const ok2=B.x+s*push>=B.minX&&B.x+s*push<=B.maxX;
+          const fixedA=A.state==='trance'||A.state==='hypnosis',fixedB=B.state==='trance'||B.state==='hypnosis';
+          const ok1=!fixedA&&A.x-s*push>=A.minX&&A.x-s*push<=A.maxX;
+          const ok2=!fixedB&&B.x+s*push>=B.minX&&B.x+s*push<=B.maxX;
           if(ok1&&ok2){A.x-=s*push;B.x+=s*push;}
-          else if(ok1)A.x-=s*push*2;
-          else if(ok2)B.x+=s*push*2;
+          else if(ok1)A.x=clamp(A.x-s*push*2,A.minX,A.maxX);
+          else if(ok2)B.x=clamp(B.x+s*push*2,B.minX,B.maxX);
         }
       }
     }
-    this.fx.update(dt);
+    this.fx.update(dt,this.fighters);
+    this.updateCamera(rdt);
     this.updateHud();
   },
   syncHudCards(){
@@ -2616,7 +3026,13 @@ const Game={
     ctx.setTransform(1,0,0,1,0,0);ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';ctx.filter='none';ctx.clearRect(0,0,this.cv.width,this.cv.height);
     ctx.setTransform(S,0,0,S,0,0);
     ctx.imageSmoothingEnabled=false;
-    if(this.shake>.3)ctx.translate(rnd(-1,1)*this.shake,rnd(-1,1)*this.shake);
+    ctx.save();
+    const shakeX=this.shake>.3?rnd(-1,1)*this.shake:0,shakeY=this.shake>.3?rnd(-1,1)*this.shake:0;
+    ctx.translate(shakeX,shakeY);
+    const camera=this.camera;
+    if(camera){
+      ctx.translate(W/2,H/2);ctx.scale(camera.zoom,camera.zoom);ctx.translate(-camera.x,-camera.y);
+    }
     ctx.drawImage(this.bg,0,0,W,H);
     ctx.drawImage(this.dc,0,0,W,H);
     // fading laser scorch marks on the floor / walls
@@ -2625,12 +3041,11 @@ const Game={
       this.fx.drawMarks(this.markLayer.ctx);
       ctx.drawImage(this.markLayer.canvas,0,0,W,H);
     }
-    // dropped Lucille bats from K.O.'d Negans
-    if(this.droppedBats.length){
+    // Dropped weapons are independent physics objects and are never re-equipped.
+    if(this.droppedBats.length||this.droppedGuns.length){
       clearPixelLayer(this.batLayer);
-      for(const b of this.droppedBats){
-        drawDroppedBat(this.batLayer.ctx,b);
-      }
+      for(const b of this.droppedBats)drawDroppedBat(this.batLayer.ctx,b);
+      for(const b of this.droppedGuns)drawDroppedGun(this.batLayer.ctx,b);
       ctx.drawImage(this.batLayer.canvas,0,0,W,H);
     }
 
@@ -2653,10 +3068,11 @@ const Game={
         try{paint(q);}catch(err){console.warn('Fighter layer draw recovered:',f.id,err);}
         q.restore();
         if(doTint)tintLayer(layer);
-        ctx.globalAlpha=1;
+        ctx.globalAlpha=f.state==='fragmenting'?clamp(1-f.st/FRAGMENT_DUR,0,1):1;
         ctx.globalCompositeOperation='source-over';
         ctx.filter='none';
         ctx.drawImage(layer.canvas,0,0,W,H);
+        ctx.globalAlpha=1;
       };
       paintLayer(this.batLayer,q=>drawFighterShadow(q,f),false);
       paintLayer(this.bodyLayer,q=>drawFighterBody(q,f));
@@ -2664,6 +3080,7 @@ const Game={
       if(f.skin==='negan'&&!f.batLost&&f.hp>0&&f.rig.bd){
         paintLayer(this.batLayer,q=>drawBat(q,f));
       }
+      if(f.hypGun)paintLayer(this.batLayer,q=>drawHeldGun(q,f));
       paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,f));
       ctx.restore();
     }
@@ -2682,6 +3099,8 @@ const Game={
       }
     }
     this.fx.draw(this.fxLayer.ctx);
+    for(const p of this.bullets)drawHypBullet(this.fxLayer.ctx,p);
+    for(const t of this.tracers)drawHypBullet(this.fxLayer.ctx,t,clamp(t.life/t.max,0,1));
     ctx.drawImage(this.fxLayer.canvas,0,0,W,H);
 
     ctx.save();ctx.globalCompositeOperation='lighter';
@@ -2693,8 +3112,23 @@ const Game={
       ctx.fillStyle=g;ctx.fillRect(lx-380,0,760,H);
     }
     ctx.restore();
+    ctx.restore(); // camera transform: the vignettes stay fixed to the screen
     ctx.imageSmoothingEnabled=true;
     ctx.drawImage(this.vig,0,0,W,H);
+    if(camera&&camera.vignette>.005){
+      const g=ctx.createRadialGradient(W/2,H/2,H*.22,W/2,H/2,Math.max(W*.62,H*.72));
+      g.addColorStop(0,'rgba(0,0,0,0)');g.addColorStop(1,`rgba(0,0,0,${.35*camera.vignette})`);
+      ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+    }
+    // Text remains bright and readable above the cinematic vignette while using
+    // the same camera and shake as the character it follows.
+    if(this.fighters.some(f=>f.hp>0&&f.tranceT>0&&f.rig)){
+      clearPixelLayer(this.textLayer);
+      for(const f of this.fighters)drawTranceText(this.textLayer.ctx,f,W,camera,this.displayScale);
+      ctx.save();ctx.translate(shakeX,shakeY);ctx.imageSmoothingEnabled=false;
+      if(camera){ctx.translate(W/2,H/2);ctx.scale(camera.zoom,camera.zoom);ctx.translate(-camera.x,-camera.y);}
+      ctx.drawImage(this.textLayer.canvas,0,0,W,H);ctx.restore();
+    }
     ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';ctx.filter='none';ctx.setTransform(S,0,0,S,0,0);
   }
 };
@@ -2705,7 +3139,8 @@ export function startGame(){
   const onDown=e=>{
     Snd.init();
     const rect=cv.getBoundingClientRect();
-    const worldX=clamp((e.clientX-rect.left)/rect.width*Game.W,80,Game.W-80);
+    const screenX=(e.clientX-rect.left)/rect.width*Game.W;
+    const worldX=clamp(Game.screenToWorldX(screenX),80,Game.W-80);
     const alive=Game.fighters.filter(f=>f.hp>0);
     let dir=worldX<Game.W/2?1:-1;
     if(alive.length){
