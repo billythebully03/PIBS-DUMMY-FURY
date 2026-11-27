@@ -58,12 +58,12 @@ const source = await readFile(new URL('../src/game/engine.ts', import.meta.url),
 // the test-only exports out of the production entry point.
 const { outputFiles } = await build({
   stdin: {
-    contents: `${source}\nexport { Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, SK_, Audience, BloodField };`,
+    contents: `${source}\nexport { Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y };`,
     resolveDir: fileURLToPath(new URL('../src/game/', import.meta.url)), sourcefile: 'engine.ts', loader: 'ts',
   },
   bundle: true, write: false, platform: 'browser', format: 'esm', target: 'es2020',
 });
-const { Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, SK_, Audience, BloodField } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`);
+const { startGame, Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`);
 const originalRandom = Math.random;
 const originalWarn = console.warn;
 let warnings = [];
@@ -970,7 +970,7 @@ test('interrupting the carried fighter starts ragdoll at its current airborne po
   assert.equal(holder.fallDamage, null, 'an interrupted counter must not deal delayed fall damage');
 });
 
-test('portrait sizing keeps the full arena visible and vertically letterboxed', () => {
+test('portrait sizing keeps the full lower arena visible and vertically letterboxed', () => {
   const oldWidth = innerWidth, oldHeight = innerHeight;
   try {
     globalThis.innerWidth = 390; globalThis.innerHeight = 844;
@@ -1634,7 +1634,7 @@ test('shoves, holds and body clearing remain safe in a crowded autonomous brawl'
       if (f.state === 'shove' && previous.get(f.id) !== 'shove') shoves++;
       if (f.state === 'choke') assert.equal(f.chokeTarget?.chokedBy, f);
       if (f.state === 'choked') assert.equal(f.chokedBy?.chokeTarget, f);
-      if (f.state === 'lamp_hang') assert.equal(f.lampRef?.occupant, f);
+      if (f.state === 'lamp_hang') assert.ok(f.lampRef?.riders.has(f));
       if (f.bodyJump) assert.ok(f.state === 'air' && !f.dive);
       previous.set(f.id, f.state);
     }
@@ -1663,9 +1663,9 @@ test('autonomous fights remain stable and use the new behavior at 30, 60 and 120
           if (f.state === 'choke') assert.equal(f.chokeTarget?.chokedBy, f);
           if (f.state === 'choked') assert.equal(f.chokedBy?.chokeTarget, f);
           if (f.state === 'lamp_hang') {
-            assert.equal(f.lampRef?.occupant, f);
+            assert.ok(f.lampRef?.riders.has(f));
             if (f.st > .3) {
-              const p = f.lampRef.grip();
+              const p = f.lampRef.point(30 + f.lampClimb);
               assert.ok(distance(f.rig.wN, p) < 7 && distance(f.rig.wF, p) < 7);
             }
           }
@@ -1725,7 +1725,7 @@ test('seeded unattended fights actually use the new actions while preserving exi
           assert.notEqual(f.autopilot.mode, 'tactical_retreat');
           if (f.state === 'lamp_hang') {
             assert.ok(f.lampRef && Game.lamps.includes(f.lampRef));
-            assert.equal(f.lampRef.occupant, f);
+            assert.ok(f.lampRef.riders.has(f));
           }
           if (f.rag) for (const p of Object.values(f.rag.p)) {
             assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
@@ -2142,7 +2142,7 @@ test('real sprinting footfalls splash significant puddles in either direction at
   } finally { fx.splash = originalSplash; }
 });
 
-test('small drops, soft steps and hovering do not splash or stain; a strong landing does', () => {
+test('small drops leave a faint stain without splashing; soft steps and hovering do not splash', () => {
   const f = fighter(420, 1, 'jane'); disableAI(f);
   const field = Game.fx.bloodField, x = f.rig.aN.x + f.rig.fdN.x * 7;
   let calls = 0; const splash = Game.fx.splash.bind(Game.fx);
@@ -2150,7 +2150,7 @@ test('small drops, soft steps and hovering do not splash or stain; a strong land
   try {
     field.add(x, Game.gy + 9, 'drip');
     f.queueBloodFootfall('N', 1); f.resolveBloodFootfall();
-    assert.equal(calls, 0); assert.deepEqual(f.footBlood, { N: 0, F: 0 });
+    assert.equal(calls, 0); assert.ok(f.footBlood.N > 0 && f.footBlood.N < 1.5);
     for (let i = 0; i < 16; i++) field.add(x + Math.sin(i) * 3, Game.gy + 9, 'seep');
     f.onLand(300); f.update(1 / 60, null, [f]);
     assert.equal(calls, 0, 'soft landing');
@@ -2192,7 +2192,7 @@ test('puddle blood is masked into each skin shoe and lower leg, follows pose and
   }
 });
 
-test('each knee and elbow stains only on real puddle contact and follows its own two limb sprites', () => {
+test('each knee and elbow stains on real blood contact and follows its own two limb sprites', () => {
   const spec = {
     kN: ['thighF', 'knee-thigh', 'shinF', 'knee-shin'],
     kF: ['thighB', 'knee-thigh', 'shinB', 'knee-shin'],
@@ -2212,13 +2212,14 @@ test('each knee and elbow stains only on real puddle contact and follows its own
       const field = Game.fx.bloodField;
       field.add(480, Game.gy + 9, 'drip');
       f.resolveBloodJointContacts(dt);
-      assert.equal(f.jointBlood[joint], 0, 'an isolated drop is not a puddle');
+      const faint = f.jointBlood[joint];
+      assert.ok(faint > 0 && faint < .2, 'an isolated drop stains only faintly');
       for (let i = 0; i < 18; i++) field.add(480 + Math.sin(i) * 3, Game.gy + 9, 'seep');
       point.y -= 12; f.buildRig(0); f.resolveBloodJointContacts(dt);
-      assert.equal(f.jointBlood[joint], 0, 'the joint is still airborne');
+      assert.equal(f.jointBlood[joint], faint, 'an airborne joint cannot pick up more blood');
       point.y += 12; f.update(dt, null, [f]);
       const level = f.jointBlood[joint];
-      assert.ok(level > 0, `${skin}/${dir}/${joint}/${dt}: contact stained the joint`);
+      assert.ok(level > faint, `${skin}/${dir}/${joint}/${dt}: a pool stains more strongly`);
       for (const other of Object.keys(spec).filter(k => k !== joint)) assert.equal(f.jointBlood[other], 0);
       assert.ok(!Game.fx.bl.some(p => p.splash), 'resting a joint is not a strong footstep');
       const [a, pa, b, pb] = spec[joint], first = stainedSkinSprite(SK_[skin][a], pa, level), second = stainedSkinSprite(SK_[skin][b], pb, level);
@@ -2261,12 +2262,12 @@ test('shoe and knee stains combine on the same leg and saturated joints stop rec
     Game.render(); assert.ok(seen.includes(combined), 'the same moving shin keeps both separate stains');
   } finally { g.drawImage = oldDraw; }
   f.jointBlood = { kN: 3, kF: 3, eN: 3, eF: 3 };
-  let queries = 0; const puddleAtFoot = field.puddleAtFoot;
+  let queries = 0; const contactAtFoot = field.contactAtFoot;
   try {
-    field.puddleAtFoot = (...args) => { queries++; return puddleAtFoot.apply(field, args); };
+    field.contactAtFoot = (...args) => { queries++; return contactAtFoot.apply(field, args); };
     f.resolveBloodJointContacts(1 / 60);
     assert.equal(queries, 0, 'fully stained limbs avoid redundant puddle scans');
-  } finally { field.puddleAtFoot = puddleAtFoot; }
+  } finally { field.contactAtFoot = contactAtFoot; }
   Game.clearBlood();
   assert.deepEqual(f.footBlood, { N: 0, F: 0 });
   assert.deepEqual(f.jointBlood, { kN: 0, kF: 0, eN: 0, eF: 0 });
@@ -2330,5 +2331,322 @@ test('a grounded Homelander can splash on a hard landing before his hover resume
     f.onLand(700); f.update(dt, null, [f]);
     assert.ok(f.footBlood.F > 0, `landing at ${dt}s must use the real ground contact`);
     assert.ok(Game.fx.bl.some(p => p.splash));
+  }
+});
+
+// Expanded arena, finishers and the new character.
+test('new: local face names and Chester selection, guitar impacts, breakage cap and drop', async () => {
+  assert.deepEqual(HEAD_URL, {
+    jane: '/faces/patrick.png', negan: '/faces/negan.png', chester: '/faces/chester.png',
+    homelander: '/faces/homelander.png', saul: '/faces/saul.png', walt: '/faces/walt.png',
+  });
+  assert.match(await readFile(new URL('../public/faces/README.md', import.meta.url), 'utf8'), /chester\.png/);
+  const selected = Game.spawnFighter(360, 1, 0, 'chester');
+  assert.equal(selected.skin, 'chester'); assert.match(selected.name, /ЧЕСТЕР/);
+  Game.fighters = [];
+  const f = fighter(340, 1, 'chester'), v = fighter(420, -1, 'jane'); disableAI(f, v);
+  assert.ok(SK_.chester.uArmF && SK_.chester.lArmF);
+  assert.equal(f.startAttack(0), true); assert.equal(f.atk.guitar, true);
+  for (let i = 0; i < 14; i++) {
+    v.hp = 100; v.state = 'idle'; v.invT = 0; v.y = 0;
+    assert.equal(f.tryHit(f.atk, [v]), true);
+  }
+  assert.equal(f.guitarDamage, 1, 'damage accumulates but is capped');
+  assert.ok(f.guitarFlexVel > 0, 'actual impacts excite the flexible neck');
+  Game.render();
+  assert.ok(Game.batLayer.ctx.stats.colors.has('#c71b2d'), 'the red guitar is drawn');
+  assert.ok(Game.batLayer.ctx.stats.colors.has('#190c0c'), 'the damaged neck has visible cracks');
+  f.toRagdoll(40, 20); f.buildRig(0);
+  assert.ok(f.rig.bd, 'the living ragdoll still holds its guitar');
+  Game.ko(f, v, { pw: .5, noStagger: true });
+  assert.ok(Game.droppedBats.some(b => b.kind === 'guitar' && b.damage === 1));
+  Game.render();
+});
+
+test('new: a lethal Negan head blow winds up and breaks the head, spraying nearby fighters', () => {
+  const negan = fighter(340, 1, 'negan'), victim = fighter(425, -1, 'jane');
+  const nearby = fighter(510, -1, 'chester'), far = fighter(900, -1, 'walt');
+  disableAI(negan, victim, nearby, far); victim.hp = 6;
+  assert.equal(negan.startAttack(0), true);
+  assert.equal(negan.atk.n, 'overhead-finisher');
+  assert.ok(negan.atk.kf[1][1].bt > 180 && negan.atk.kf[2][1].gy < -30, 'backswing travels up over the head');
+  advanceUntil(() => victim.hp <= 0, 150);
+  assert.equal(victim.headDestroyed, true); assert.ok(Game.fx.gibs.length >= 20);
+  assert.ok(negan.bloodStains.length >= 14 && nearby.bloodStains.length >= 14, 'both nearby people are heavily speckled');
+  assert.equal(far.bloodStains.length, 0, 'distant bystanders are not magically stained');
+  assert.ok(new Set(nearby.bloodStains.map(b => b.seg)).size > 4, 'uneven stains attach to several body segments');
+  const mark = nearby.bloodStains.find(b => b.seg !== 'head'), p = surfacePoint(nearby.rig, mark);
+  nearby.x += 55; nearby.buildRig(0); const q = surfacePoint(nearby.rig, mark);
+  assert.ok(q.x > p.x + 40, 'the spray follows the moving body');
+  Game.render(); Game.clearBlood();
+  assert.equal(negan.bloodStains.length, 0); assert.equal(nearby.bloodStains.length, 0);
+  Game.clearBodies(); assert.equal(Game.fx.gibs.length, 0);
+});
+
+test('new: a real lethal laser needs time to cut and separates into three independently moving hot pieces', () => {
+  const shooter = fighter(240, 1, 'homelander'), victim = fighter(510, -1, 'walt');
+  disableAI(shooter, victim); victim.hp = 3;
+  assert.equal(shooter.startAttack(3), true);
+  advanceUntil(() => victim.hp <= 0, 180);
+  assert.ok(victim.laserSlice && victim.laserSlice.progress < 1);
+  assert.equal(victim.gorePieces, null, 'separation is not instantaneous');
+  advanceUntil(() => victim.gorePieces !== null, 240);
+  assert.equal(victim.gorePieces.length, 3);
+  assert.ok(victim.gorePieces.every(p => p.canvas.getContext('2d').stats.colors.has('#ff8219')),
+    'each exposed part has its own lasting orange cut');
+  const positions = victim.gorePieces.map(p => [p.x, p.y]);
+  tick(.5);
+  assert.ok(victim.gorePieces.some((p, i) => Math.hypot(p.x - positions[i][0], p.y - positions[i][1]) > 10));
+  assert.ok(new Set(victim.gorePieces.map(p => Math.round(p.vx))).size > 1, 'fragments are not linked');
+  Game.render(); tick(5); Game.render();
+  assert.equal(victim.burns.length, 0, 'ordinary burns cool quickly');
+  assert.equal(victim.gorePieces.length, 3, 'the cut and pieces persist after ordinary burns fade');
+  Game.clearBodies(); assert.ok(!Game.fighters.includes(victim));
+});
+
+test('new: contact stain intensity is determined by local blood quantity, not a distant connected pool', () => {
+  const field = Game.fx.bloodField;
+  field.add(300, Game.gy + 9, 'drip');
+  for (let i = 0; i < 24; i++) field.add(550 + Math.sin(i) * 4, Game.gy + 9, 'seep');
+  const faint = field.contactAtFoot(300, Game.gy), heavy = field.contactAtFoot(550, Game.gy);
+  assert.ok(faint && heavy && faint.intensity < heavy.intensity * .6);
+  assert.equal(faint.splashable, false); assert.equal(heavy.splashable, true);
+  const f = fighter(300, 1); disableAI(f);
+  const footX = f.rig.aN.x + f.rig.fdN.x * 7;
+  field.clear(); field.add(footX, Game.gy + 9, 'drip');
+  for (let i = 0; i < 20; i++) { f.queueBloodFootfall('N', 1); f.resolveBloodFootfall(); }
+  const faintLevel = f.footBlood.N;
+  assert.ok(faintLevel > 0 && faintLevel < 1.5, 'one drop cannot saturate the shoe through repeated steps');
+  for (let i = 0; i < 24; i++) field.add(footX + Math.sin(i) * 3, Game.gy + 9, 'seep');
+  f.queueBloodFootfall('N', 1); f.resolveBloodFootfall();
+  assert.ok(f.footBlood.N > faintLevel * 2);
+});
+
+test('new: the camera moves smoothly over a three-height arena and keeps bottom layers anchored', () => {
+  assert.equal(540 - WORLD_TOP, 3 * 540);
+  assert.ok(BRIDGE_Y < WORLD_TOP + 540 && BRIDGE_Y - WORLD_TOP > 200, 'bridge is in the upper third with standing headroom');
+  Game.moveCamera(-5000); assert.equal(Game.camera.targetY, WORLD_TOP + 270);
+  for (let i = 0; i < 180; i++) Game.updateCamera(1 / 60);
+  assert.ok(Math.abs(Game.camera.y - (WORLD_TOP + 270)) < .01);
+  Game.render();
+  assert.ok(Math.abs(Game.bodyLayer.offsetY - WORLD_TOP) < .01);
+  assert.equal(Game.audienceLayer.offsetY, 0, 'spectators do not extend into the upper wall');
+  assert.equal(Game.bloodLayer.offsetY, 0, 'the floor puddles stay at the floor');
+  assert.ok(Math.abs(Game.screenToWorldY(0) - WORLD_TOP) < .01);
+  Game.resetCamera(); for (let i = 0; i < 180; i++) Game.updateCamera(1 / 60);
+  assert.ok(Math.abs(Game.camera.y - 270) < .01);
+  Game.moveCamera(1000); assert.equal(Game.camera.targetY, 270);
+});
+
+test('new: a fighter climbs a ceiling rope to the bridge and walks on the platform at 30, 60 and 120 FPS', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const lamp = Game.lamps[1], f = fighter(lamp.x, 1, 'chester'), ground = fighter(850, -1, 'walt');
+    disableAI(f, ground); assert.equal(lamp.anchorY, WORLD_TOP + 18);
+    assert.equal(f.startLampJump(lamp), true);
+    advanceUntil(() => f.state === 'lamp_hang', Math.ceil(2 / dt), dt);
+    f.lampAction = 'climb'; f.lampStamina = 12; f.lampBreakAt = Infinity; f.tackleCheck = Infinity;
+    let highest = 0;
+    for (let i = 0; i < Math.ceil(8 / dt) && !f.onBridge; i++) {
+      Game.update(dt);
+      if (f.state === 'lamp_hang') {
+        const grip = lamp.point(30 + f.lampClimb);
+        assert.ok(distance(f.rig.wN, grip) < 7 && distance(f.rig.wF, grip) < 7, `hands hold rope at ${dt}`);
+        highest = Math.max(highest, f.y);
+      }
+    }
+    assert.equal(f.onBridge, true, `climber reaches the bridge at ${dt}`);
+    assert.ok(highest > 900); assert.equal(f.gy, BRIDGE_Y); assert.equal(f.y, 0);
+    assert.ok(Math.abs(Math.max(f.rig.aN.y, f.rig.aF.y) - BRIDGE_Y) < 30);
+    assert.ok(!lamp.riders.has(f));
+    const x = f.x; f.ctrl.mx = 1; tick(.5, dt);
+    assert.ok(f.x > x + 25 && f.onBridge, 'walking happens on the actual raised floor');
+    Game.render();
+  }
+});
+
+test('new: a second fighter can follow on the same rope and each rider is released on detachment', () => {
+  const lamp = Game.lamps[1], first = fighter(lamp.x, 1, 'jane'); disableAI(first);
+  assert.equal(first.startLampJump(lamp), true); advanceUntil(() => first.state === 'lamp_hang', 150);
+  first.lampAction = 'climb'; first.lampStamina = 12; first.lampBreakAt = Infinity; first.tackleCheck = Infinity;
+  advanceUntil(() => first.lampClimb > 160, 150);
+  const second = fighter(lamp.x, -1, 'chester'); disableAI(second);
+  assert.equal(second.startLampJump(lamp), true, 'occupied rope becomes reachable once the first rider climbs');
+  advanceUntil(() => second.state === 'lamp_hang', 150);
+  second.lampAction = 'climb'; second.lampStamina = 12; second.lampBreakAt = Infinity; second.tackleCheck = Infinity;
+  assert.equal(lamp.riders.size, 2);
+  tick(.6);
+  assert.ok(first.lampClimb - second.lampClimb >= 89, 'riders do not overlap or pass through one another');
+  assert.equal(Game.detachLamp(lamp), true);
+  assert.equal(lamp.riders.size, 0); assert.equal(first.state, 'ragdoll'); assert.equal(second.state, 'ragdoll');
+  assert.equal(first.lampRef, null); assert.equal(second.lampRef, null);
+});
+
+test('new: autonomous pursuit chooses a usable rope for a fighter above', () => {
+  const target = fighter(720, -1, 'walt'); disableAI(target);
+  target.onBridge = true; target.gy = BRIDGE_Y; target.buildRig(0);
+  const pursuer = fighter(210, 1, 'jane');
+  pursuer.autopilot.attackWait = pursuer.autopilot.farCD = 100;
+  let sawClimb = false;
+  for (let i = 0; i < 720; i++) {
+    Game.update(1 / 60);
+    if (pursuer.state === 'lamp_hang' && pursuer.lampAction === 'climb') sawClimb = true;
+    if (pursuer.onBridge) break;
+  }
+  assert.ok(sawClimb, 'the AI pursues upward instead of attacking a distant floor');
+  assert.ok(pursuer.onBridge, 'the autonomous chase actually reaches the bridge');
+});
+
+test('new: a high tackle is limited to reachable opponents and a long fall causes severe injury', () => {
+  const attacker = fighter(400, 1, 'jane'), victim = fighter(530, -1, 'walt'), low = fighter(420, -1, 'saul');
+  disableAI(attacker, victim, low);
+  for (const f of [attacker, victim]) { f.onBridge = true; f.gy = BRIDGE_Y; f.cur = null; f.buildRig(0); }
+  assert.equal(attacker.startHighTackle(low), false, 'do not leap for a fighter far below');
+  assert.equal(attacker.startHighTackle(victim), true);
+  advanceUntil(() => attacker.state === 'ragdoll' && victim.state === 'ragdoll', 180);
+  assert.equal(attacker.gy, Game.gy); assert.equal(victim.gy, Game.gy);
+  assert.ok(attacker.fallDamage?.severe && victim.fallDamage?.severe);
+  advanceUntil(() => attacker.hp <= 60 && victim.hp <= 60, 900);
+  assert.ok(attacker.hp <= 60 && victim.hp <= 60, 'a full-height fall is not harmless');
+});
+
+test('new: seeded autonomous matches can really reach the upper bridge and use finishers', () => {
+  const counts = {climbs: 0, bridge: 0, head: 0, laser: 0, tackles: 0, multiRider: 0};
+  const grab = Fighter.prototype.grabLamp, tackle = Fighter.prototype.startHighTackle, ko = Game.ko;
+  try {
+    Fighter.prototype.grabLamp = function (...args) {
+      const result = grab.apply(this, args); if (result && this.lampAction === 'climb') counts.climbs++; return result;
+    };
+    Fighter.prototype.startHighTackle = function (...args) {
+      const result = tackle.apply(this, args); if (result) counts.tackles++; return result;
+    };
+    Game.ko = function (v, ...args) {
+      if (v.headDestroyed) counts.head++; if (v.laserSlice) counts.laser++;
+      return ko.call(this, v, ...args);
+    };
+    for (const seed of [19,31,57,83,101,133,177,251,277,301,389,491,601,701,809,907]) {
+      seedRandom(seed); Game.init(); const onBridge = new Set(), multi = new Set();
+      for (let frame = 0; frame < 240 * 60; frame++) {
+        Game.update(1 / 60);
+        for (const f of Game.fighters) if (f.onBridge && !onBridge.has(f.id)) { onBridge.add(f.id); counts.bridge++; }
+        for (const l of Game.lamps) if (l.riders.size > 1 && !multi.has(l)) { multi.add(l); counts.multiRider++; }
+      }
+    }
+  } finally { Fighter.prototype.grabLamp = grab; Fighter.prototype.startHighTackle = tackle; Game.ko = ko; }
+  console.log('new autonomous arena events:', counts);
+  for (const [action, count] of Object.entries(counts)) assert.ok(count > 0, `${action} should occur in real autonomous combat`);
+});
+
+test('new: the bridge deck blocks a laser ray between the two levels', () => {
+  const shooter = fighter(480, 1, 'homelander'); disableAI(shooter);
+  const down = Game.castRay(800, BRIDGE_Y - 150, 0, 1, shooter);
+  const up = Game.castRay(800, BRIDGE_Y + 120, 0, -1, shooter);
+  assert.equal(down.surf, 'bridge'); assert.equal(down.y, BRIDGE_Y);
+  assert.equal(up.surf, 'bridge'); assert.equal(up.y, BRIDGE_Y + 18);
+});
+
+test('new: an interrupted high fall deals damage once and a later normal jump is safe', () => {
+  const f = fighter(480, 1, 'jane'); disableAI(f);
+  const random = Math.random;
+  try {
+    Math.random = () => .9; // no bleeding or incidental follow-up injury
+    f.y = 600; f.state = 'air'; f.vy = 0; f.cur = null; f.buildRig(0);
+    f.toRagdoll(0, 0, true);
+    assert.ok(f.fallDamage?.severe);
+    advanceUntil(() => f.hp < 100, 900);
+    assert.ok(f.hp > 0 && f.hp < 70); assert.equal(f.fallDamage, null); assert.equal(f.fallPeak, 0);
+    advanceUntil(() => f.state === 'getup', 900); tick(2.4);
+    assert.equal(f.state, 'idle'); const hp = f.hp;
+    f.startJump(); advanceUntil(() => f.state === 'idle', 240);
+    assert.equal(f.hp, hp, 'an old fall cannot be charged again on the next ordinary landing');
+  } finally { Math.random = random; }
+});
+
+test('new: runners avoid tripping over a prone or only just rising fighter', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) {
+    Game.fighters = [];
+    const body = fighter(480, -dir, 'walt'), runner = fighter(480 - dir * 70, dir, 'jane');
+    disableAI(body, runner); body.state = 'getup'; body.st = .1; body.vx = 0;
+    runner.state = 'run'; runner.ctrl.mx = dir; runner.ctrl.run = true; runner.vx = dir * 450;
+    for (let i = 0; i < Math.ceil(.25 / dt); i++) Game.update(dt);
+    assert.notEqual(runner.state, 'ragdoll', `runner avoids the still-prone body at ${dt}, direction ${dir}`);
+  }
+});
+
+test('new: a fatal guitar hit does not trigger Negan\'s head-only finisher', () => {
+  const attacker = fighter(380, 1, 'chester'), victim = fighter(465, -1, 'walt');
+  disableAI(attacker, victim); victim.hp = 1; attacker.startAttack(0);
+  assert.equal(attacker.tryHit(attacker.atk, [victim]), true);
+  assert.equal(victim.hp, 0); assert.equal(victim.headDestroyed, false);
+  assert.equal(Game.fx.gibs.length, 0);
+});
+
+test('camera mode pans even on small movements and never spawns from the canvas', () => {
+  const listeners = new Map(), classes = new Set();
+  const original = {
+    add: gameCanvas.addEventListener, remove: gameCanvas.removeEventListener,
+    rect: gameCanvas.getBoundingClientRect, capture: gameCanvas.setPointerCapture,
+    classList: gameCanvas.classList, cancelFrame: globalThis.cancelAnimationFrame,
+    removeWindow: globalThis.removeEventListener,
+    addDoc: document.addEventListener, removeDoc: document.removeEventListener,
+  };
+  gameCanvas.addEventListener = (type, handler) => listeners.set(type, handler);
+  gameCanvas.removeEventListener = (type, handler) => { if (listeners.get(type) === handler) listeners.delete(type); };
+  gameCanvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 960, height: 540 });
+  gameCanvas.setPointerCapture = () => {};
+  gameCanvas.classList = {
+    toggle(name, value) { if (value) classes.add(name); else classes.delete(name); },
+    remove(name) { classes.delete(name); },
+  };
+  globalThis.cancelAnimationFrame = () => {};
+  globalThis.removeEventListener = () => {};
+  document.addEventListener = () => {}; document.removeEventListener = () => {};
+  const send = (type, x, y, id = 1) => listeners.get(type)?.({ button: 0, pointerId: id, clientX: x, clientY: y });
+  let api;
+  try {
+    api = startGame(); Game.autoSpawn = false; Game.fighters = [];
+    send('pointerdown', 300, 100); send('pointerup', 300, 100);
+    assert.equal(Game.fighters.length, 1, 'ordinary mode keeps tap-to-spawn');
+    Game.resetCamera();
+    send('pointerdown', 300, 100); send('pointermove', 300, 145); send('pointerup', 300, 145);
+    assert.equal(Game.fighters.length, 1, 'a normal-mode drag still pans without spawning');
+    assert.ok(Game.camera.targetY < 270);
+    // A very fast gesture may arrive as down/up without an intermediate move.
+    send('pointerdown', 300, 100); send('pointerup', 300, 150);
+    assert.equal(Game.fighters.length, 1);
+
+    api.setCameraMode(true); assert.ok(classes.has('cameraMode'));
+    send('pointerdown', 300, 100); send('pointerup', 300, 100);
+    assert.equal(Game.fighters.length, 1, 'a tap in camera mode cannot spawn');
+    const before = Game.camera.targetY;
+    send('pointerdown', 300, 100); send('pointermove', 300, 102); send('pointerup', 300, 102);
+    assert.ok(Game.camera.targetY < before, 'small gestures pan without crossing a drag threshold');
+    assert.equal(Game.fighters.length, 1, 'short gestures cannot spawn');
+
+    // A second finger cannot replace the first pointer and cause a spawn.
+    send('pointerdown', 300, 100, 1); send('pointerdown', 320, 105, 2);
+    send('pointermove', 320, 140, 2); send('pointerup', 320, 140, 2);
+    send('pointerup', 300, 100, 1);
+    assert.equal(Game.fighters.length, 1);
+    api.spawnSkin('chester');
+    assert.equal(Game.fighters.length, 2, 'explicit spawn buttons still work in camera mode');
+    assert.equal(Game.fighters.at(-1).skin, 'chester');
+
+    // Changing modes during a press cancels it instead of reinterpreting it.
+    send('pointerdown', 300, 100); api.setCameraMode(false); send('pointerup', 300, 100);
+    assert.equal(Game.fighters.length, 2); assert.ok(!classes.has('cameraMode'));
+    send('pointerdown', 300, 100); send('pointerup', 300, 100);
+    assert.equal(Game.fighters.length, 3, 'turning the mode off restores tap-to-spawn');
+    send('pointerdown', 300, 100); send('lostpointercapture', 300, 100); send('pointerup', 300, 100);
+    assert.equal(Game.fighters.length, 3, 'losing pointer capture cancels the gesture');
+    api.setCameraMode(true); api.destroy(); api = null;
+    assert.ok(!classes.has('cameraMode')); assert.equal(listeners.size, 0);
+  } finally {
+    api?.destroy();
+    gameCanvas.addEventListener = original.add; gameCanvas.removeEventListener = original.remove;
+    gameCanvas.getBoundingClientRect = original.rect; gameCanvas.setPointerCapture = original.capture;
+    gameCanvas.classList = original.classList; globalThis.cancelAnimationFrame = original.cancelFrame;
+    globalThis.removeEventListener = original.removeWindow;
+    document.addEventListener = original.addDoc; document.removeEventListener = original.removeDoc;
   }
 });

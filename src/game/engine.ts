@@ -13,6 +13,9 @@ const DIRX=[1,-1,0,0], DIRY=[0,0,1,-1];
 const TIE_N=6, TIE_SEG=9;
 const CAPE_N=7, CAPE_SEG=19;
 const HL_HOVER=19;
+// The original 540-unit floor view remains at y=0..540. The expanded world
+// extends upward, so existing combat/floor coordinates do not move.
+const WORLD_TOP=-1080, BRIDGE_Y=-610, VIEW_H=540;
 const RUN_SPD=520, RUN_ACC=1250;
 const BOX_GAP=.1, OVEREXTEND_DUR=1.12, FLANK_DUR=.34;
 const CHOKE_OFFSET=48, CHOKE_DPS=2.2, COUNTER_RELEASE=.43, COUNTER_DUR=.86;
@@ -27,7 +30,8 @@ const WSTATS={
   negan:{weight:90,height:185,hp:110,speedMul:.95,knockResist:.55,ragMass:1.2},
   homelander:{weight:105,height:190,hp:120,speedMul:.92,knockResist:.75,ragMass:1.4},
   walt:{weight:80,height:178,hp:95,speedMul:1,knockResist:.42,ragMass:1.07},
-  saul:{weight:70,height:175,hp:90,speedMul:1.06,knockResist:.28,ragMass:.93}
+  saul:{weight:70,height:175,hp:90,speedMul:1.06,knockResist:.28,ragMass:.93},
+  chester:{weight:74,height:178,hp:100,speedMul:1.04,knockResist:.34,ragMass:.98}
 };
 const wstat=skin=>WSTATS[skin]||WSTATS.jane;
 const knockScaleFor=skin=>1-wstat(skin).knockResist*.55;
@@ -181,7 +185,7 @@ function poseGuardArms(R,f){
 }
 function poseLampArms(R,f){
   const lamp=f.lampRef||f.lampGoal;if(!lamp||lamp.detached)return;
-  const p=lamp.grip();
+  const p=f.lampRef?lamp.point(30+(f.lampClimb||0)):lamp.grip();
   // Hands wrap around the rope above the shade, with the head to one side.
   aimArmWorld(R,'N',p.x-R.dir*3,p.y);
   aimArmWorld(R,'F',p.x+R.dir*3,p.y+3);
@@ -347,6 +351,16 @@ const ATK_BAT=[
 {n:'air',air:true,bat:true,dur:.4,hs:.13,he:.26,cancel:9,reach:108,dmg:6,zone:'head',pw:.55,stun:.35,kb:145,lt:.0,lunge:0,y:[20,160],
   kf:KF([[0,AIRL],[.07,Object.assign({},AIRL,{tl:-6,gx:20,gy:-18,bt:200})],[.13,Object.assign({},AIRL,{tl:26,hd:14,gx:54,gy:24,bt:54})],[.26,Object.assign({},AIRL,{tl:26,hd:14,gx:54,gy:24,bt:54})],[.4,Object.assign({},AIRL,{tl:8,gx:50,gy:18,bt:150})]])}
 ];
+// A lethal Lucille strike winds behind the back, rises over the head and
+// then drives down through the target rather than reusing a short jab.
+const BAT_FINISH={
+  n:'overhead-finisher',finisher:true,dur:1.02,hs:.58,he:.72,cancel:9,
+  reach:116,dmg:12,zone:'head',pw:1.2,launch:true,lvx:250,lvy:520,bat:true,lt:.43,lunge:125,y:[80,220],
+  kf:KF([[0,{}],[.2,{H:75,tl:-25,hd:-8,px:-9,gx:-2,gy:4,bt:225,f1x:16,f2x:-30}],
+    [.42,{H:82,tl:-20,hd:-12,px:-8,gx:15,gy:-42,bt:195,f1x:18,f2x:-29}],
+    [.59,{H:72,tl:34,hd:15,px:12,gx:58,gy:10,bt:70,f1x:40,f2x:-20}],
+    [.72,{H:70,tl:38,hd:18,px:13,gx:57,gy:26,bt:50,f1x:40,f2x:-20}],[1.02,{}]])
+};
 /* ---- Homelander: hovering jab/cross/knee + eye laser finisher (chest out, arms back) ---- */
 const HL_L={f1x:8,f1h:13,fa1:40,f2x:-10,f2h:0,fa2:48};
 const HL_S=P(Object.assign({},HL_IDLE,{H:89,tl:7,hd:-3,px:3,a1:-62,e1:-6,c1:1,a2:-80,e2:-4,c2:1,f1x:6,f1h:14,fa1:44,f2x:-12,f2h:2,fa2:52,mo:.35}));
@@ -359,17 +373,19 @@ const ATK_HL=[
   LASER,
   ATK[4]
 ];
-const atkSetFor=skin=>skin==='negan'?ATK_BAT:skin==='homelander'?ATK_HL:ATK;
+const ATK_GUITAR=ATK_BAT.map(a=>Object.assign({},a,{guitar:true}));
+const atkSetFor=skin=>skin==='negan'?ATK_BAT:skin==='chester'?ATK_GUITAR:skin==='homelander'?ATK_HL:ATK;
 /* ---- Dive kick (running leap) and back-hop poses ---- */
 const KICK_POSE=P({H:66,tl:-52,hd:-16,px:-8,a1:-50,e1:25,a2:-35,e2:30,f1x:82,f1h:56,f2x:56,f2h:32,mo:.7});
 /* ============================ PIXEL-ART CHARACTER SKINS ============================ */
-const SKINS = ['jane', 'negan', 'homelander', 'walt', 'saul'];
+const SKINS = ['jane', 'negan', 'homelander', 'walt', 'saul', 'chester'];
 const SKIN_META = {
   jane:       { label: 'ПАТРИК ДЖЕЙН', color: '#68717E' },
   negan:      { label: 'НИГАН', color: '#A7252D' },
   homelander: { label: 'ХОУМЛЕНДЕР', color: '#31527D' },
   walt:       { label: 'УОЛТЕР', color: '#718D55' },
-  saul:       { label: 'СОЛ', color: '#D94B8D' }
+  saul:       { label: 'СОЛ', color: '#D94B8D' },
+  chester:    { label: 'ЧЕСТЕР', color: '#BD2536' }
 };
 let skinCursor = 0;
 function pickSkin() {
@@ -377,12 +393,19 @@ function pickSkin() {
   skinCursor++;
   return skin;
 }
+// User-supplied transparent portraits take priority. The existing characters
+// keep their former remote portraits as a fallback; Chester uses a drawn
+// placeholder if his local file is unavailable.
 const HEAD_URL = {
-  jane: 'https://i.ibb.co/NnNTL5KG/IMG-4282.png',
-  negan: 'https://i.ibb.co/ZRGCwwQT/IMG-4289.png',
-  homelander: 'https://i.ibb.co/bjQK83QV/IMG-4290.png',
-  walt: 'https://i.ibb.co/KxpN1fp4/IMG-4298.png',
-  saul: 'https://i.ibb.co/nHFz7pG/IMG-4297.png'
+  jane:'/faces/patrick.png', negan:'/faces/negan.png', chester:'/faces/chester.png',
+  homelander:'/faces/homelander.png', saul:'/faces/saul.png', walt:'/faces/walt.png'
+};
+const HEAD_FALLBACK = {
+  jane:'https://i.ibb.co/NnNTL5KG/IMG-4282.png',
+  negan:'https://i.ibb.co/ZRGCwwQT/IMG-4289.png',
+  homelander:'https://i.ibb.co/bjQK83QV/IMG-4290.png',
+  walt:'https://i.ibb.co/KxpN1fp4/IMG-4298.png',
+  saul:'https://i.ibb.co/nHFz7pG/IMG-4297.png'
 };
 const skinHeads = Object.create(null);
 SKINS.forEach(key => {
@@ -392,7 +415,11 @@ SKINS.forEach(key => {
   portrait.onload = () => {
     skinHeads[key] = { img: portrait, aspect: portrait.naturalWidth / Math.max(1, portrait.naturalHeight), loaded: true };
   };
+  let triedFallback = false;
   portrait.onerror = () => {
+    if (!triedFallback && HEAD_FALLBACK[key]) {
+      triedFallback = true; portrait.src = HEAD_FALLBACK[key]; return;
+    }
     skinHeads[key] = { img: null, aspect: .8, loaded: false };
   };
   portrait.src = HEAD_URL[key];
@@ -479,6 +506,29 @@ const DEF = {
       shin: b => limb(O, 8, 17, b ? Jb : J, P, D),
       boot: b => shoe(O, b ? '#0F1013' : '#16171A', '#383B42', b ? Jb : J, b)
     };
+  })(),
+  // Black tank top, bare tattooed arms and charcoal trousers, as in the
+  // supplied clothing reference. Tattoos are baked into both animated arms.
+  chester: (() => {
+    const O='#100e11', K='#191a1d', Kh='#343438', KD='#24252a', T='#3b3d42', Th='#56575a';
+    const skin='#d6a17e', light='#e6b18e', shadow='#b98265', ink='#345a54', ink2='#7b4c4b';
+    const tattoos=[[2,2,1,3,ink],[4,3,1,2,ink2],[3,5,2,1,ink],[2,7,1,2,ink2],
+      [4,8,2,1,ink],[3,10,1,2,ink],[5,11,1,2,ink2],[2,12,1,1,ink]];
+    return {
+      neck:[[0,0,6,7,O],[1,0,4,5,skin],[2,0,2,4,light],[1,5,4,2,K]],
+      chest:[...box(0,0,13,16,O),[1,1,11,14,K],[1,1,3,3,skin],[9,1,3,3,shadow],
+        [4,1,5,2,skin],[4,2,5,1,shadow],[2,5,1,9,Kh],[10,4,1,10,'#101114']],
+      abdomen:[...box(0,0,12,13,O),[1,1,10,11,K],[2,2,1,8,Kh],[9,1,2,11,KD],
+        [3,7,5,1,'#29292c']],
+      pelvis:[...box(0,0,12,11,O),[1,1,10,9,T],[1,1,10,2,KD],[2,1,2,1,Th],[8,3,3,7,KD]],
+      uArm:b=>[...limb(O,8,15,b?shadow:skin,b?skin:light,shadow),...tattoos],
+      lArm:b=>[...sleeve(O),[2,1,5,10,b?shadow:skin],[3,1,1,9,light],
+        [2,2,1,3,ink],[4,3,2,1,ink2],[3,5,2,1,ink],[2,7,1,2,ink2],[4,8,1,2,ink],
+        ...hand(b?shadow:skin,light,shadow,O)],
+      thigh:b=>[...limb(O,9,17,b?KD:T,Th,KD),[5,3,1,10,Kh]],
+      shin:b=>[...limb(O,8,17,b?KD:T,Th,KD),[4,3,1,10,Kh]],
+      boot:b=>shoe(O,b?'#121316':'#202124','#45464a',KD,b)
+    };
   })()
 };
 const DIM = { neck: [6, 7], chest: [13, 16], abdomen: [12, 13], pelvis: [12, 11], uArm: [8, 15], lArm: [8, 18], thigh: [9, 17], shin: [8, 17], boot: [13, 8] };
@@ -547,13 +597,44 @@ const BAT_SPR=(()=>{
   g.fillStyle=BL;for(const [x,y] of [[17,3],[19,5],[22,4],[14,5],[20,2],[23,6],[16,4]])g.fillRect(x,y,1,1);
   return c;
 })();
+// Red Strat-style guitar: the fretted neck and headstock remain at the hands,
+// while the body flexes around a constrained joint and accumulates cracks.
+function drawGuitarShape(g,damage=0,flex=0){
+  const px=(x,y,w,h,c)=>{g.fillStyle=c;g.fillRect(x,y,w,h);};
+  g.save();g.scale(3,3);
+  px(0,-2,4,4,'#8d633e');px(0,-3,3,1,'#d1ad77');px(0,2,3,1,'#c19a6a');
+  for(let x=0;x<4;x+=2){px(x,-3,1,1,'#dad6c7');px(x,2,1,1,'#dad6c7');}
+  px(3,-2,18,4,'#18171b');px(3,-2,18,1,'#504747');
+  for(let x=5;x<21;x+=2)px(x,-2,1,4,'#a4a2a0');
+  g.translate(20,0);g.rotate(clamp(flex+damage*.1,-.22,.26));
+  // The two horns, contoured red body, white pickguard and dark pickups.
+  px(0,-2,5,4,'#560611');
+  // Stepped, asymmetrical horns leave a narrow waist beside the neck.
+  px(1,-7,4,3,'#730713');px(2,-8,3,2,'#bd1325');px(3,-6,2,2,'#e13a40');
+  px(2,4,4,3,'#730713');px(3,5,3,3,'#a50c1c');
+  px(5,-5,11,10,'#6a0712');px(5,-6,9,12,'#a80c1f');
+  px(7,-7,6,14,'#c71b2d');px(13,-5,3,10,'#ad1021');px(15,-3,2,6,'#780818');
+  // The white guard has the curved/stepped shape of the reference rather
+  // than a square label, with three dark single-coil pickups.
+  px(5,-2,3,4,'#d3d0ca');px(7,-4,4,8,'#e3e1dc');
+  px(9,-3,4,7,'#f0eee9');px(12,-1,2,3,'#e3e1dc');
+  px(7,-2,1,4,'#4b4c4c');px(9,-2,1,4,'#4b4c4c');px(11,-2,1,4,'#4b4c4c');
+  px(13,3,2,1,'#c3c5c4');px(14,2,1,1,'#f5eee5');
+  if(damage>.24){px(1,-1,1,2,'#38020a');px(2,0,2,1,'#ef7370');}
+  if(damage>.58){
+    px(1,-4,1,2,'#190c0c');px(2,-2,1,2,'#190c0c');px(1,0,1,2,'#190c0c');
+    px(2,2,1,2,'#190c0c');px(3,1,1,1,'#ffd8bb');
+  }
+  g.restore();
+}
 function drawBat(g,f){
   const R=f.rig; if(!R||!R.bd||f.batLost||f.hp<=0)return;
   const w=R.wN,v=R.bd;
   g.save();g.imageSmoothingEnabled=false;
   g.translate(w.x-v.x*16,w.y-v.y*16);g.rotate(Math.atan2(v.y,v.x));
   if(v.x<0)g.scale(1,-1);
-  g.drawImage(BAT_SPR,0,-13.5,78,27);
+  if(f.skin==='chester')drawGuitarShape(g,f.guitarDamage,f.guitarFlex);
+  else g.drawImage(BAT_SPR,0,-13.5,78,27);
   g.restore();
 }
 function stowsBat(f){
@@ -565,7 +646,8 @@ function drawStowedBat(g,f){
   g.save();g.imageSmoothingEnabled=false;
   g.translate(R.sh.x-R.dir*13,R.sh.y-8);g.rotate(Math.atan2(dy,dx));
   if(R.dir<0)g.scale(1,-1);
-  g.drawImage(BAT_SPR,-4,-13.5,78,27);g.restore();
+  if(f.skin==='chester'){g.translate(-4,0);drawGuitarShape(g,f.guitarDamage,f.guitarFlex);}
+  else g.drawImage(BAT_SPR,-4,-13.5,78,27);g.restore();
 }
 function drawDroppedBat(g,b){
   const gy=b.gy||468;
@@ -576,7 +658,8 @@ function drawDroppedBat(g,b){
   g.fillRect(sx-30,sy-3,60,6);
   g.translate(b.x,b.y);g.rotate(b.ang);
   if(b.flip<0)g.scale(1,-1);
-  g.drawImage(BAT_SPR,-39,-13.5,78,27);
+  if(b.kind==='guitar'){g.translate(-48,0);drawGuitarShape(g,b.damage||0,0);}
+  else g.drawImage(BAT_SPR,-39,-13.5,78,27);
   g.restore();
 }
 /* ============================ WOUNDS ============================ */
@@ -924,7 +1007,18 @@ function drawSkinCape(g, R, f) {
 }
 function drawSkinHead(g, R, f) {
   const head = R.head, neck = R.neck, data = skinHeads[f.skin];
-  if (!data || !data.img || !data.loaded || !data.img.complete || !data.img.naturalWidth) return;
+  if (!data || !data.img || !data.loaded || !data.img.complete || !data.img.naturalWidth) {
+    const angle=Math.atan2(head.y-neck.y,head.x-neck.x)+Math.PI/2;
+    g.save();g.translate(head.x,head.y);g.rotate(angle);
+    // Neutral pixel-art stand-in, replaced automatically when the PNG loads.
+    g.fillStyle='#241b1b';g.fillRect(-14,-23,28,34);
+    g.fillStyle='#d6a17e';g.fillRect(-12,-18,24,28);
+    g.fillStyle='#e3b08d';g.fillRect(-9,-15,17,19);
+    g.fillStyle=f.skin==='chester'?'#4b3d37':'#49382f';g.fillRect(-12,-23,24,7);g.fillRect(-14,-18,4,8);
+    g.fillStyle='#292021';g.fillRect(-8,-8,4,3);g.fillRect(4,-8,4,3);
+    g.fillStyle='#9e624e';g.fillRect(-2,-3,4,5);g.fillRect(-5,5,10,2);
+    g.restore();return;
+  }
   const angle = Math.atan2(head.y - neck.y, head.x - neck.x) + Math.PI / 2;
   const height = 44; // heads are ~2% larger than before
   const aspect = clamp(data.aspect || .8, .55, 1.35);
@@ -1104,7 +1198,11 @@ function drawFighterBody(ctx, f) {
   drawPixelArm(ctx, R, f, 'F', true, S);
   drawPixelLeg(ctx, R, f, true, S);
   drawSkinCape(ctx, R, f);
-  drawSkinSegment(ctx, S.neck, R.sh, R.head, 14, 4, 8, R.dir === 1);
+  drawSkinSegment(ctx, S.neck, R.sh, f.headDestroyed?R.neck:R.head, 14, 4, 8, R.dir === 1);
+  if(f.headDestroyed){
+    const p=R.neck;ctx.fillStyle='#4c0610';ctx.fillRect(p.x-8,p.y-4,16,8);
+    ctx.fillStyle='#a51b27';ctx.fillRect(p.x-6,p.y-4,12,4);
+  }
   const p1 = pointBetween(R.sh, R.pel, .34);
   const p2 = pointBetween(R.sh, R.pel, .68);
   drawSkinSegment(ctx, S.chest, R.sh, p1, 38, 6, 6, R.dir === 1);
@@ -1118,7 +1216,7 @@ function drawFighterBody(ctx, f) {
 }
 function drawFighterHead(ctx, f) {
   const R = f.rig;
-  if (!R || !f.visible) return;
+  if (!R || !f.visible || f.headDestroyed) return;
   drawSkinHead(ctx, R, f);
   drawLayerBurns(ctx, R, f, 'head');
 }
@@ -1130,13 +1228,95 @@ function drawFighterFrontArm(ctx, f) {
   drawSkinOutfitDetails(ctx, R, f, 'arms');
   drawLayerBurns(ctx, R, f, 'front');
 }
+// A hot cut travels across the visible body before it separates. Ordinary
+// laser burns fade after seconds; the orange borders on the pieces below do not.
+function drawSliceProgress(g,f){
+  const job=f.laserSlice,R=f.rig;if(!job||!R)return;
+  g.save();g.globalCompositeOperation='source-atop';g.lineCap='butt';
+  for(const t of [.42,.78]){
+    const cy=lerp(R.head.y,R.pel.y,t),cx=lerp(R.head.x,R.pel.x,t);
+    const x0=cx-60,x1=x0+120*job.progress;
+    g.strokeStyle='#ad3011';g.lineWidth=7;g.beginPath();g.moveTo(x0,cy-60*job.slope);g.lineTo(x1,cy+(x1-cx)*job.slope);g.stroke();
+    g.strokeStyle='#ff971b';g.lineWidth=3;g.beginPath();g.moveTo(x0,cy-60*job.slope);g.lineTo(x1,cy+(x1-cx)*job.slope);g.stroke();
+  }
+  g.restore();
+}
+// Clip a convex polygon against one half of a slanted cut line.
+function clipCut(poly,cut,slope,cx,keepBelow){
+  const value=p=>p.y-(cut+slope*(p.x-cx));
+  const out=[];
+  for(let i=0;i<poly.length;i++){
+    const a=poly[i],b=poly[(i+1)%poly.length],va=value(a),vb=value(b);
+    const ina=keepBelow?va>=0:va<=0,inb=keepBelow?vb>=0:vb<=0;
+    if(ina)out.push(a);
+    if(ina!==inb){const t=va/(va-vb);out.push({x:lerp(a.x,b.x,t),y:lerp(a.y,b.y,t)});}
+  }
+  return out;
+}
+function makeLaserPieces(f,job){
+  const R=f.rig;if(!R)return [];
+  const points=JN.map(k=>R[k]).filter(Boolean);
+  const left=Math.floor(Math.min(...points.map(p=>p.x))-35),top=Math.floor(Math.min(...points.map(p=>p.y))-45);
+  const width=Math.ceil(Math.max(...points.map(p=>p.x))-left+40),height=Math.ceil(Math.max(...points.map(p=>p.y))-top+35);
+  const snapshot=mk();snapshot.width=width;snapshot.height=height;
+  const sg=snapshot.getContext('2d');sg.imageSmoothingEnabled=false;sg.translate(-left,-top);
+  drawFighterBody(sg,f);drawFighterHead(sg,f);drawFighterFrontArm(sg,f);
+  const slope=job.slope,cuts=[height*.37,height*.68],pieces=[];
+  for(let i=0;i<3;i++){
+    let poly=[{x:0,y:0},{x:width,y:0},{x:width,y:height},{x:0,y:height}];
+    if(i>0)poly=clipCut(poly,cuts[i-1],slope,width/2,true);
+    if(i<2)poly=clipCut(poly,cuts[i],slope,width/2,false);
+    if(poly.length<3)continue;
+    const x0=Math.max(0,Math.floor(Math.min(...poly.map(p=>p.x))));
+    const y0=Math.max(0,Math.floor(Math.min(...poly.map(p=>p.y))));
+    const x1=Math.min(width,Math.ceil(Math.max(...poly.map(p=>p.x))));
+    const y1=Math.min(height,Math.ceil(Math.max(...poly.map(p=>p.y))));
+    const c=mk();c.width=Math.max(1,x1-x0);c.height=Math.max(1,y1-y0);
+    const g=c.getContext('2d');g.imageSmoothingEnabled=false;g.save();g.beginPath();
+    poly.forEach((p,j)=>j?g.lineTo(p.x-x0,p.y-y0):g.moveTo(p.x-x0,p.y-y0));
+    g.closePath();g.clip();g.drawImage(snapshot,-x0,-y0);g.restore();
+    // Mask both exposed edges onto the original pixels, so the cut follows
+    // its physical fragment and stays orange far longer than a normal burn.
+    g.globalCompositeOperation='source-atop';g.lineCap='butt';
+    for(const cut of [i>0?cuts[i-1]:null,i<2?cuts[i]:null])if(cut!==null){
+      const line=()=>{g.beginPath();g.moveTo(-x0,cut-slope*width/2-y0);g.lineTo(width-x0,cut+slope*width/2-y0);g.stroke();};
+      g.strokeStyle='#9c220b';g.lineWidth=9;line();g.strokeStyle='#ff8219';g.lineWidth=5;line();
+      g.strokeStyle='#ffd261';g.lineWidth=2;line();
+    }
+    g.globalCompositeOperation='source-over';
+    pieces.push({canvas:c,x:left+x0+c.width/2,y:top+y0+c.height/2,
+      vx:job.dir*55+(i-1)*105,vy:-105-i*48,angle:0,va:(i-1)*2.2+job.dir*.5,
+      floor:f.gy,settled:false});
+  }
+  return pieces;
+}
+function updateGorePieces(pieces,dt,width){
+  for(const p of pieces){
+    if(p.settled)continue;
+    p.vy+=1300*dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.angle+=p.va*dt;
+    if(p.x<35||p.x>width-35){p.x=clamp(p.x,35,width-35);p.vx*=-.32;}
+    const radius=Math.max(5,Math.min(34,p.canvas.height*.38));
+    if(p.y+radius>=p.floor){
+      p.y=p.floor-radius;
+      if(p.vy>0)p.vy=-p.vy*.25;
+      p.vx*=.68;p.va*=.65;
+      if(Math.abs(p.vy)<35&&Math.abs(p.vx)<25&&Math.abs(p.va)<.5){p.vx=p.vy=p.va=0;p.settled=true;}
+    }
+  }
+}
+function drawGorePieces(g,pieces){
+  g.save();g.imageSmoothingEnabled=false;
+  for(const p of pieces){g.save();g.translate(p.x,p.y);g.rotate(p.angle);g.drawImage(p.canvas,-p.canvas.width/2,-p.canvas.height/2);g.restore();}
+  g.restore();
+}
 /* ---------- injuries ---------- */
 const RIP={
   jane:      {cloth:'#343840', torso:'#DCE5EF', arm:'#DCE5EF', leg:'#B58C73'},
   negan:     {cloth:'#17191D', torso:'#CFCBC2', arm:'#CFCBC2', leg:'#B58C73'},
   homelander:{cloth:'#182943', torso:'#EFEFEF', arm:'#EFEFEF', leg:'#B58C73'},
   walt:      {cloth:'#526B3D', torso:'#E0A67F', arm:'#E0A67F', leg:null},
-  saul:      {cloth:'#17191F', torso:'#EF5B9A', arm:'#EF5B9A', leg:'#B58C73'}
+  saul:      {cloth:'#17191F', torso:'#EF5B9A', arm:'#EF5B9A', leg:'#B58C73'},
+  chester:   {cloth:'#191a1d', torso:'#D89B72', arm:null, leg:'#B58C73'}
 };
 function addLaserRip(f,mark){
   if(!mark||mark.seg==='head'||!BURN_MAP[mark.seg])return false;
@@ -1144,6 +1324,7 @@ function addLaserRip(f,mark){
   // The end of a forearm sprite is the hand, not a sleeve.
   if(arm&&part[0]==='f'&&mark.t>.62)return false;
   const pal=RIP[f.skin]||RIP.jane;
+  if(arm&&!pal.arm)return false; // bare tattooed arms are not a sleeve
   let cloth=pal.cloth,under=part==='torso'?pal.torso:leg?pal.leg:pal.arm;
   if(leg){
     if(f.skin==='walt'){
@@ -1153,7 +1334,7 @@ function addLaserRip(f,mark){
       else return false;
       under=SF;
     }else{
-      const trousers={jane:'#50555E',negan:'#323438',homelander:'#263B59',saul:'#22242B'};
+      const trousers={jane:'#50555E',negan:'#323438',homelander:'#263B59',saul:'#22242B',chester:'#3b3d42'};
       cloth=trousers[f.skin]||pal.cloth;
       if(f.skin==='homelander'&&part[0]==='s'&&mark.t>.35)cloth='#B81D26';
     }
@@ -1205,7 +1386,7 @@ function injure(f,zone,pw,laserMark=null){
 /* ============================ FX / PIXEL BLOOD ============================ */
 class FX{
   constructor(){
-    this.sm=[];this.bl=[];this.sp=[];this.laserSparks=[];this.fl=[];this.rg=[];this.marks=[];this.decal=null;this.floorY=468;
+    this.sm=[];this.bl=[];this.sp=[];this.gibs=[];this.laserSparks=[];this.fl=[];this.rg=[];this.marks=[];this.decal=null;this.floorY=468;
     this.bloodField=new BloodField(960,this.floorY);
   }
   smoke(x,y,vx,vy,r,gr,life,a,spr){
@@ -1247,6 +1428,13 @@ class FX{
       });
     }
   }
+  headFragments(x,y,dir,owner,floor=this.floorY){
+    const colors=['#6e0815','#a31825','#cc413d','#e4a080','#f0c0a2'];
+    for(let i=0;i<24;i++)this.gibs.push({x:x+rnd(-7,7),y:y+rnd(-8,5),
+      vx:dir*rnd(80,260)+rnd(-210,150),vy:-rnd(100,370),size:3+((i%4===0)?3:0),
+      color:colors[i%colors.length],life:rnd(8,14),owner,floor,settled:false});
+    if(this.gibs.length>160)this.gibs.splice(0,this.gibs.length-160);
+  }
   drip(x,y){
     // Small, slow drops instead of the existing explosive hit spray.
     this.bl.push({x,y,vx:rnd(-6,6),vy:rnd(8,25),r:1.5,fy:this.floorY+this.bloodField.range(3,15),
@@ -1273,7 +1461,7 @@ class FX{
     for(let i=0;i<n;i++){
       let a=field.range(0,TAU);
       if(surf==='floor')a=field.range(-2.65,-.49);
-      else if(surf==='wall'&&y<=12)a=field.range(.35,Math.PI-.35);
+      else if(surf==='wall'&&y<=WORLD_TOP+12)a=field.range(.35,Math.PI-.35);
       else if(surf==='wall')a=(x<field.width/2?0:Math.PI)+field.range(-1.2,1.2);
       const speed=field.range(75,185),life=field.range(.18,.4),radius=field.range(2.3,4.4);
       this.laserSparks.push({x,y,vx:Math.cos(a)*speed,vy:Math.sin(a)*speed,life,max:life,
@@ -1326,6 +1514,14 @@ class FX{
       }
     }
     this.bl=this.bl.filter(b=>!b.dead&&b.life>0);
+    for(const p of this.gibs){
+      p.life-=dt;
+      if(p.settled)continue;
+      p.vy+=1400*dt;p.x+=p.vx*dt;p.y+=p.vy*dt;
+      if(p.y>=p.floor-p.size){p.y=p.floor-p.size;p.vy=-Math.abs(p.vy)*.22;p.vx*=.62;
+        if(Math.abs(p.vy)<35&&Math.abs(p.vx)<35){p.vx=p.vy=0;p.settled=true;}}
+    }
+    this.gibs=this.gibs.filter(p=>p.life>0);
     for(const s of this.sp){s.x+=s.vx*dt;s.y+=s.vy*dt;s.vy+=500*dt;s.life-=dt;}
     this.sp=this.sp.filter(s=>s.life>0);
     for(const s of this.laserSparks){s.x+=s.vx*dt;s.y+=s.vy*dt;s.vy+=220*dt;s.life-=dt;}
@@ -1352,6 +1548,9 @@ class FX{
     ctx.globalAlpha=1;
     for(const r of this.rg){ctx.fillStyle=`rgba(220,205,185,${r.life/r.max*.42})`;for(let i=-5;i<=5;i++){const x=Math.round((r.x+i*r.r/5)/3)*3,y=Math.round((r.y+Math.abs(i)*.45)/3)*3;ctx.fillRect(x,y,3,3);}}
     ctx.globalAlpha=1;
+    for(const p of this.gibs){
+      ctx.fillStyle=p.color;ctx.fillRect(Math.round(p.x/q)*q,Math.round(p.y/q)*q,p.size,p.size);
+    }
     for(const b of this.bl){
       const snap=v=>Math.round(v/q)*q;
       const x=snap(b.x), y=snap(b.y), sz=Math.max(q,snap(b.r));
@@ -1511,7 +1710,7 @@ class Ragdoll{
     R.fdN=footDirRag(P.kN,P.aN,f.dir);R.fdF=footDirRag(P.kF,P.aF,f.dir);
     R.cN=.35;R.cF=.35;R.mo=.5;R.ey=f.hp<=0?1:.75;R.bd=null;
     // While alive, Lucille stays in Negan's near hand (1-handed); upon death he lets go of it.
-    if(f.skin==='negan'&&f.hp>0&&!f.batLost){
+    if((f.skin==='negan'||f.skin==='chester')&&f.hp>0&&!f.batLost){
       let dx=P.wN.x-P.eN.x,dy=P.wN.y-P.eN.y;const l=Math.hypot(dx,dy)||1;
       R.bd=clampBatFloor(P.wN.x,P.wN.y,dx/l,dy/l,f.gy);
     }
@@ -1527,9 +1726,9 @@ function distSeg(px,py,ax,ay,bx,by){
 // Body test used by the laser ray: capsules along the rig (works for standing fighters and ragdolls).
 const BODY_CAPS=[['neck','pel',17],['pel','kN',10],['pel','kF',10],['kN','aN',8],['kF','aF',8],['neck','eN',7],['eN','wN',6],['neck','eF',7],['eF','wF',6]];
 function bodyHit(g,px,py){
-  const R=g.rig;if(!R)return false;
+  const R=g.rig;if(!R||g.gorePieces)return false;
   if(Math.abs(px-R.pel.x)>170)return false;
-  if(Math.hypot(px-R.head.x,py-(R.head.y-6))<18)return true;
+  if(!g.headDestroyed&&Math.hypot(px-R.head.x,py-(R.head.y-6))<18)return true;
   for(const [a,b,r] of BODY_CAPS){if(distSeg(px,py,R[a].x,R[a].y,R[b].x,R[b].y)<r)return true;}
   return false;
 }
@@ -1561,7 +1760,7 @@ class Fighter{
       hitDone:false,queued:false,lungeDone:false,wh:false,dustT:0,calmT:0,tie:null,cape:null,pvx:0,pvy:0,corpseFade:0,
       lz:null,lzSnd:false,burns:[],dive:false,diveT:0,diveHit:false,kickExt:0,bodyJump:false,fastGetup:false,
       hoverY:0,hlBrake:0,hlBrakeDir:1,hlBrakeFrom:null,hlLiftFx:false,hopDur:.38,
-      batLost:false,dizzyAlpha:0,dizzyPh:Math.random()*TAU,
+      batLost:false,guitarDamage:0,guitarFlex:0,guitarFlexVel:0,dizzyAlpha:0,dizzyPh:Math.random()*TAU,
       boxing:false,boxCD:0,guardCD:0,guardDur:0,guardFlinch:0,guardShakePhase:0,guardShakeX:0,guardShakeY:0,guardMoves:false,guardPhase:0,dodgedBy:null,
       crouchActive:false,crouchTime:0,runStopFrom:null,
       overextendFor:null,overextendStamp:0,flankTarget:null,flankFrom:0,
@@ -1569,9 +1768,11 @@ class Fighter{
       counterBase:null,counterReleased:false,fallDamage:null,
       staggerDir:0,staggerDur:0,shoveWillFall:false,
       shoveCD:0,shoveTarget:null,shoveDone:false,
-      lampGoal:null,lampRef:null,lampAction:'pullup',lampStamina:0,
+      lampGoal:null,lampRef:null,lampAction:'pullup',lampStamina:0,lampClimb:0,
+      onBridge:false,fallPeak:0,bridgeTarget:null,tackleCheck:0,
       lampGrabGap:52,lampGrabSide:0,lampBreakAt:Infinity,lampDiveAt:Infinity,lampHangStamp:0,lampPullTarget:null,lampPullDone:false,
       bloodStains:[],footBlood:{N:0,F:0},jointBlood:{kN:0,kF:0,eN:0,eF:0},bloodFootfall:null,footSplashCooldown:0,
+      headDestroyed:false,laserSlice:null,gorePieces:null,
       bleed:null,collapseFrom:null,blinkT:rnd(2.2,5.5),blink:0,coughT:rnd(1,2.6)
     });
   }
@@ -1588,8 +1789,13 @@ class Fighter{
     if(this.state==='bleed_collapse')return false;
     const pressing=this.bleed&&this.bleed.pressing;
     const set=(boxing||pressing)?(this.skin==='homelander'?ATK_HL:ATK):atkSetFor(this.skin);
-    const a=set[i];
+    let a=set[i];
     if(!a||(pressing&&(a.fist===this.bleed.arm||a.bat)))return false;
+    if(this.skin==='negan'&&!boxing&&!pressing&&!a.air){
+      const target=Game.fighters.find(o=>o!==this&&o.hp>0&&o.hp<=BAT_FINISH.dmg&&o.canBeHit()&&
+        Math.abs(o.x-this.x)<145&&Math.abs((o.gy-o.y)-(this.gy-this.y))<110);
+      if(target)a=BAT_FINISH;
+    }
     this.state='attack';this.boxing=boxing;this.atk=a;
     this.ak=i;this.st=0;this.hitDone=false;this.queued=false;this.lungeDone=false;
     this.connected=false;this.lastHitTarget=null;this.lastAttackEnd=-Infinity;this.dodgedBy=null;this.wh=false;this.atkStamp++;this.lzSnd=false;this.lz=null;this.hlBrake=0;
@@ -1612,7 +1818,7 @@ class Fighter{
   startShove(v){
     if(this.state!=='idle'||this.hp<=0||this.y>5||this.shoveCD>0||(this.bleed&&this.bleed.pressing)||!v||v===this||
        !Game.fighters.includes(this)||!Game.fighters.includes(v)||!v.canBeHit()||v.y>5||
-       v.state==='lamp_jump'||Math.abs(v.x-this.x)>SHOVE_REACH)return false;
+       v.state==='lamp_jump'||Math.abs(v.gy-this.gy)>100||Math.abs(v.x-this.x)>SHOVE_REACH)return false;
     this.dir=v.x>=this.x?1:-1;this.state='shove';this.st=0;this.vx=0;
     this.shoveTarget=v;this.shoveDone=false;this.shoveCD=rnd(3,4.5);this.hlBrake=0;
     Snd.whoosh();return true;
@@ -1647,7 +1853,7 @@ class Fighter{
   }
   startLampJump(lamp){
     if(this.state!=='idle'||this.hp<=0||this.y>5||!lamp||!Game.lamps.includes(lamp)||
-       lamp.detached||lamp.occupant||Math.abs(lamp.x-this.x)>42)return false;
+       this.onBridge||lamp.detached||!lamp.canGrab()||Math.abs(lamp.x-this.x)>42)return false;
     this.lampGoal=lamp;
     this.state='lamp_jump';this.st=0;this.y=.5;this.vy=840;
     this.vx=clamp((lamp.x-this.x)*3,-120,120);this.hlBrake=0;this.invT=0;
@@ -1655,7 +1861,7 @@ class Fighter{
     return true;
   }
   grabLamp(lamp){
-    if(this.state!=='lamp_jump'||!lamp||lamp.detached||lamp.occupant||!Game.lamps.includes(lamp))return false;
+    if(this.state!=='lamp_jump'||!lamp||lamp.detached||!lamp.canGrab()||!Game.lamps.includes(lamp))return false;
     const grip=lamp.grip();
     const sh=this.cur?computeRig(this.cur,this.x,this.gy,this.y+(this.hoverY||0),this.dir,false).sh:
       this.rig?this.rig.sh:{x:this.x,y:grip.y+52};
@@ -1663,18 +1869,21 @@ class Fighter{
     // the hang. A small impulse starts a damped physical swing, not a looped pose.
     this.lampGrabGap=clamp(sh.y-grip.y,15,63);
     this.lampGrabSide=clamp(sh.x-grip.x,-26,26);
-    lamp.occupant=this;
-    lamp.omega+=clamp(this.vx/lamp.length*.22,-.18,.18)+this.dir*rnd(.12,.22);
+    lamp.riders.add(this);this.lampClimb=0;
+    lamp.omega+=clamp(this.vx/lamp.length*.22,-.04,.04)+this.dir*rnd(.018,.03);
     this.lampRef=lamp;this.lampGoal=null;this.state='lamp_hang';this.st=0;
-    this.vx=0;this.vy=0;this.lampStamina=rnd(2.8,3.5);this.lampHangStamp++;
-    this.lampAction='pullup';this.lampDiveAt=rnd(1.65,2.25);
+    this.vx=0;this.vy=0;this.lampHangStamp++;
+    const pursuit=Game.fighters.some(o=>o!==this&&o.hp>0&&(o.onBridge||(o.state==='lamp_hang'&&o.lampClimb>120)));
+    this.lampAction=pursuit||Math.random()<.42?'climb':'pullup';
+    this.lampStamina=this.lampAction==='climb'?rnd(7.8,9):rnd(2.8,3.5);
+    this.lampDiveAt=rnd(1.65,2.25);this.tackleCheck=rnd(.8,1.5);
     // Detachment is much rarer than a jump, and the global map cap is enforced by Game.
     this.lampBreakAt=Math.random()<.02?rnd(.8,2.4):Infinity;
     return true;
   }
   clearLamp(){
     const lamp=this.lampRef;
-    if(lamp&&lamp.occupant===this)lamp.occupant=null;
+    if(lamp)lamp.riders.delete(this);
     this.lampRef=null;this.lampGoal=null;
   }
   releaseLamp(reason='tired',source=null){
@@ -1699,25 +1908,69 @@ class Fighter{
   }
   updateLampHang(dt,opponent){
     const lamp=this.lampRef;
-    if(!lamp||!Game.lamps.includes(lamp)||lamp.detached||lamp.occupant!==this){this.releaseLamp();return;}
+    if(!lamp||!Game.lamps.includes(lamp)||lamp.detached||!lamp.riders.has(this)){this.releaseLamp();return;}
     if(this.st>=this.lampBreakAt){this.lampBreakAt=Infinity;if(Game.detachLamp(lamp))return;}
     this.lampStamina-=dt;
     if(this.lampStamina<=0){this.releaseLamp();return;}
+    if(this.lampAction==='climb'){
+      // More than one person can follow the same rope, but a following rider
+      // cannot pass through the one above them.
+      let limit=lamp.length-32;
+      for(const rider of lamp.riders)if(rider!==this&&rider.lampClimb>this.lampClimb)
+        limit=Math.min(limit,Math.max(this.lampClimb,rider.lampClimb-90));
+      this.lampClimb=Math.min(limit,this.lampClimb+205*dt);
+    }
     const settle=ease(clamp(this.st/.22,0,1));
     const lift=this.lampAction==='pullup'?
       ease(clamp((this.st-.2)/.5,0,1))*(1-ease(clamp((this.st-1)/.5,0,1))):0;
     const gap=lerp(this.lampGrabGap,53,settle)-18*lift;
     const side=lerp(this.lampGrabSide,-this.dir*27,settle);
-    const grip=lamp.grip(),pose=this.targetPose();
+    const grip=lamp.point(30+this.lampClimb),pose=this.targetPose();
     const base=computeRig(pose,0,this.gy,0,this.dir,false);
     this.x=clamp(grip.x+side-base.sh.x,this.minX,this.maxX);
     this.y=Math.max(.5,base.sh.y-(grip.y+gap));this.vx=0;this.vy=0;
+    if(this.lampAction==='climb'&&this.gy-this.y<=BRIDGE_Y){
+      // Switch reference floors while keeping the feet at the same world y.
+      this.clearLamp();this.gy=BRIDGE_Y;this.y=0;this.vy=0;this.onBridge=true;
+      this.state='idle';this.st=0;this.cur=null;this.fallPeak=0;return;
+    }
+    if(this.lampAction==='climb'&&opponent&&opponent.hp>0&&this.y>350){
+      this.tackleCheck-=dt;
+      if(this.tackleCheck<=0){
+        this.tackleCheck=rnd(1.2,2);
+        if(Math.random()<.22&&this.startHighTackle(opponent))return;
+      }
+    }
     if((this.lampAction==='pullup'||this.lampAction==='dive')&&this.st>=this.lampDiveAt){
       const target=opponent&&opponent.hp>0?opponent:null;
       const dive=target&&Math.abs(target.x-this.x)<300&&
         (this.lampAction==='dive'||Math.random()<.35);
       this.releaseLamp(dive?'dive':'jump',target);
     }
+  }
+  leaveBridge(){
+    if(!this.onBridge)return;
+    const old=this.gy;this.gy=Game.gy;this.y+=Game.gy-old;
+    this.onBridge=false;this.fallPeak=Math.max(this.fallPeak,this.y);
+  }
+  prepareHighFall(source=null){
+    if(this.gy!==Game.gy||!this.rig)return;
+    const height=Math.max(this.fallPeak,Game.gy-Math.max(this.rig.aN.y,this.rig.aF.y));
+    if(height<350)return;
+    const amount=clamp((height-220)*.13,35,120);
+    if(!this.fallDamage||this.fallDamage.amount<amount)
+      this.fallDamage={amount,source:source||this.fallDamage?.source||{dir:this.dir},severe:true};
+  }
+  startHighTackle(v){
+    if(this.hp<=0||!v||v.hp<=0||!v.rig||!this.rig||
+       !(this.onBridge||(this.state==='lamp_hang'&&this.y>350)))return false;
+    const dx=v.x-this.x,dy=v.rig.pel.y-this.rig.pel.y;
+    if(Math.abs(dx)<45||Math.abs(dx)>220||Math.abs(dy)>125)return false;
+    // Never jump toward someone hundreds of pixels below the bridge.
+    this.dir=dx>0?1:-1;this.bridgeTarget=v;
+    if(this.onBridge)this.leaveBridge();else this.clearLamp();
+    this.state='bridge_leap';this.st=0;this.vx=this.dir*360;this.vy=180;this.dive=false;
+    this.fallPeak=Math.max(this.fallPeak,this.y);Snd.whoosh();return true;
   }
   startLampPull(v){
     if(this.state!=='idle'||this.hp<=0||this.y>5||!v||!Game.fighters.includes(v)||
@@ -1852,7 +2105,7 @@ class Fighter{
   resolveBloodFootfall(dt=0){
     const contact=this.bloodFootfall;
     if(!contact)return;
-    if(!this.fx||!this.rig||this.hp<=0||this.y>2||(!contact.landed&&this.hoverY>5)||this.state==='ragdoll'){
+    if(this.gy!==Game.gy||!this.fx||!this.rig||this.hp<=0||this.y>2||(!contact.landed&&this.hoverY>5)||this.state==='ragdoll'){
       this.bloodFootfall=null;return;
     }
     const hits=[],waiting=[];
@@ -1864,9 +2117,12 @@ class Fighter{
       // the actual shoe instead of splashing under an airborne foot.
       if(ankle.y<this.gy-22){waiting.push(foot);continue;}
       const x=ankle.x+dir.x*7;
-      if(!this.fx.bloodField.puddleAtFoot(x,this.gy))continue;
-      this.footBlood[foot]=Math.min(3,this.footBlood[foot]+1);
-      hits.push(x);
+      const blood=this.fx.bloodField.contactAtFoot(x,this.gy);
+      if(!blood)continue;
+      // A sparse fleck leaves a faint trace; repeating a step on that one
+      // fleck cannot saturate the boot as if it were a deep pool.
+      this.footBlood[foot]=Math.max(this.footBlood[foot],blood.intensity*3);
+      if(blood.splashable)hits.push(x);
     }
     contact.remaining-=dt;
     if(waiting.length&&contact.remaining>0)contact.feet=waiting;
@@ -1878,20 +2134,29 @@ class Fighter{
   }
   resolveBloodJointContacts(dt){
     const field=this.fx?.bloodField,R=this.rig;
-    if(!field||!field.groups.size||!R||!this.visible||(this.state==='spawn'&&this.sp<2))return;
+    if(this.gy!==Game.gy||!field||!field.groups.size||!R||!this.visible||(this.state==='spawn'&&this.sp<2))return;
     for(const joint of ['kN','kF','eN','eF']){
       if(this.jointBlood[joint]>=3)continue;
       const p=R[joint];
       // Use the actual joint's collision radius and horizontal position, not
       // the fighter's center or an airborne joint projected onto the floor.
-      if(p&&p.y+JR[joint]>=this.gy-1.5&&field.puddleAtFoot(p.x,this.gy)){
-        this.jointBlood[joint]=Math.min(3,Math.max(1,this.jointBlood[joint]+dt*1.5));
+      if(p&&p.y+JR[joint]>=this.gy-1.5){
+        const blood=field.contactAtFoot(p.x,this.gy);
+        if(blood){
+          const target=blood.intensity*3;
+          this.jointBlood[joint]=Math.max(this.jointBlood[joint],Math.min(target,this.jointBlood[joint]+dt*(1+blood.intensity*3)));
+        }
       }
     }
   }
   onLand(impact){
-    const pvx=this.vx;
+    const pvx=this.vx,fallHeight=this.fallPeak;this.fallPeak=0;
     this.landT=.12;this.vx*=.35;
+    if(this.gy===Game.gy&&fallHeight>=350&&this.hp>0){
+      const amount=clamp((fallHeight-220)*.13,35,120);
+      this.fallDamage={amount,source:{dir:this.dir},severe:true};
+      this.toRagdoll(pvx*.4,0,true);this.applyFallDamage(this.rag?.p.pel);return;
+    }
     if(impact>=450&&this.fx)this.queueBloodFootfall(null,clamp(impact/900,.65,1),true);
     if(impact>250&&this.fx)this.fx.landing(this.x,this.gy,clamp(impact/1100,.25,.8));
     if(impact>500)Snd.thud();
@@ -1908,7 +2173,8 @@ class Fighter{
     for(const o of opponents){
       if(!o||o===this||!o.canBeHit())continue;
       const dx=(o.x-this.x)*this.dir;if(dx<-20||dx>a.reach+14)continue;
-      const lo=this.y+a.y[0],hi=this.y+a.y[1],ov=Math.min(hi,o.y+200)-Math.max(lo,o.y+55);if(ov<20)continue;
+      const height=this.y+(Game.gy-this.gy),otherHeight=o.y+(Game.gy-o.gy);
+      const lo=height+a.y[0],hi=height+a.y[1],ov=Math.min(hi,otherHeight+200)-Math.max(lo,otherHeight+55);if(ov<20)continue;
       // A committed low squat ducks bare-handed strikes, not knees, bats,
       // lasers or the flying kick. The missed swing can still overextend.
       if(o.crouchActive&&o.crouchTime>=.07&&a.fist&&!a.bat){this.dodgedBy=o;continue;}
@@ -1948,7 +2214,11 @@ class Fighter{
     injure(this,a.zone,a.pw);
     if(!this.bleed&&a.pw>=.95&&Math.random()<.035)this.startBleeding(px,py,att);
     att.handDamage(a,this);
-    if(this.hp<=0){Game.ko(this,att,Object.assign({},a,{noStagger:a.noStagger||!mayStagger}));return;}
+    if(this.hp<=0){
+      const headFinish=att.skin==='negan'&&a.bat&&!a.guitar&&a.zone==='head';
+      if(headFinish)Game.explodeHead(this,att,px,py);
+      Game.ko(this,att,Object.assign({},a,{noStagger:headFinish||a.noStagger||!mayStagger}));return;
+    }
     if(this.state==='ragdoll'&&this.rag){
       this.rag.wake();for(const k of RK)this.rag.p[k].px-=att.dir*.65;
       return;
@@ -1978,9 +2248,17 @@ class Fighter{
       if(a.pull)this.x=clamp(att.x+att.dir*a.pull,this.minX,this.maxX);
     }
   }
-  handDamage(a,vic){}
+  handDamage(a,vic){
+    if(this.skin==='chester'&&a.guitar){
+      // Every successful hit bends the neck briefly and accumulates visible,
+      // capped damage. The remaining guitar stays held and usable.
+      this.guitarDamage=Math.min(1,this.guitarDamage+.16+.045*(a.pw||0));
+      this.guitarFlexVel=clamp(this.guitarFlexVel+2.8,-4,4);
+    }
+  }
   toRagdoll(vx,vy,gentle=false){
-    this.clearLamp();this.lampPullTarget=null;this.shoveTarget=null;
+    this.prepareHighFall();
+    this.bridgeTarget=null;this.clearLamp();this.lampPullTarget=null;this.shoveTarget=null;
     this.breakChoke();this.boxing=false;
     if(!this.rig)return;
     this.rag=new Ragdoll(this.rig,this);if(!gentle)this.rag.launch(vx,vy);
@@ -1999,7 +2277,7 @@ class Fighter{
   }
   applyFallDamage(point){
     const hit=this.fallDamage;if(!hit||this.hp<=0)return;
-    this.fallDamage=null;this.hp=Math.max(0,this.hp-hit.amount);
+    this.fallDamage=null;this.fallPeak=0;this.hp=Math.max(0,this.hp-hit.amount);
     injure(this,'torso',.7);
     if(hit.severe&&!this.bleed&&Math.random()<.28){
       const p=point||this.rag.p.pel;this.startBleeding(p.x,p.y,hit.source);
@@ -2010,7 +2288,7 @@ class Fighter{
   startGetup(){
     const R=this.rag.toRig(this);this.blendFrom=R;
     this.x=clamp(this.rag.p.pel.x,this.minX,this.maxX);this.rag=null;this.state='getup';this.st=0;this.blend=.3;this.cur=null;
-    this.hoverY=0;this.hlLiftFx=false;
+    this.hoverY=0;this.hlLiftFx=false;this.fallPeak=0;
   }
   /* ---------------- Homelander's eye laser ---------------- */
   laserEye(){const h=this.rig.head;return {x:h.x+this.dir*9,y:h.y-5};}
@@ -2073,7 +2351,12 @@ class Fighter{
     this.breakChoke();this.boxing=false;
     this.hp=Math.max(0,this.hp-(first?3.5:1.6));
     if(this.fx&&first)this.fx.blood(pt.x,pt.y,att.dir,6,.5);
-    if(this.hp<=0){Game.ko(this,att,{lvx:300,lvy:380,pw:.9,noStagger:true});return;}
+    if(this.hp<=0){
+      const eye=att.rig?.head||{x:att.x,y:pt.y};
+      const dx=pt.x-eye.x,dy=pt.y-eye.y;
+      this.laserSlice={progress:0,duration:.24,slope:clamp(dy/(Math.abs(dx)<20?(dx<0?-20:20):dx),-.55,.55),dir:att.dir||1};
+      Game.ko(this,att,{lvx:300,lvy:380,pw:.9,noStagger:true,preserveRagdoll:true});return;
+    }
     if(first){
       Snd.hit(.8);Game.shake=Math.max(Game.shake,5);
       const zone=!mark||mark.seg==='torso'?'torso':mark.seg==='head'?'head':'limb';
@@ -2222,6 +2505,7 @@ class Fighter{
   }
   update(dt,targetOpp,allFighters){
     this.t+=dt;this.st+=dt;const c=this.ctrl;
+    if(this.skin==='chester'){this.guitarFlexVel+=(-38*this.guitarFlex-9*this.guitarFlexVel)*dt;this.guitarFlex=clamp(this.guitarFlex+this.guitarFlexVel*dt,-.25,.32);}
     const isHL=this.skin==='homelander';
     if(!targetOpp&&this.hp>0&&this.state==='idle')this.calmT+=dt;else this.calmT=0;
     this.lagHp=Math.max(this.hp,this.lagHp-dt*28);
@@ -2242,6 +2526,7 @@ class Fighter{
     this.updateBleeding(dt);
     if(this.lz&&!(this.state==='attack'&&this.atk&&this.atk.laser))this.lz=null;
     if(this.state!=='ragdoll'&&this.state!=='spawn'&&this.state!=='lamp_hang'&&(this.y>0||this.vy>0)){
+      if(this.gy===Game.gy)this.fallPeak=Math.max(this.fallPeak,this.y);
       this.vy-=2200*dt;this.y+=this.vy*dt;
       if(this.y<=0){const im=-this.vy;this.y=0;this.vy=0;this.onLand(im);}
     }
@@ -2322,8 +2607,15 @@ class Fighter{
       }
       if(c.jump){this.startDive();break;}
       for(const o of allFighters){
-        if(o===this||o.hp<=0||o.y>40||o.state==='ragdoll'||o.state==='spawn')continue;
+        if(o===this||Math.abs(o.gy-this.gy)>100)continue;
         const dx=(o.x-this.x)*this.dir;
+        if(o.state==='ragdoll'&&o.rag?.grounded()&&dx>0&&dx<85){
+          // Notice a prone body and brake instead of repeatedly falling over it.
+          // Planned vaults jump earlier, before reaching this safety zone.
+          this.vx*=Math.exp(-dt*8);continue;
+        }
+        if(o.hp<=0||o.y>40||o.state==='ragdoll'||o.state==='spawn')continue;
+        if(o.state==='getup'&&o.st<1.35)continue; // still lying low
         if(dx>-10&&dx<62&&Math.abs(this.vx)>260){this.trip(o);break;}
       }
       break;}
@@ -2360,12 +2652,22 @@ class Fighter{
       break;}
      case 'lamp_jump':{
       const lamp=this.lampGoal;
-      if(!lamp||!Game.lamps.includes(lamp)||lamp.detached||lamp.occupant){this.clearLamp();this.state='air';break;}
+      if(!lamp||!Game.lamps.includes(lamp)||lamp.detached||!lamp.canGrab()){this.clearLamp();this.state='air';break;}
       this.vx+=(clamp((lamp.x-this.x)*2,-100,100)-this.vx)*Math.min(1,dt*4);
       if(this.rig){
         const grip=lamp.grip(),sh=this.rig.sh,dy=sh.y-grip.y;
         if(this.y>2&&dy>=15&&dy<=63&&Math.abs(sh.x-grip.x)<26)this.grabLamp(lamp);
       }
+      break;}
+     case 'bridge_leap':{
+      const v=this.bridgeTarget;
+      if(v&&allFighters.includes(v)&&v.hp>0&&v.rig&&
+         Math.abs(v.x-this.x)<62&&Math.abs(v.rig.pel.y-(this.gy-this.y-88))<105){
+        if(v.state==='lamp_hang')v.releaseLamp('pull',this);
+        else{if(v.onBridge)v.leaveBridge();v.toRagdoll(this.dir*180,-80);}
+        this.toRagdoll(this.dir*90,-80);Snd.thud();break;
+      }
+      if(this.st>1.3){this.bridgeTarget=null;this.state='air';this.st=0;}
       break;}
      case 'lamp_hang':{
       this.updateLampHang(dt,targetOpp);break;}
@@ -2517,7 +2819,7 @@ class Fighter{
      case 'ragdoll':{
       const r=this.rag;r.update(dt);
       this.x=clamp(r.p.pel.x,this.minX,this.maxX);
-      if(this.hp<80&&r.settle>.08&&r.t<4&&!r.frozen){
+      if(this.gy===Game.gy&&this.hp<80&&r.settle>.08&&r.t<4&&!r.frozen){
         this.poolT-=dt;
         if(this.poolT<=0&&this.fx){
           this.poolT=this.hp<=0?.14:.22;
@@ -2577,6 +2879,11 @@ class Fighter{
     }
     if(this.dizzyAlpha>0)this.dizzyPh+=dt*4.4;
     this.buildRig(dt);
+    if(this.laserSlice&&!this.gorePieces){
+      this.laserSlice.progress=Math.min(1,this.laserSlice.progress+dt/this.laserSlice.duration);
+      if(this.laserSlice.progress>=1)this.gorePieces=makeLaserPieces(this,this.laserSlice);
+    }
+    if(this.gorePieces)updateGorePieces(this.gorePieces,dt,Game.W);
     this.resolveBloodFootfall(dt);
     this.resolveBloodJointContacts(dt);
     this.updateTie(dt);
@@ -2643,13 +2950,17 @@ class Fighter{
      case 'spawn':{
       if(this.sp<3){const p=Object.assign({},T_POSE);if(this.sp===2){p.H+=Math.sin(this.st*38)*1.2*(this.spT/.55);p.tl+=Math.sin(this.st*30)*2*(this.spT/.55);}p.ey=0;return p;}
       return mix(T_POSE,isHL?HL_IDLE:D,ease(1-this.spT/.45));}
-     case 'getup':return sampleKF(this.skin==='negan'?GETUP_NEGAN:isHL?GETUP_HL:GETUP,this.st);
+     case 'getup':return sampleKF((this.skin==='negan'||this.skin==='chester')?GETUP_NEGAN:isHL?GETUP_HL:GETUP,this.st);
      case 'lamp_jump':return LAMP_REACH;
      case 'lamp_hang':{
       const p=Object.assign({},LAMP_HANG),lamp=this.lampRef;
       const sway=lamp?clamp(lamp.omega,-.45,.45):0;
       p.tl+=(lamp?lamp.theta*20:0)-sway*5;
       p.f1x+=sway*12;p.f2x+=sway*9;
+      if(this.lampAction==='climb'){
+        const step=Math.sin(this.t*11);p.f1x+=step*12;p.f2x-=step*12;
+        p.f1h+=Math.max(0,step)*15;p.f2h+=Math.max(0,-step)*15;
+      }
       return p;}
      case 'lamp_pull':{
       const p=Object.assign({},LAMP_PULL);p.tl-=ease(clamp(this.st/LAMP_PULL_DUR,0,1))*14;return p;}
@@ -2694,6 +3005,7 @@ class Fighter{
       const base=this.hitZone==='head'?HITH:HITB;
       const p=isHL?Object.assign({},base,{f1x:10,f1h:14,fa1:42,f2x:-10,f2h:2,fa2:50}):Object.assign({},base);
       const sh=Math.sin(this.st*55)*Math.max(0,1-this.st/this.stunT)*5;p.tl+=sh;p.hd+=sh*1.3;return p;}
+     case 'bridge_leap':
      case 'air':{
       if(this.dive)return this.divePose();
       if(isHL){
@@ -2789,7 +3101,7 @@ class Fighter{
     const hard=['getup','spawn','counter_throw','lamp_hang','shove'].includes(this.state);
     const k=hard?1:(this.state==='attack'||this.state==='hit')?1-Math.exp(-dt*45):1-Math.exp(-dt*24);
     this.cur=(this.cur&&!hard)?mix(this.cur,tp,k):Object.assign({},tp);
-    const hasBat=this.skin==='negan'&&this.hp>0&&!this.batLost&&!stowsBat(this);
+    const hasBat=(this.skin==='negan'||this.skin==='chester')&&this.hp>0&&!this.batLost&&!stowsBat(this);
     const guarding=this.state==='guard'||this.state==='guard_recoil';
     const pose=guarding?guardWobblePose(this.cur,this):this.cur;
     let R=computeRig(pose,this.x,this.gy,this.y+(this.hoverY||0),this.dir,hasBat);
@@ -2837,7 +3149,7 @@ class AutoCombat{
     this.lampCheck=rnd(5,12);this.lampTarget=null;this.hangSeen=null;this.hangStamp=-1;this.hangResponse=null;
     this.rolled=false;this.intercept=false;this.afterHop=0;this.reactAction='hop';
     this.spaceCD=rnd(2,4);this.spaceDuration=0;
-    this.openingSeen=Object.create(null);this.openingTarget=null;
+    this.openingSeen=Object.create(null);this.openingTarget=null;this.bridgeTackleCD=0;
   }
   setMode(m){this.mode=m;this.modeT=0;}
   planVault(f,body){
@@ -2861,7 +3173,7 @@ class AutoCombat{
   update(dt,f,o,all){
     const c=f.ctrl;
     c.mx=0;c.jump=false;c.punch=false;c.run=false;c.laser=false;c.hop=false;c.noFace=false;c.crouch=false;
-    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.lampCheck-=dt;this.spaceCD-=dt;this.modeT+=dt;
+    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.lampCheck-=dt;this.spaceCD-=dt;this.bridgeTackleCD-=dt;this.modeT+=dt;
     this.pendingShoveT=Math.max(0,this.pendingShoveT-dt);
     if(f.hp<=0){this.mode='engage';this.openingTarget=null;this.lampTarget=null;return;}
     const st=f.state;
@@ -2913,10 +3225,48 @@ class AutoCombat{
       else o=all.filter(e=>e!==f&&e.hp<=0&&!this.handledCorpses.has(e)&&
         Math.abs(e.x-f.x)<350&&safeToVault(e,0)).sort((a,b)=>Math.abs(a.x-f.x)-Math.abs(b.x-f.x))[0]||null;
     }
-    if(!o){this.mode='engage';this.openingTarget=null;this.lampTarget=null;this.downTarget=null;this.downDecided=false;return;}
+    if(!o){
+      if(f.onBridge&&st==='idle'){
+        const direction=Math.sin(f.t*.32+f.seed)>0?1:-1;
+        c.mx=f.x<f.minX+90?1:f.x>f.maxX-90?-1:direction;c.noFace=true;f.dir=c.mx;
+      }
+      this.mode='engage';this.openingTarget=null;this.lampTarget=null;this.downTarget=null;this.downDecided=false;return;
+    }
     const dx=o.x-f.x,dist=Math.abs(dx),toward=dx>=0?1:-1;
     if(['guard','guard_recoil','shove','overextend','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull'].includes(st)){
       c.noFace=true;return;
+    }
+    // Navigate between floors before ordinary 1-D combat. A pursuer can use
+    // the same rope once the first fighter is high enough, or another rope.
+    const highTarget=o.onBridge||(o.state==='lamp_hang'&&o.lampClimb>120);
+    if(!f.onBridge&&f.gy===Game.gy&&highTarget&&['idle','run'].includes(st)){
+      if(this.mode!=='vertical_chase'){
+        this.lampTarget=null;this.setMode('vertical_chase');
+      }
+      let lamp=this.lampTarget;
+      if(!lamp||lamp.detached||!Game.lamps.includes(lamp)||!lamp.canGrab()){
+        lamp=Game.lamps.filter(l=>!l.detached&&l.canGrab()).sort((a,b)=>
+          (Math.abs(a.x-f.x)+.35*Math.abs(a.anchorX-o.x))-(Math.abs(b.x-f.x)+.35*Math.abs(b.anchorX-o.x)))[0];
+        this.lampTarget=lamp||null;
+      }
+      if(!lamp)return;
+      const d=lamp.x-f.x;c.noFace=true;
+      if(Math.abs(d)>20){c.mx=d>0?1:-1;f.dir=c.mx;return;}
+      if(st==='idle'&&f.startLampJump(lamp)){this.lampTarget=null;this.setMode('engage');}
+      return;
+    }
+    if(this.mode==='vertical_chase'){this.lampTarget=null;this.setMode('engage');}
+    if(f.onBridge){
+      const nearHeight=o.rig&&f.rig&&Math.abs(o.rig.pel.y-f.rig.pel.y)<125;
+      if(st==='idle'&&nearHeight&&dist>55&&dist<200&&this.bridgeTackleCD<=0&&Math.random()<dt*.32){
+        this.bridgeTackleCD=rnd(4,7);if(f.startHighTackle(o))return;
+      }
+      if(!o.onBridge){
+        // Stay on the bridge rather than trying to punch or jump at an enemy
+        // far below. Approach someone who is arriving on a nearby rope.
+        if(st==='idle'&&dist>85){c.mx=toward;c.noFace=true;f.dir=toward;}
+        return;
+      }
     }
     // Decide once per missed swing, not on every frame. A defender can finish
     // the back-hop and then cross behind the still-stumbling attacker.
@@ -2994,7 +3344,7 @@ class AutoCombat{
     }
     if(this.mode==='lamp_approach'){
       const lamp=this.lampTarget;
-      if(!lamp||!Game.lamps.includes(lamp)||lamp.detached||lamp.occupant||oppDown||o.state==='lamp_hang'||this.modeT>3){
+      if(!lamp||!Game.lamps.includes(lamp)||lamp.detached||!lamp.canGrab()||oppDown||o.state==='lamp_hang'||this.modeT>3){
         this.lampTarget=null;this.setMode('engage');return;
       }
       if(st!=='idle')return;
@@ -3115,7 +3465,7 @@ class AutoCombat{
     if(this.lampCheck<=0&&dist>150&&o.state!=='lamp_hang'){
       this.lampCheck=rnd(5,9);
       if(Math.random()<.06){
-        const lamp=Game.lamps.filter(l=>!l.detached&&!l.occupant&&Math.abs(l.x-f.x)<200)
+        const lamp=Game.lamps.filter(l=>!l.detached&&l.canGrab()&&Math.abs(l.x-f.x)<200)
           .sort((a,b)=>Math.abs(a.x-f.x)-Math.abs(b.x-f.x))[0];
         if(lamp){this.lampTarget=lamp;this.lampCheck=rnd(20,35);this.setMode('lamp_approach');return;}
       }
@@ -3155,11 +3505,14 @@ class AutoCombat{
 /* ============================ HANGING LAMPS ============================ */
 class HangingLamp{
   constructor(fraction,endY,W){
-    this.fraction=fraction;this.anchorY=-rnd(95,155);this.length=endY-this.anchorY;
-    this.theta=rnd(-.018,.018);this.omega=0;this.occupant=null;this.detached=false;
+    this.fraction=fraction;this.anchorY=WORLD_TOP+18;this.length=endY-this.anchorY;
+    this.theta=rnd(-.006,.006);this.omega=0;this.riders=new Set();this.detached=false;
     this.vx=0;this.vy=0;this.spin=0;this.angle=0;this.settled=false;
     this.resize(W);
   }
+  get occupant(){return this.riders.values().next().value||null;}
+  set occupant(f){if(f)this.riders.add(f);else this.riders.clear();}
+  canGrab(){return this.riders.size<3&&![...this.riders].some(f=>(f.lampClimb||0)<95);}
   point(up=0){
     const length=clamp(this.length-up,0,this.length);
     return {x:this.anchorX+Math.sin(this.theta)*length,y:this.anchorY+Math.cos(this.theta)*length};
@@ -3183,7 +3536,7 @@ class HangingLamp{
       }
       return;
     }
-    if(this.occupant&&(!game.fighters.includes(this.occupant)||this.occupant.state!=='lamp_hang'||this.occupant.hp<=0))this.occupant=null;
+    for(const rider of this.riders)if(!game.fighters.includes(rider)||rider.state!=='lamp_hang'||rider.hp<=0)this.riders.delete(rider);
     // A damped pendulum: a grab adds angular momentum, then gravity and drag
     // carry the lamp and rider together back toward rest.
     this.omega-=1800/this.length*Math.sin(this.theta)*dt;
@@ -3193,14 +3546,14 @@ class HangingLamp{
   }
 }
 function makeLamps(W){
-  return [.2,.5,.8].map(f=>new HangingLamp(f+rnd(-.018,.018),rnd(142,240),W));
+  return [.2,.5,.8].map(f=>new HangingLamp(f+rnd(-.018,.018),rnd(130,165),W));
 }
 function drawLamp(g,lamp){
   // The rope and stepped shade are drawn on the same low-resolution layer as
   // the fighters, so moving and rotating lamps stay visibly pixelated.
   g.save();g.strokeStyle='#44434a';g.lineWidth=3;g.lineCap='butt';g.beginPath();
   g.moveTo(lamp.anchorX,lamp.anchorY);
-  if(lamp.detached)g.lineTo(lamp.anchorX,28);
+  if(lamp.detached)g.lineTo(lamp.anchorX,WORLD_TOP+28);
   else g.lineTo(lamp.x,lamp.y);
   g.stroke();
   g.translate(lamp.x,lamp.y);g.rotate(lamp.detached?lamp.angle:-lamp.theta*.3);
@@ -3241,6 +3594,50 @@ function makeBG(W,H,gy,S){
   for(let i=0;i<500;i++){x.fillStyle=`rgba(255,255,255,${rnd(.01,.04)})`;x.fillRect(rnd(W),rnd(ft,H),rnd(1,3),1);}
   return {back:c,front};
 }
+function makeUpperBG(W,S){
+  const h=-WORLD_TOP,px=S/BODY_PIXEL,c=document.createElement('canvas');
+  c.width=Math.ceil(W*px);c.height=Math.ceil(h*px);
+  const g=c.getContext('2d');g.imageSmoothingEnabled=false;g.scale(px,px);g.translate(0,-WORLD_TOP);
+  const wall=g.createLinearGradient(0,WORLD_TOP,0,0);
+  wall.addColorStop(0,'#050609');wall.addColorStop(.38,'#0b0b11');wall.addColorStop(1,'#171018');
+  g.fillStyle=wall;g.fillRect(0,WORLD_TOP,W,h);
+  // Dark brick courses continue above the old scene without upper spectators.
+  g.strokeStyle='rgba(87,70,77,.12)';g.lineWidth=1;
+  for(let y=WORLD_TOP;y<0;y+=22){const off=(Math.floor((y-WORLD_TOP)/22)%2)*30;
+    for(let x=-off;x<W;x+=60)g.strokeRect(x,y,60,22);}
+  g.strokeStyle='rgba(170,180,198,.055)';g.lineWidth=1;
+  for(let x=-h;x<W+h;x+=22){
+    g.beginPath();g.moveTo(x,WORLD_TOP);g.lineTo(x+h,0);g.stroke();
+    g.beginPath();g.moveTo(x+h,WORLD_TOP);g.lineTo(x,0);g.stroke();
+  }
+  // Actual ceiling and dark steel trusses, from which the lamp ropes hang.
+  g.fillStyle='#090a0e';g.fillRect(0,WORLD_TOP,W,18);
+  g.fillStyle='#202128';g.fillRect(0,WORLD_TOP+16,W,6);
+  for(let x=32;x<W;x+=150){g.fillStyle='#14151c';g.fillRect(x,WORLD_TOP+22,8,100);
+    g.strokeStyle='#191a22';g.lineWidth=4;g.beginPath();g.moveTo(x,WORLD_TOP+24);g.lineTo(x+120,WORLD_TOP+105);g.stroke();}
+  g.fillStyle='#101116';g.fillRect(22,WORLD_TOP+18,10,h);g.fillRect(W-32,WORLD_TOP+18,10,h);
+  // A wall-to-wall bridge in the upper third. Its 470-unit headroom reaches
+  // the ceiling, more than enough for a full standing fighter.
+  const y=BRIDGE_Y;
+  g.fillStyle='#090b0f';g.fillRect(28,y-4,W-56,27);
+  g.fillStyle='#303039';g.fillRect(28,y-4,W-56,6);
+  g.fillStyle='#1a1b20';g.fillRect(28,y+3,W-56,12);
+  g.fillStyle='#0c0d12';g.fillRect(28,y+15,W-56,8);
+  for(let x=38;x<W-38;x+=30){g.fillStyle='#46434a';g.fillRect(x,y-2,12,2);g.fillStyle='#24252a';g.fillRect(x,y+7,17,2);}
+  g.strokeStyle='#303138';g.lineWidth=5;g.beginPath();g.moveTo(32,y-75);g.lineTo(W-32,y-75);g.stroke();
+  g.strokeStyle='#16171d';g.lineWidth=4;g.beginPath();g.moveTo(32,y-35);g.lineTo(W-32,y-35);g.stroke();
+  for(let x=42;x<W-30;x+=95){g.fillStyle='#25262c';g.fillRect(x,y-76,5,76);g.fillStyle='#47454a';g.fillRect(x,y-75,2,4);}
+  // Bridge-mounted work lights and their confined, warm illumination.
+  for(const x of [W*.28,W*.72]){
+    const light=g.createRadialGradient(x,y-52,2,x,y-52,150);
+    light.addColorStop(0,'rgba(255,207,135,.22)');light.addColorStop(1,'rgba(255,207,135,0)');
+    g.fillStyle=light;g.fillRect(x-150,y-200,300,210);
+    g.fillStyle='#0d0e13';g.fillRect(x-14,y-82,28,10);
+    g.fillStyle='#cebc91';g.fillRect(x-10,y-78,20,4);
+    g.fillStyle='#fff2c8';g.fillRect(x-7,y-77,14,2);
+  }
+  return c;
+}
 function makeVignette(W,H,S){
   const c=document.createElement('canvas');c.width=Math.round(W*S);c.height=Math.round(H*S);const x=c.getContext('2d');
   const g=x.createRadialGradient(c.width/2,c.height/2,c.height*.35,c.width/2,c.height/2,c.width*.65);g.addColorStop(0,'rgba(0,0,0,0)');g.addColorStop(1,'rgba(0,0,0,.65)');x.fillStyle=g;x.fillRect(0,0,c.width,c.height);return c;
@@ -3252,7 +3649,7 @@ function clearPixelLayer(layer){
   c.shadowBlur=0;c.shadowColor='transparent';c.setLineDash([]);
   c.clearRect(0,0,layer.canvas.width,layer.canvas.height);
   c.imageSmoothingEnabled=false;
-  c.setTransform(layer.scale,0,0,layer.scale,0,0);
+  c.setTransform(layer.scale,0,0,layer.scale,0,-(layer.offsetY||0)*layer.scale);
 }
 // A saturated red beam with a hot pale-red core and a small rounded impact.
 function drawBeam(g,lz){
@@ -3345,7 +3742,7 @@ const Game={
     this.ctx.imageSmoothingEnabled=false;
     this.fighters=[];this.droppedBats=[];this.lamps=[];this.detachedLamps=0;
     this.koCount=0;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;this.respawnTimer=0;this.autoSpawn=true;this.shiftCrouch=false;
-    this.camera={x:this.W/2,y:270,zoom:1,vignette:0};this.audience=null;
+    this.camera={x:this.W/2,y:270,targetY:270,zoom:1,vignette:0};this.audience=null;
     skinCursor=0;
     this.fx=new FX();
     this.dc=document.createElement('canvas');
@@ -3370,7 +3767,8 @@ const Game={
     if(this.camera){
       const halfW=this.W/(2*this.camera.zoom),halfH=270/this.camera.zoom;
       this.camera.x=clamp(this.camera.x,halfW,this.W-halfW);
-      this.camera.y=clamp(this.camera.y,halfH,540-halfH);
+      this.camera.y=clamp(this.camera.y,WORLD_TOP+halfH,540-halfH);
+      this.camera.targetY=clamp(this.camera.targetY??this.camera.y,WORLD_TOP+halfH,540-halfH);
     }
     for(const lamp of this.lamps)lamp.resize(this.W);
     if(this.audience)this.audience.resize(this.W,this.gy);
@@ -3379,7 +3777,7 @@ const Game={
     for(const f of this.fighters){f.minX=70;f.maxX=this.W-70;}
   },
   buildBG(){
-    this.bg=makeBG(this.W,540,this.gy,this.S);this.vig=makeVignette(this.W,540,this.S);
+    this.bg=makeBG(this.W,540,this.gy,this.S);this.upperBG=makeUpperBG(this.W,this.S);this.vig=makeVignette(this.W,540,this.S);
     const keep=this.dc&&this.dc.width>0?this.dc:null;
     const old=document.createElement('canvas');
     if(keep){old.width=this.dc.width;old.height=this.dc.height;old.getContext('2d').drawImage(this.dc,0,0);}
@@ -3388,7 +3786,7 @@ const Game={
       const c=document.createElement('canvas');
       c.width=Math.ceil(this.W*scale);c.height=Math.ceil(540*scale);
       const g=c.getContext('2d');g.imageSmoothingEnabled=false;g.setTransform(scale,0,0,scale,0,0);
-      return {canvas:c,ctx:g,scale};
+      return {canvas:c,ctx:g,scale,offsetY:0};
     };
     this.audienceLayer=makeLayer(bodyScale);
     this.lampLayer=makeLayer(bodyScale);
@@ -3411,13 +3809,13 @@ const Game={
   },
   detachLamp(lamp){
     if(!lamp||!this.lamps.includes(lamp)||lamp.detached||this.detachedLamps>=2)return false;
-    const rider=lamp.occupant;
+    const riders=[...lamp.riders];
     lamp.detached=true;this.detachedLamps++;
     lamp.vx=clamp(lamp.omega*lamp.length*Math.cos(lamp.theta),-240,240);
     lamp.vy=-Math.abs(lamp.omega*lamp.length*Math.sin(lamp.theta));
     lamp.angle=-lamp.theta*.3;lamp.spin=lamp.omega*2;lamp.settled=false;
     if(this.fx)this.fx.spark(lamp.x,lamp.y,5,'255,195,100');
-    if(rider)rider.releaseLamp('break');
+    for(const rider of riders)rider.releaseLamp('break');
     Snd.thud();return true;
   },
   spawnFighter(x,dir,delay,skin){
@@ -3447,14 +3845,25 @@ const Game={
   },
   updateCamera(dt){
     const c=this.camera;if(!c)return;
-    const k=1-Math.exp(-dt*3);
-    c.zoom+=(1-c.zoom)*k;c.x+=(this.W/2-c.x)*k;c.y+=(this.H/2-c.y)*k;
+    const k=1-Math.exp(-dt*7);
+    c.zoom+=(1-c.zoom)*k;c.x+=(this.W/2-c.x)*k;
+    c.targetY=clamp(c.targetY??c.y,WORLD_TOP+VIEW_H/2,VIEW_H/2);
+    c.y+=(c.targetY-c.y)*k;
+  },
+  moveCamera(delta){
+    if(!this.camera||!Number.isFinite(delta))return;
+    this.camera.targetY=clamp(this.camera.targetY+delta,WORLD_TOP+VIEW_H/2,VIEW_H/2);
+  },
+  resetCamera(){if(this.camera)this.camera.targetY=VIEW_H/2;},
+  screenToWorldY(y){
+    const c=this.camera;return c?(y-this.H/2)/c.zoom+c.y:y;
   },
   screenToWorldX(x){
     const c=this.camera;return c?(x-this.W/2)/c.zoom+c.x:x;
   },
   clearBodies(){
     this.fighters=this.fighters.filter(f=>f.hp>0);
+    this.fx.gibs=[];
     this.droppedBats=[];
     this.syncHudCards();
   },
@@ -3469,16 +3878,39 @@ const Game={
   castRay(x,y,ux,uy,self){
     const W=this.W,gy=this.gy;
     const others=this.fighters.filter(g=>g!==self&&g.rig&&g.state!=='spawn'&&g.visible);
-    let px=x,py=y;
+    let px=x,py=y,previousY=y;
     for(let t=4;t<3400;t+=4){
       px=x+ux*t;py=y+uy*t;
       for(const g of others)if(bodyHit(g,px,py))return{x:px,y:py,surf:'body',f:g};
+      if((previousY<BRIDGE_Y&&py>=BRIDGE_Y)||(previousY>BRIDGE_Y+18&&py<=BRIDGE_Y+18))
+        return{x:px,y:previousY<BRIDGE_Y?BRIDGE_Y:BRIDGE_Y+18,surf:'bridge',f:null};
+      previousY=py;
       if(py>=gy+3)return{x:px,y:gy+3,surf:'floor',f:null};
-      if(py<=8)return{x:px,y:8,surf:'wall',f:null};
+      if(py<=WORLD_TOP+8)return{x:px,y:WORLD_TOP+8,surf:'wall',f:null};
       if(px<=34)return{x:34,y:py,surf:'wall',f:null};
       if(px>=W-34)return{x:W-34,y:py,surf:'wall',f:null};
     }
     return{x:px,y:py,surf:'none',f:null};
+  },
+  explodeHead(v,att,x,y){
+    if(v.headDestroyed)return;
+    v.headDestroyed=true;
+    const p=v.rig?.head||{x,y};
+    this.fx.headFragments(p.x,p.y,att.dir,v.id,v.gy);
+    this.fx.blood(p.x,p.y,att.dir,65,1.5);
+    for(const f of this.fighters){
+      if(f===v||!f.rig||!f.visible)continue;
+      const d=Math.min(Math.hypot(f.rig.head.x-p.x,f.rig.head.y-p.y),
+        Math.hypot(f.rig.pel.x-p.x,f.rig.pel.y-p.y));
+      if(d>190)continue;
+      const n=Math.round(14+16*(1-d/190));
+      for(let i=0;i<n;i++){
+        const seg=BURN_SEGS[(Math.random()*BURN_SEGS.length)|0];
+        if(i%7===0)f.bloodStains.push({seg:'head',layer:'head',lx:rnd(-11,11),ly:rnd(-19,10),kind:'blood',age:0,sz:rnd(.4,1)});
+        else f.bloodStains.push({seg:seg[0],layer:seg[4],t:rnd(.12,.88),s:rnd(-seg[3]*.7,seg[3]*.7),kind:'blood',age:0,sz:rnd(.3,1)});
+      }
+      if(f.bloodStains.length>36)f.bloodStains.splice(0,f.bloodStains.length-36);
+    }
   },
   hitFX(att,vic,a,x,y){
     this.fx.impact(x,y,att.dir,a.pw);
@@ -3493,14 +3925,14 @@ const Game={
     const delayed=!a.bleedOut&&!a.noStagger&&!a.preserveRagdoll&&!a.keepRag&&
       (a.launch||a.pw>=.4)&&v.canStagger(att)&&Math.random()<STAGGER_KO_CHANCE;
     v.breakChoke();v.boxing=false;v.shoveTarget=null;v.hp=0;
-    if(v.skin==='negan'&&!v.batLost){
+    if((v.skin==='negan'||v.skin==='chester')&&!v.batLost){
       const R=v.rig;
       const bx=R&&R.bd?R.wN.x+R.bd.x*24:v.x+v.dir*26;
       const by=R&&R.bd?R.wN.y+R.bd.y*24:v.gy-v.y-96;
       const ang=R&&R.bd?Math.atan2(R.bd.y,R.bd.x):-.8*v.dir;
       v.batLost=true;
       this.droppedBats.push({
-        x:bx,y:by,gy:v.gy,flip:v.dir,
+        x:bx,y:by,gy:v.gy,flip:v.dir,kind:v.skin==='chester'?'guitar':'bat',damage:v.guitarDamage||0,
         vx:a.bleedOut?(v.vx||0)*.2:att.dir*rnd(130,250)+(v.vx||0)*.35,
         vy:a.bleedOut?-40:-rnd(190,310),
         ang,
@@ -3539,8 +3971,9 @@ const Game={
     for(const o of this.fighters){
       if(o===f||o.hp<=0)continue;
       const dist=Math.abs(o.x-f.x);
+      const vertical=f.rig&&o.rig?Math.abs(f.rig.pel.y-o.rig.pel.y):Math.abs((f.gy-f.y)-(o.gy-o.y));
       const downPenalty=(o.state==='ragdoll'||o.state==='getup'||o.state==='spawn')?280:0;
-      const sc=dist+downPenalty;
+      const sc=dist+Math.min(600,vertical*.5)+downPenalty;
       if(sc<bestScore){bestScore=sc;best=o;}
     }
     return best;
@@ -3594,7 +4027,7 @@ const Game={
       b.ang+=b.va*dt;
       if(b.x<56){b.x=56;b.vx=Math.abs(b.vx)*.45;}
       else if(b.x>this.W-56){b.x=this.W-56;b.vx=-Math.abs(b.vx)*.45;}
-      const uy=Math.sin(b.ang),floorY=this.gy+2;
+      const uy=Math.sin(b.ang),floorY=b.gy+2;
       const yH=b.y-uy*30+4, yT=b.y+uy*36+6.5, pen=Math.max(yH-floorY,yT-floorY);
       if(pen>0){
         b.y-=pen;
@@ -3616,7 +4049,7 @@ const Game={
       if(A.hp<=0||A.y>=60||['ragdoll','spawn','run','counter_carried'].includes(A.state))continue;
       for(let j=i+1;j<alive.length;j++){
         const B=alive[j];
-        if(B.hp<=0||B.y>=60||['ragdoll','spawn','run','counter_carried'].includes(B.state))continue;
+        if(B.hp<=0||B.y>=60||Math.abs((A.gy-A.y)-(B.gy-B.y))>100||['ragdoll','spawn','run','counter_carried'].includes(B.state))continue;
         if(A.chokeTarget===B||B.chokeTarget===A||A.flankTarget===B||B.flankTarget===A||A.lampPullTarget===B||B.lampPullTarget===A)continue;
         const dx=B.x-A.x,m=54;
         if(Math.abs(dx)<m){
@@ -3680,6 +4113,9 @@ const Game={
     ctx.translate(shakeX,shakeY);
     const camera=this.camera;
     if(camera){ctx.translate(W/2,H/2);ctx.scale(camera.zoom,camera.zoom);ctx.translate(-camera.x,-camera.y);}
+    const viewY=camera?clamp(camera.y-H/2,WORLD_TOP,0):0;
+    for(const layer of [this.lampLayer,this.bodyLayer,this.headLayer,this.batLayer,this.frontLayer,this.fxLayer,this.laserLayer,this.markLayer])layer.offsetY=viewY;
+    ctx.drawImage(this.upperBG,0,WORLD_TOP,W,-WORLD_TOP);
     ctx.drawImage(this.bg.back,0,0,W,H);
     clearPixelLayer(this.audienceLayer);
     if(this.audience)this.audience.draw(this.audienceLayer.ctx);
@@ -3687,7 +4123,7 @@ const Game={
     ctx.drawImage(this.bg.front,0,0,W,H);
     clearPixelLayer(this.lampLayer);
     for(const lamp of this.lamps)drawLamp(this.lampLayer.ctx,lamp);
-    ctx.drawImage(this.lampLayer.canvas,0,0,W,H);
+    ctx.drawImage(this.lampLayer.canvas,0,viewY,W,H);
     ctx.drawImage(this.dc,0,0,W,H);
     const blood=this.fx.bloodField;
     if(this.bloodVersion!==blood.version){
@@ -3705,7 +4141,7 @@ const Game={
     if(this.fx.marks.length){
       clearPixelLayer(this.markLayer);
       this.fx.drawMarks(this.markLayer.ctx);
-      ctx.drawImage(this.markLayer.canvas,0,0,W,H);
+      ctx.drawImage(this.markLayer.canvas,0,viewY,W,H);
     }
     // dropped Lucille bats from K.O.'d Negans
     if(this.droppedBats.length){
@@ -3713,7 +4149,7 @@ const Game={
       for(const b of this.droppedBats){
         drawDroppedBat(this.batLayer.ctx,b);
       }
-      ctx.drawImage(this.batLayer.canvas,0,0,W,H);
+      ctx.drawImage(this.batLayer.canvas,0,viewY,W,H);
     }
 
     const dependent=f=>['choked','counter_carried'].includes(f.state);
@@ -3723,6 +4159,12 @@ const Game={
     for(const f of ordered){
       if(!f.rig||(f.state==='spawn'&&f.sp===0))continue;
       f.visible=true;
+      if(f.gorePieces){
+        clearPixelLayer(this.bodyLayer);
+        drawGorePieces(this.bodyLayer.ctx,f.gorePieces);
+        ctx.drawImage(this.bodyLayer.canvas,0,viewY,W,H);
+        continue;
+      }
       ctx.save();
       const tintLayer=(layer)=>{if(f.hp<=0&&f.rag&&f.rag.frozen&&f.corpseFade>.015){const q=layer.ctx;q.save();q.setTransform(1,0,0,1,0,0);q.globalCompositeOperation='source-atop';q.globalAlpha=Math.min(.18,f.corpseFade);q.fillStyle='#17151A';q.fillRect(0,0,layer.canvas.width,layer.canvas.height);q.restore();}};
       const paintLayer=(layer,paint,doTint=true)=>{
@@ -3734,20 +4176,20 @@ const Game={
         q.filter='none';
         q.shadowBlur=0;
         q.imageSmoothingEnabled=false;
-        q.setTransform(layer.scale,0,0,layer.scale,0,0);
+        q.setTransform(layer.scale,0,0,layer.scale,0,-layer.offsetY*layer.scale);
         try{paint(q);}catch(err){console.warn('Fighter layer draw recovered:',f.id,err);}
         q.restore();
         if(doTint)tintLayer(layer);
         ctx.globalAlpha=1;
         ctx.globalCompositeOperation='source-over';
         ctx.filter='none';
-        ctx.drawImage(layer.canvas,0,0,W,H);
+        ctx.drawImage(layer.canvas,0,layer.offsetY,W,H);
       };
       paintLayer(this.batLayer,q=>drawFighterShadow(q,f),false);
-      if(f.skin==='negan'&&!f.batLost&&f.hp>0&&stowsBat(f))paintLayer(this.batLayer,q=>drawStowedBat(q,f));
-      paintLayer(this.bodyLayer,q=>drawFighterBody(q,f));
+      if((f.skin==='negan'||f.skin==='chester')&&!f.batLost&&f.hp>0&&stowsBat(f))paintLayer(this.batLayer,q=>drawStowedBat(q,f));
+      paintLayer(this.bodyLayer,q=>{drawFighterBody(q,f);if(f.laserSlice)drawSliceProgress(q,f);});
       paintLayer(this.headLayer,q=>drawFighterHead(q,f));
-      if(f.skin==='negan'&&!f.batLost&&f.hp>0&&f.rig.bd){
+      if((f.skin==='negan'||f.skin==='chester')&&!f.batLost&&f.hp>0&&f.rig.bd){
         paintLayer(this.batLayer,q=>drawBat(q,f));
       }
       paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,f));
@@ -3776,10 +4218,10 @@ const Game={
       }
     }
     this.fx.draw(this.fxLayer.ctx);
-    ctx.drawImage(this.fxLayer.canvas,0,0,W,H);
+    ctx.drawImage(this.fxLayer.canvas,0,viewY,W,H);
     if(this.fx.laserSparks.length){
       clearPixelLayer(this.laserLayer);this.fx.drawLaserSparks(this.laserLayer.ctx);
-      ctx.drawImage(this.laserLayer.canvas,0,0,W,H);
+      ctx.drawImage(this.laserLayer.canvas,0,viewY,W,H);
     }
 
     ctx.save();ctx.globalCompositeOperation='lighter';
@@ -3802,8 +4244,30 @@ const Game={
 export function startGame(){
   Game.init();
   const cv=Game.cv;
+  let gesture=null,cameraMode=false;
   const onDown=e=>{
-    Snd.init();
+    // Track only one pointer: another finger must not turn a camera gesture
+    // into a tap (or replace the pointer whose release we are waiting for).
+    if(gesture||(e.button!==undefined&&e.button!==0))return;
+    Snd.init();gesture={id:e.pointerId,startX:e.clientX,startY:e.clientY,lastY:e.clientY,dragged:false,cameraOnly:cameraMode};
+    if(cv.setPointerCapture)cv.setPointerCapture(e.pointerId);
+  };
+  const onMove=e=>{
+    if(!gesture||e.pointerId!==gesture.id)return;
+    if(Math.hypot(e.clientX-gesture.startX,e.clientY-gesture.startY)>8)gesture.dragged=true;
+    // In camera mode even a tiny movement pans, and a tap never spawns.
+    // The normal mode retains the previous drag-to-pan and tap-to-spawn.
+    if(gesture.cameraOnly||gesture.dragged){
+      const rect=cv.getBoundingClientRect();
+      Game.moveCamera(-(e.clientY-gesture.lastY)*VIEW_H/rect.height);
+    }
+    gesture.lastY=e.clientY;
+  };
+  const onUp=e=>{
+    if(!gesture||e.pointerId!==gesture.id)return;
+    const moved=Math.hypot(e.clientX-gesture.startX,e.clientY-gesture.startY)>8;
+    const spawn=!gesture.cameraOnly&&!gesture.dragged&&!moved;gesture=null;
+    if(!spawn)return;
     const rect=cv.getBoundingClientRect();
     const screenX=(e.clientX-rect.left)/rect.width*Game.W;
     const worldX=clamp(Game.screenToWorldX(screenX),80,Game.W-80);
@@ -3818,10 +4282,20 @@ export function startGame(){
   };
   const onResize=()=>Game.resize();
   const onCtx=e=>e.preventDefault();
-  const onKeyDown=e=>{if(e.key==='Shift'&&!e.ctrlKey&&!e.altKey&&!e.metaKey)Game.shiftCrouch=true;};
+  const onWheel=e=>{e.preventDefault();Game.moveCamera(e.deltaY*(e.deltaMode===1?28:1));};
+  const onCancel=e=>{if(gesture&&e.pointerId===gesture.id)gesture=null;};
+  const onKeyDown=e=>{
+    if(e.key==='Shift'&&!e.ctrlKey&&!e.altKey&&!e.metaKey)Game.shiftCrouch=true;
+    if(!e.ctrlKey&&!e.altKey&&!e.metaKey&&!['INPUT','TEXTAREA','SELECT','BUTTON'].includes(e.target?.tagName)){
+      if(e.key==='ArrowUp'||e.key==='PageUp'){e.preventDefault();Game.moveCamera(-180);}
+      if(e.key==='ArrowDown'||e.key==='PageDown'){e.preventDefault();Game.moveCamera(180);}
+      if(e.key==='Home'){e.preventDefault();Game.resetCamera();}
+    }
+  };
   const onKeyUp=e=>{if(e.key==='Shift')Game.shiftCrouch=false;};
-  const onBlur=()=>{Game.shiftCrouch=false;};
-  cv.addEventListener('pointerdown',onDown);
+  const onBlur=()=>{Game.shiftCrouch=false;gesture=null;};
+  cv.addEventListener('pointerdown',onDown);cv.addEventListener('pointermove',onMove);cv.addEventListener('pointerup',onUp);cv.addEventListener('pointercancel',onCancel);cv.addEventListener('lostpointercapture',onCancel);
+  cv.addEventListener('wheel',onWheel,{passive:false});
   addEventListener('resize',onResize);
   addEventListener('keydown',onKeyDown);addEventListener('keyup',onKeyUp);addEventListener('blur',onBlur);
   document.addEventListener('contextmenu',onCtx);
@@ -3842,9 +4316,18 @@ export function startGame(){
     clearBodies(){Snd.init();Snd.ui();Game.clearBodies();},
     clearBlood(){Snd.init();Snd.ui();Game.clearBlood();},
     setSound(on){Snd.init();Snd.on=on;if(on)Snd.ui();},
+    setCameraMode(on){
+      const next=!!on;
+      // Never reinterpret an in-flight press under a different mode.
+      if(next!==cameraMode)gesture=null;
+      cameraMode=next;cv.classList.toggle('cameraMode',cameraMode);
+    },
+    moveCamera(delta){Game.moveCamera(delta);},
+    resetCamera(){Game.resetCamera();},
     destroy(){
-      running=false;cancelAnimationFrame(raf);
-      cv.removeEventListener('pointerdown',onDown);
+      running=false;cancelAnimationFrame(raf);gesture=null;cv.classList.remove('cameraMode');
+      cv.removeEventListener('pointerdown',onDown);cv.removeEventListener('pointermove',onMove);cv.removeEventListener('pointerup',onUp);cv.removeEventListener('pointercancel',onCancel);cv.removeEventListener('lostpointercapture',onCancel);
+      cv.removeEventListener('wheel',onWheel);
       removeEventListener('resize',onResize);
       removeEventListener('keydown',onKeyDown);removeEventListener('keyup',onKeyUp);removeEventListener('blur',onBlur);
       Game.shiftCrouch=false;
