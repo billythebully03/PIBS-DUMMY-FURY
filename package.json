@@ -1,23 +1,29 @@
 {
-  "name": "dummy-fury",
+  "name": "react-vite-tailwind",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host",
+    "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview --host",
-    "test": "node test/smoke.mjs"
+    "preview": "vite preview"
   },
   "dependencies": {
-    "@fontsource/dela-gothic-one": "^5.3.0",
-    "lucide-react": "^0.454.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "clsx": "2.1.1",
+    "lucide-react": "^1.81.0",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "tailwind-merge": "3.4.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.4",
-    "jsdom": "^31.0.1",
-    "vite": "^5.4.11"
+    "@tailwindcss/vite": "4.1.17",
+    "@types/node": "22.19.17",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.1.1",
+    "tailwindcss": "4.1.17",
+    "typescript": "5.9.3",
+    "vite": "7.3.7",
+    "vite-plugin-singlefile": "2.3.0"
   }
 }
