@@ -39,6 +39,8 @@ canvas{display:block}
   display:flex;align-items:center;gap:8px;
 }
 .hintBadge .dot{width:7px;height:7px;border-radius:50%;background:#ff3b4e;box-shadow:0 0 8px #ff3b4e;animation:pulse 1.4s infinite}
+.shiftHint{white-space:nowrap;color:rgba(255,255,255,.48)}
+@media (pointer:coarse),(max-width:900px){.shiftHint{display:none}}
 @keyframes pulse{50%{opacity:.35;transform:scale(.85)}}
 #rosterHud{
   position:absolute;left:max(16px,env(safe-area-inset-left));right:max(16px,env(safe-area-inset-right));top:max(54px,7.2vh);

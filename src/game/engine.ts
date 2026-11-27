@@ -14,6 +14,8 @@ const RUN_SPD=520, RUN_ACC=1250;
 const BOX_GAP=.1, OVEREXTEND_DUR=1.12, FLANK_DUR=.34;
 const CHOKE_OFFSET=48, CHOKE_DPS=2.2, COUNTER_RELEASE=.43, COUNTER_DUR=.86;
 const SHOVE_DUR=.58, SHOVE_IMPACT=.25, SHOVE_REACH=105;
+const TAKEDOWN_IMPACT=.38, TAKEDOWN_REACH=94;
+const BLEED_DPS=2, BLEED_AFTER_DEATH=3;
 const STAGGER_KNOCKDOWN_CHANCE=.4, STAGGER_KO_CHANCE=.4;
 const LAMP_PULL_DUR=.7;
 // PibsPhy6/WeightPhysic: вес/рост/хп и множители. Тяжелее = медленнее и
@@ -82,13 +84,13 @@ function armFK(J,s,a,e){
   J['e'+s]=el; J['w'+s]={x:el.x+Math.sin(b)*FA,y:el.y+Math.cos(b)*FA};
 }
 // 2-bone IK for arms: used when a fighter holds a two-handed weapon (the hands must stay on the handle).
-function armIK(J,s,t){
+function armIK(J,s,t,preferUp=false){
   const sh=J.sh; let dx=t.x-sh.x,dy=t.y-sh.y,L=Math.hypot(dx,dy)||1e-3;
   const maxL=(UA+FA)*.998,minL=Math.abs(UA-FA)+3;
   if(L>maxL){dx*=maxL/L;dy*=maxL/L;L=maxL;} if(L<minL){dx*=minL/L;dy*=minL/L;L=minL;}
   const cosA=(UA*UA+L*L-FA*FA)/(2*UA*L),A=Math.acos(clamp(cosA,-1,1)),base=Math.atan2(dy,dx);
   let best=null,bs=-1e9;
-  for(const sg of [1,-1]){const ang=base+sg*A,ex=sh.x+Math.cos(ang)*UA,ey=sh.y+Math.sin(ang)*UA,sc=ey-ex*.35;if(sc>bs){bs=sc;best={x:ex,y:ey}}}
+  for(const sg of [1,-1]){const ang=base+sg*A,ex=sh.x+Math.cos(ang)*UA,ey=sh.y+Math.sin(ang)*UA,sc=preferUp?-ey:ey-ex*.35;if(sc>bs){bs=sc;best={x:ex,y:ey}}}
   J['e'+s]=best; J['w'+s]={x:sh.x+dx,y:sh.y+dy};
 }
 function clampBatFloor(wx,wy,bdx,bdy,gy){
@@ -153,17 +155,18 @@ function blendRig(A,B,t){
   R.cN=lerp(A.cN,B.cN,t);R.cF=lerp(A.cF,B.cF,t);R.mo=lerp(A.mo,B.mo,t);R.ey=lerp(A.ey,B.ey,t);
   return R;
 }
-function aimArmWorld(R,s,x,y){
+function aimArmWorld(R,s,x,y,preferUp=false){
   const d=R.dir,J={sh:{x:0,y:0}};
-  armIK(J,s,{x:(x-R.sh.x)*d,y:y-R.sh.y});
+  armIK(J,s,{x:(x-R.sh.x)*d,y:y-R.sh.y},preferUp);
   R['e'+s]={x:R.sh.x+J['e'+s].x*d,y:R.sh.y+J['e'+s].y};
   R['w'+s]={x:R.sh.x+J['w'+s].x*d,y:R.sh.y+J['w'+s].y};
 }
-function poseGuardArms(R,flinch=0){
-  const k=clamp(flinch/.12,0,1);
-  // A real guard sits in front of the face, with room between fists and body.
-  aimArmWorld(R,'N',R.head.x+R.dir*(50-4*k),R.head.y+10+3*k);
-  aimArmWorld(R,'F',R.head.x+R.dir*(46-3*k),R.head.y+1+2*k);
+function poseGuardArms(R,f){
+  const k=clamp(f.guardFlinch/.2,0,1),phase=f.guardShakePhase+f.t*42;
+  // Each impact has its own small, decaying wobble in both extended arms.
+  const sx=Math.sin(phase)*f.guardShakeX*k,sy=Math.cos(phase*1.13)*f.guardShakeY*k;
+  aimArmWorld(R,'N',R.head.x+R.dir*(50-4*k+sx),R.head.y+10+3*k+sy);
+  aimArmWorld(R,'F',R.head.x+R.dir*(46-3*k-sx*.7),R.head.y+1+2*k-sy*.8);
   R.cN=R.cF=0;R.bd=null;
 }
 function poseLampArms(R,f){
@@ -188,10 +191,38 @@ function poseNeckHold(R,v){
   aimArmWorld(R,'F',n.x-d*4,n.y-3);
   R.cN=R.cF=0;R.bd=null;
 }
-function poseStruggleArms(R,t){
+function poseStruggleArms(R,t,prone=false){
   const n=R.neck,d=R.dir;
-  aimArmWorld(R,'N',n.x+d*(12+Math.sin(t*15)*4),n.y-4+Math.sin(t*12)*4);
-  aimArmWorld(R,'F',n.x-d*(6+Math.sin(t*13+1)*3),n.y-7+Math.cos(t*11)*4);
+  aimArmWorld(R,'N',n.x+d*(12+Math.sin(t*15)*4),n.y-4+Math.sin(t*12)*4,prone);
+  aimArmWorld(R,'F',n.x-d*(6+Math.sin(t*13+1)*3),n.y-7+Math.cos(t*11)*4,prone);
+  R.cN=R.cF=0;R.bd=null;
+}
+function poseTakedownArms(R,v){
+  if(!v||!v.rig)return;
+  const r=v.rig;
+  const near=pointBetween(r.pel,r.kN,.62),far=pointBetween(r.pel,r.kF,.62);
+  aimArmWorld(R,'N',near.x,near.y);aimArmWorld(R,'F',far.x,far.y);
+  R.cN=R.cF=0;R.bd=null;
+}
+function posePinArms(R,v){
+  if(!v||!v.rig)return;
+  const n=v.rig.neck,d=R.dir;
+  aimArmWorld(R,'N',n.x+d*2,n.y+3);
+  aimArmWorld(R,'F',n.x-d*4,n.y-1);
+  R.cN=R.cF=0;R.bd=null;
+}
+function poseLiftArms(R,v){
+  if(!v||!v.rig)return;
+  // Hands support the upper body just below the armpits on both sides.
+  const p=v.rig.sh,d=R.dir;
+  aimArmWorld(R,'N',p.x+d*5,p.y+9);
+  aimArmWorld(R,'F',p.x-d*5,p.y+7);
+  R.cN=R.cF=0;R.bd=null;
+}
+function poseLiftStruggle(R,holder,t){
+  const p=holder&&holder.rig?holder.rig.wN:R.sh;
+  aimArmWorld(R,'N',p.x+Math.sin(t*12)*5,p.y-6+Math.cos(t*14)*4);
+  aimArmWorld(R,'F',R.sh.x+R.dir*(12+Math.sin(t*10)*5),R.sh.y-10+Math.cos(t*13)*6);
   R.cN=R.cF=0;R.bd=null;
 }
 function cloneRig(R){
@@ -510,7 +541,7 @@ function drawBat(g,f){
   g.restore();
 }
 function stowsBat(f){
-  return f.boxing||['guard','guard_recoil','shove','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull'].includes(f.state);
+  return f.boxing||(f.bleed&&f.bleed.pressing)||['guard','guard_recoil','shove','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','takedown','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted'].includes(f.state);
 }
 function drawStowedBat(g,f){
   const R=f.rig;if(!R||f.batLost||f.hp<=0)return;
@@ -952,6 +983,32 @@ function locateSurface(R,x,y){
   const perp=(x-(A.x+dx*t))*nx+(y-(A.y+dy*t))*ny;
   return {seg,layer,t,s:clamp(perp+rnd(-1.5,1.5),-hw*.78,hw*.78)};
 }
+function surfacePoint(R,b){
+  if(!R||!b)return null;
+  if(b.seg==='head'){
+    const angle=Math.atan2(R.head.y-R.neck.y,R.head.x-R.neck.x)+Math.PI/2;
+    const ca=Math.cos(angle),sa=Math.sin(angle);
+    return {x:R.head.x+b.lx*ca-b.ly*sa,y:R.head.y+b.lx*sa+b.ly*ca};
+  }
+  const info=BURN_MAP[b.seg];if(!info)return null;
+  const A=R[info[1]],B=R[info[2]];if(!A||!B)return null;
+  const dx=B.x-A.x,dy=B.y-A.y,len=Math.hypot(dx,dy)||1;
+  const nx=R.dir*dy/len,ny=-R.dir*dx/len;
+  return {x:A.x+dx*b.t+nx*b.s,y:A.y+dy*b.t+ny*b.s};
+}
+function paintBleeding(g,R,b){
+  const p=surfacePoint(R,b.mark);if(!p)return;
+  const q=3,x=Math.round(p.x/q)*q,y=Math.round(p.y/q)*q;
+  g.globalAlpha=.94;g.fillStyle='#690c1a';
+  // The wound starts as just two dark pixels; thin rivulets grow afterward.
+  g.fillRect(x,y,q,q);g.fillRect(x+q,y+q,q,q);
+  const length=clamp((b.flowTime-.3)*10,0,33);
+  for(let dy=6;dy<length;dy+=3){
+    const dx=Math.round(Math.sin(dy*.21+b.phase)*.7)*q;
+    g.fillStyle=dy%9===0?'#9b1b2b':'#6f0d1b';g.fillRect(x+dx,y+dy,q,q);
+    if(dy>15&&dy%12===0)g.fillRect(x+dx+q,y+dy,q,q);
+  }
+}
 function paintBurnSpot(g,wx,wy,b){
   const k=b.life/b.max, a=Math.min(1,k*1.6);
   const x=Math.round(wx/3)*3, y=Math.round(wy/3)*3;
@@ -972,27 +1029,18 @@ function paintBloodSpot(g,wx,wy,b){
   if(b.age<1.2){g.globalAlpha=.85*(1-b.age/1.2);g.fillStyle='#dc3740';g.fillRect(x-3,y-3,3,3);}
 }
 function drawLayerBurns(g,R,f,layer){
-  if(!R||(!(f.burns&&f.burns.length)&&!(f.bloodStains&&f.bloodStains.length)))return;
+  if(!R)return;
   const marks=[...(f.burns||[]),...(f.bloodStains||[])];
-  if(!marks.some(b=>b.layer===layer))return;
+  const bleed=f.bleed&&f.bleed.mark.layer===layer?f.bleed:null;
+  if(!bleed&&!marks.some(b=>b.layer===layer))return;
   g.save();
   g.globalCompositeOperation='source-atop';
   for(const b of marks){
     if(b.layer!==layer)continue;
-    let wx,wy;
-    if(b.seg==='head'){
-      const angle=Math.atan2(R.head.y-R.neck.y,R.head.x-R.neck.x)+Math.PI/2;
-      const ca=Math.cos(angle),sa=Math.sin(angle);
-      wx=R.head.x+b.lx*ca-b.ly*sa;wy=R.head.y+b.lx*sa+b.ly*ca;
-    }else{
-      const info=BURN_MAP[b.seg];if(!info)continue;
-      const A=R[info[1]],B=R[info[2]];if(!A||!B)continue;
-      const dx=B.x-A.x,dy=B.y-A.y,len=Math.hypot(dx,dy)||1;
-      const nx=R.dir*dy/len,ny=-R.dir*dx/len;
-      wx=A.x+dx*b.t+nx*b.s;wy=A.y+dy*b.t+ny*b.s;
-    }
-    if(b.kind==='blood')paintBloodSpot(g,wx,wy,b);else paintBurnSpot(g,wx,wy,b);
+    const p=surfacePoint(R,b);if(!p)continue;
+    if(b.kind==='blood')paintBloodSpot(g,p.x,p.y,b);else paintBurnSpot(g,p.x,p.y,b);
   }
+  if(bleed)paintBleeding(g,R,bleed);
   g.restore();
 }
 function drawFighterShadow(ctx, f) {
@@ -1118,6 +1166,17 @@ class FX{
       });
     }
   }
+  drip(x,y){
+    // Small, slow drops instead of the existing explosive hit spray.
+    this.bl.push({x,y,vx:rnd(-6,6),vy:rnd(8,25),r:1.5,fy:this.floorY+2,
+      life:2,shape:'drop',fleck:false,drip:true});
+  }
+  stampDrip(x,y){
+    const d=this.decal;if(!d)return;
+    const q=3,sx=Math.round(x/q)*q,sy=Math.round(y/q)*q;
+    d.save();d.fillStyle='#5e0916';d.fillRect(sx,sy,q*2,q);
+    d.fillStyle='#8d1624';d.fillRect(sx+q,sy,q,q);d.restore();
+  }
   spark(x,y,n,col){for(let i=0;i<n;i++){const a=rnd(TAU),s=rnd(80,380);this.sp.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:rnd(.15,.35),col:col||'255,210,90'});}}
   impact(x,y,dir,pw){this.fl.push({x,y,life:.16,max:.16,r:24+pw*30});this.spark(x,y,6+pw*8|0);}
   // Laser scorch on a floor/wall: orange blocks that cool down and fade.
@@ -1196,7 +1255,7 @@ class FX{
     for(const b of this.bl){
       b.vy+=1600*dt;b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;
       if(b.y>=b.fy){
-        this.stamp(b.x,b.fy,b.r,b.vx);
+        if(b.drip)this.stampDrip(b.x,b.fy);else this.stamp(b.x,b.fy,b.r,b.vx);
         b.dead=true;
       }
     }
@@ -1368,7 +1427,7 @@ class Ragdoll{
     this.imp=.14;const f=this.f;
     if(vy>6&&f.fx)f.fx.landing(p.x,f.gy,clamp((vy-4)/12,.25,.9));
     if(vy>5)Snd.thud();
-    f.applyFallDamage();
+    f.applyFallDamage(p);
     f.ragInjury(vy);
   }
   toRig(f){
@@ -1428,38 +1487,56 @@ class Fighter{
       lz:null,lzSnd:false,burns:[],dive:false,diveT:0,diveHit:false,kickExt:0,bodyJump:false,fastGetup:false,
       hoverY:0,hlBrake:0,hlBrakeDir:1,hlBrakeFrom:null,hlLiftFx:false,hopDur:.38,
       batLost:false,dizzyAlpha:0,dizzyPh:Math.random()*TAU,
-      boxing:false,boxCD:0,guardCD:0,guardDur:0,guardFlinch:0,dodgedBy:null,
+      boxing:false,boxCD:0,guardCD:0,guardDur:0,guardFlinch:0,guardShakePhase:0,guardShakeX:0,guardShakeY:0,guardMoves:false,guardPhase:0,dodgedBy:null,
+      crouchActive:false,crouchTime:0,runStopFrom:null,
       overextendFor:null,overextendStamp:0,flankTarget:null,flankFrom:0,
       chokeCD:0,chokeCooldownPending:false,chokeTarget:null,chokedBy:null,chokeDuration:0,chokeCounterAt:Infinity,chokeReleaseAt:Infinity,
       counterBase:null,counterReleased:false,fallDamage:null,
+      grappleCD:0,grappleTarget:null,grappleBy:null,pinBase:null,pinChoke:false,pinChokeAt:0,
+      liftStyle:'carry',liftStamina:0,liftHeight:0,liftMove:0,liftJumpAt:Infinity,
       staggerDir:0,staggerDur:0,shoveWillFall:false,
       shoveCD:0,shoveTarget:null,shoveDone:false,
       lampGoal:null,lampRef:null,lampAction:'pullup',lampStamina:0,
       lampGrabGap:52,lampGrabSide:0,lampBreakAt:Infinity,lampDiveAt:Infinity,lampHangStamp:0,lampPullTarget:null,lampPullDone:false,
-      bloodStains:[],blinkT:rnd(2.2,5.5),blink:0,coughT:rnd(1,2.6)
+      bloodStains:[],bleed:null,collapseFrom:null,blinkT:rnd(2.2,5.5),blink:0,coughT:rnd(1,2.6)
     });
   }
   spawn(delay){this.state='spawn';this.sp=0;this.spT=delay||.05;this.visible=false;this.y=this.spawnY;this.vy=0;this.vx=0;this.st=0;this.cur=null;this.hoverY=0;}
-  canBeHit(){return this.hp>0&&this.state!=='ragdoll'&&this.state!=='getup'&&this.state!=='spawn'&&this.state!=='win'&&this.invT<=0;}
+  canBeHit(){return this.hp>0&&this.state!=='ragdoll'&&this.state!=='pinned'&&this.state!=='getup'&&this.state!=='spawn'&&this.state!=='win'&&this.invT<=0;}
   faceOpp(o){if(this.ctrl.noFace)return;if(this.skin==='homelander'&&this.hlBrake>.42)return;if(o&&this.y<2&&Math.abs(o.x-this.x)>10)this.dir=o.x>this.x?1:-1;}
-  speedMul(){return wstat(this.skin).speedMul*(this.hp<30?.85:1);}
+  bloodStrength(){
+    if(!this.bleed)return 1;
+    const weakness=clamp((this.bleed.lost+Math.max(0,30-this.hp)*.55)/32,0,1);
+    return lerp(1,.4,weakness);
+  }
+  speedMul(){return wstat(this.skin).speedMul*(this.hp<30?.85:1)*this.bloodStrength();}
   startAttack(i,boxing=false){
-    this.state='attack';this.boxing=boxing;
-    this.atk=(boxing?(this.skin==='homelander'?ATK_HL:ATK):atkSetFor(this.skin))[i];
+    if(['takedown','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted','bleed_collapse'].includes(this.state))return false;
+    const pressing=this.bleed&&this.bleed.pressing;
+    const set=(boxing||pressing)?(this.skin==='homelander'?ATK_HL:ATK):atkSetFor(this.skin);
+    const a=set[i];
+    if(!a||(pressing&&(a.fist===this.bleed.arm||a.bat)))return false;
+    this.state='attack';this.boxing=boxing;this.atk=a;
     this.ak=i;this.st=0;this.hitDone=false;this.queued=false;this.lungeDone=false;
     this.connected=false;this.lastHitTarget=null;this.lastAttackEnd=-Infinity;this.dodgedBy=null;this.wh=false;this.atkStamp++;this.lzSnd=false;this.lz=null;this.hlBrake=0;
+    return true;
   }
   startBoxing(){
-    if(this.state!=='idle'||this.hp<=0||this.y>5||this.boxCD>0)return false;
+    if(this.state!=='idle'||this.hp<=0||this.y>5||this.boxCD>0||(this.bleed&&this.bleed.pressing))return false;
     this.boxCD=rnd(1.4,2.1);this.startAttack(0,true);return true;
   }
+  flinchGuard(){
+    this.guardFlinch=.2;this.guardShakePhase=rnd(TAU);
+    this.guardShakeX=rnd(3.5,6);this.guardShakeY=rnd(3,5.5);
+  }
   startGuard(att){
-    if(this.state!=='idle'||this.hp<=0||this.y>5||this.guardCD>0||!att)return false;
+    if(this.state!=='idle'||this.hp<=0||this.y>5||this.guardCD>0||!att||(this.bleed&&this.bleed.pressing))return false;
     this.dir=att.x>=this.x?1:-1;this.state='guard';this.st=0;this.vx=0;
-    this.guardDur=rnd(1.7,2.4);this.guardCD=rnd(1.8,3);this.hlBrake=0;return true;
+    this.guardDur=rnd(1.7,2.4);this.guardCD=rnd(1.8,3);this.hlBrake=0;
+    this.guardMoves=Math.random()<.5;this.guardPhase=rnd(TAU);return true;
   }
   startShove(v){
-    if(this.state!=='idle'||this.hp<=0||this.y>5||this.shoveCD>0||!v||v===this||
+    if(this.state!=='idle'||this.hp<=0||this.y>5||this.shoveCD>0||(this.bleed&&this.bleed.pressing)||!v||v===this||
        !Game.fighters.includes(this)||!Game.fighters.includes(v)||!v.canBeHit()||v.y>5||
        v.state==='lamp_jump'||Math.abs(v.x-this.x)>SHOVE_REACH)return false;
     this.dir=v.x>=this.x?1:-1;this.state='shove';this.st=0;this.vx=0;
@@ -1472,11 +1549,13 @@ class Fighter{
       this.toRagdoll(this.staggerDir*130,120);Snd.thud();return true;
     }
     if(this.state==='guard'&&(att.x-this.x)*this.dir>=-12){
-      this.guardFlinch=.12;this.vx=att.dir*50;
+      this.flinchGuard();this.vx=att.dir*50;
       if(this.fx&&this.rig)this.fx.puff(this.rig.sh.x,this.rig.sh.y,3,.5);
       Snd.thud();return true;
     }
-    this.breakChoke();this.boxing=false;this.lampPullTarget=null;this.shoveTarget=null;
+    const wasHeld=!!this.grappleBy;
+    this.breakGrapple();this.breakChoke();this.boxing=false;this.lampPullTarget=null;this.shoveTarget=null;
+    if(wasHeld&&this.state==='ragdoll'&&this.rag){this.rag.launch(att.dir*100,80);Snd.thud();return true;}
     this.bodyJump=false;this.dive=false;this.kickExt=0;
     this.staggerDir=att.dir;this.dir=-this.staggerDir;
     this.staggerDur=rnd(.75,1.1);this.shoveWillFall=Math.random()<.42;
@@ -1638,6 +1717,77 @@ class Fighter{
     if(this.fx)this.fx.puff(this.rig.sh.x,this.rig.sh.y,4,.8);
     Snd.whoosh();
   }
+  canGrapple(v){
+    return !!(v&&v!==this&&this.hp>0&&v.hp>0&&Game.fighters.includes(this)&&Game.fighters.includes(v)&&
+      v.canBeHit()&&v.y<=5&&!v.grappleBy&&!v.grappleTarget&&!v.chokedBy&&!v.chokeTarget&&
+      ['idle','attack','guard','overextend','run_hit_stop'].includes(v.state));
+  }
+  startTakedown(v){
+    if(this.state!=='idle'||!this.crouchActive||this.crouchTime<.07||this.grappleCD>0||
+       !this.canGrapple(v)||Math.abs(v.x-this.x)>TAKEDOWN_REACH||
+       (this.bleed&&this.bleed.pressing))return false;
+    this.dir=v.x>=this.x?1:-1;this.state='takedown';this.st=0;this.vx=0;
+    this.grappleTarget=v;this.grappleCD=rnd(6,9);this.hlBrake=0;Snd.whoosh();return true;
+  }
+  establishPin(v){
+    if(this.state!=='takedown'||this.grappleTarget!==v||!this.canGrapple(v)||
+       Math.abs(v.x-this.x)>TAKEDOWN_REACH)return false;
+    v.pinBase=cloneRig(v.rig);v.breakChoke();v.boxing=false;v.lz=null;
+    v.grappleBy=this;v.state='pinned';v.st=0;v.y=0;v.vy=0;v.vx=0;v.hoverY=0;
+    this.state='ground_pin';this.st=0;this.vx=0;this.y=0;this.vy=0;this.hoverY=0;
+    this.x=clamp(v.x-this.dir*45,this.minX+35,this.maxX-35);
+    this.pinChoke=this.chokeCD<=0&&Math.random()<.65;this.pinChokeAt=rnd(.7,1.15);
+    Snd.thud();if(this.fx)this.fx.landing(this.x,this.gy,.45);return true;
+  }
+  startGroundChoke(){
+    const v=this.grappleTarget;
+    if(this.state!=='ground_pin'||this.chokeCD>0||!v||v.grappleBy!==this||v.state!=='pinned')return false;
+    this.state='ground_choke';this.st=0;this.chokeCD=rnd(5,7);this.chokeCooldownPending=true;
+    this.chokeDuration=rnd(2.2,2.9);
+    // The ground hold keeps the old escape/release odds but cannot produce a throw.
+    this.chokeCounterAt=Math.random()<.33?rnd(.55,1.05):Infinity;
+    this.chokeReleaseAt=Math.random()<.12?rnd(.8,1.55):Infinity;
+    return true;
+  }
+  startLift(v,style){
+    if(this.state!=='idle'||this.y>5||this.grappleCD>0||!this.canGrapple(v)||
+       Math.abs(v.x-this.x)>78||(this.bleed&&this.bleed.pressing))return false;
+    this.dir=v.x>=this.x?1:-1;this.state='lift_hold';this.st=0;this.vx=0;this.hlBrake=0;
+    this.grappleTarget=v;this.grappleCD=rnd(8,12);
+    this.liftStyle=['carry','press','throw'].includes(style)?style:
+      (Math.random()<.34?'throw':Math.random()<.5?'press':'carry');
+    this.liftStamina=rnd(2.5,3.5);this.liftHeight=0;
+    this.liftMove=Math.random()<.5?this.dir:-this.dir;
+    this.liftJumpAt=this.liftStyle==='throw'?rnd(1.2,1.8):Infinity;
+    v.pinBase=cloneRig(v.rig);v.breakChoke();v.boxing=false;v.lz=null;
+    v.grappleBy=this;v.state='lifted';v.st=0;v.vx=0;v.vy=0;v.y=0;v.hoverY=0;
+    Snd.whoosh();return true;
+  }
+  releaseGrapple(reason='interrupt'){
+    const v=this.grappleTarget,linked=!!v&&v.grappleBy===this,old=this.state;
+    this.grappleTarget=null;
+    if(old==='ground_choke')this.finishChokeCooldown();
+    if(linked)v.grappleBy=null;
+    if(['takedown','ground_pin','ground_choke','lift_hold','lift_jump'].includes(old)){
+      this.state=old==='lift_jump'&&this.y>0?'air':'idle';this.st=0;this.vx=old==='lift_jump'?this.vx*.5:0;this.comboT=9;
+    }
+    if(linked&&(v.state==='pinned'||v.state==='lifted')){
+      const pinned=v.state==='pinned',thrown=!pinned&&old==='lift_jump'&&reason==='throw';
+      v.pinBase=null;v.fastGetup=false;
+      // Releasing a ground pin never throws: the victim is already lying down.
+      v.toRagdoll(thrown?this.dir*210:0,thrown?460:0,!thrown);
+      if(thrown)v.fallDamage={amount:12,source:this,severe:true};
+      if(pinned&&reason==='complete'&&v.rag){v.rag.stunScale=1.5;v.dizzyAlpha=1;}
+    }
+  }
+  breakGrapple(){
+    if(this.grappleTarget)this.releaseGrapple();
+    if(this.grappleBy){
+      const h=this.grappleBy;
+      if(h.grappleTarget===this)h.releaseGrapple();
+      else{this.grappleBy=null;this.pinBase=null;this.toRagdoll(0,0,true);}
+    }
+  }
   startJump(){this.vy=770;this.y=.5;this.state='air';this.st=0;this.hlBrake=0;this.fx&&this.fx.landing(this.x,this.gy,.5);}
   startBodyJump(){
     if(this.state!=='run'||this.hp<=0||this.y>5||Math.abs(this.vx)<260)return false;
@@ -1711,6 +1861,9 @@ class Fighter{
       if(!o||o===this||!o.canBeHit())continue;
       const dx=(o.x-this.x)*this.dir;if(dx<-20||dx>a.reach+14)continue;
       const lo=this.y+a.y[0],hi=this.y+a.y[1],ov=Math.min(hi,o.y+200)-Math.max(lo,o.y+55);if(ov<20)continue;
+      // A committed low squat ducks bare-handed strikes, not knees, bats,
+      // lasers or the flying kick. The missed swing can still overextend.
+      if(o.crouchActive&&o.crouchTime>=.07&&a.fist&&!a.bat){this.dodgedBy=o;continue;}
       o.takeHit(this,a);
       this.lastHitTarget=o;hitAny=true;
       break;
@@ -1725,7 +1878,7 @@ class Fighter{
       const p=this.rig?this.rig.head:{x:this.x,y:this.gy-160};
       if(this.fx)this.fx.puff(p.x+this.dir*10,p.y+7,4,.75);
       Snd.thud();Game.shake=Math.max(Game.shake,2);Game.hs=Math.max(Game.hs,.025);
-      this.guardFlinch=.12;
+      this.flinchGuard();
       if(a.launch||a.dmg>=this.hp){
         this.hp-=Math.min(a.dmg*.2,Math.max(0,this.hp-1));
         this.state='guard_recoil';this.st=0;this.vx=-this.dir*180;this.y=.5;this.vy=230;
@@ -1733,15 +1886,19 @@ class Fighter{
       return;
     }
     const mayStagger=this.canStagger(att),lampImpact=this.state==='lamp_jump'||this.state==='lamp_hang';
+    const wasAirborne=this.y>5||this.dive||this.bodyJump||this.state==='air'||this.state==='hop'||
+      (this.state==='attack'&&this.atk&&this.atk.air);
+    const wasRunning=this.state==='run'&&!wasAirborne;
     const wasStaggering=this.state==='push_stagger'||this.state==='stagger_fall';
     this.lampPullTarget=null;this.shoveTarget=null;this.bodyJump=false;
-    this.breakChoke();this.boxing=false;
+    this.breakGrapple();this.breakChoke();this.boxing=false;
     this.hp=Math.max(0,this.hp-a.dmg);
     const impact=point&&typeof point.x==='number'?point:null;
     const px=impact?impact.x:this.x-att.dir*10;
     const py=impact?impact.y:this.gy-this.y-(a.zone==='head'?166:a.zone==='torso'?122:38);
     Game.hitFX(att,this,a,px,py);
     injure(this,a.zone,a.pw);
+    if(!this.bleed&&a.pw>=.95&&Math.random()<.035)this.startBleeding(px,py,att);
     att.handDamage(a,this);
     if(this.hp<=0){Game.ko(this,att,Object.assign({},a,{noStagger:a.noStagger||!mayStagger}));return;}
     if(this.state==='ragdoll'&&this.rag){
@@ -1749,28 +1906,36 @@ class Fighter{
       return;
     }
     if(lampImpact){this.toRagdoll(att.dir*(a.lvx||170),a.lvy||150);return;}
+    if(wasRunning){
+      // A grounded runner keeps their footing and loses momentum over a few
+      // steps, even on a launching hit. Airborne runners still fall normally.
+      this.runStopFrom=this.runPose();this.state='run_hit_stop';this.st=0;
+      this.stunT=Math.max(.35,a.stun||.35);this.hitZone=a.zone==='head'?'head':'body';
+      this.vx=clamp(this.vx,-RUN_SPD,RUN_SPD);this.vy=0;this.y=0;this.invT=0;
+      return;
+    }
     // A follow-up hit during a backward stumble always knocks them down.
     if(wasStaggering){this.toRagdoll(this.staggerDir*130,120);return;}
     if(!a.noStagger&&mayStagger&&(a.launch||a.pw>=.9)&&Math.random()<STAGGER_KNOCKDOWN_CHANCE){
       this.startStagger();return;
     }
-    if(this.state==='run'||this.dive){
-      // caught while running / flying: keeps going forward in a ragdoll by inertia
+    if(this.dive){
+      // A flying tackle is airborne and still falls with its momentum.
       const iv=clamp(this.vx*.9,-640,640);this.dive=false;
       this.toRagdoll(iv+att.dir*40,300);
     }
-    else if(a.launch||this.y>8){this.toRagdoll(att.dir*(a.lvx||200),a.lvy||420);}
+    else if(a.launch||wasAirborne){this.toRagdoll(att.dir*(a.lvx||200),a.lvy||420);}
     else{
       this.state='hit';this.st=0;this.stunT=a.stun;this.hitZone=a.zone==='head'?'head':'body';this.vx=att.dir*a.kb;this.invT=0;
       if(a.pull)this.x=clamp(att.x+att.dir*a.pull,this.minX,this.maxX);
     }
   }
   handDamage(a,vic){}
-  toRagdoll(vx,vy){
+  toRagdoll(vx,vy,gentle=false){
     this.clearLamp();this.lampPullTarget=null;this.shoveTarget=null;
-    this.breakChoke();this.boxing=false;
+    this.breakGrapple();this.breakChoke();this.boxing=false;
     if(!this.rig)return;
-    this.rag=new Ragdoll(this.rig,this);this.rag.launch(vx,vy);
+    this.rag=new Ragdoll(this.rig,this);if(!gentle)this.rag.launch(vx,vy);
     this.state='ragdoll';this.st=0;this.y=0;this.vx=0;this.vy=0;this.invT=0;this.dive=false;this.bodyJump=false;this.lz=null;
     this.hoverY=0;this.hlBrake=0;this.hlBrakeFrom=null;
     if(this.fx&&this.rig.pel.y>this.gy-100)this.fx.landing(this.x,this.gy,.6);
@@ -1784,10 +1949,13 @@ class Fighter{
       const r=this.rig;if(r)this.fx.blood(r.pel.x,r.pel.y,this.dir,6,.45);
     }
   }
-  applyFallDamage(){
+  applyFallDamage(point){
     const hit=this.fallDamage;if(!hit||this.hp<=0)return;
     this.fallDamage=null;this.hp=Math.max(0,this.hp-hit.amount);
     injure(this,'torso',.7);
+    if(hit.severe&&!this.bleed&&Math.random()<.28){
+      const p=point||this.rag.p.pel;this.startBleeding(p.x,p.y,hit.source);
+    }
     if(this.fx)this.fx.impact(this.rag.p.pel.x,this.gy-12,hit.source.dir,.5);
     if(this.hp<=0)Game.ko(this,hit.source,{pw:.8,preserveRagdoll:true});
   }
@@ -1808,11 +1976,50 @@ class Fighter{
     this.bloodStains.push(Object.assign(mark,{kind:'blood',age:0,sz:Math.random()}));
     if(this.bloodStains.length>36)this.bloodStains.shift();
   }
+  startBleeding(x,y,source){
+    if(this.bleed||!this.rig)return false;
+    const mark=locateSurface(this.rig,x,y);if(!mark)return false;
+    this.bleed={mark,source:source||{dir:-this.dir},age:0,flowTime:0,lost:0,dripT:.65,
+      phase:rnd(TAU),arm:(mark.seg==='uN'||mark.seg==='fN')?'F':'N',
+      pressing:false,pressT:0,decision:rnd(.8,1.7),deathTime:0,stopped:false};
+    return true;
+  }
+  startPressure(){
+    const b=this.bleed,p=b&&surfacePoint(this.rig,b.mark);
+    if(!b||b.stopped||b.pressing||this.hp<=0||this.state!=='idle'||!p||
+       Math.hypot(p.x-this.rig.sh.x,p.y-this.rig.sh.y)>63)return false;
+    b.pressing=true;b.pressT=rnd(1.8,3.5);return true;
+  }
+  updateBleeding(dt){
+    const b=this.bleed;if(!b||b.stopped)return;
+    b.age+=dt;b.decision-=dt;
+    if(b.pressing){
+      b.pressT-=dt;
+      if(this.hp<=0||b.pressT<=0||!['idle','run','attack','run_hit_stop'].includes(this.state)){
+        b.pressing=false;b.decision=rnd(2.2,4);
+      }
+    }
+    if(this.hp<=0){
+      b.deathTime+=dt;
+      if(b.deathTime>=BLEED_AFTER_DEATH){b.stopped=true;return;}
+    }
+    if(b.pressing)return;
+    b.flowTime+=dt;b.dripT-=dt;
+    if(this.hp>0){
+      const lost=Math.min(this.hp,BLEED_DPS*dt);this.hp-=lost;b.lost+=lost;
+      if(this.hp<=0)Game.ko(this,b.source,{bleedOut:true});
+    }
+    if(b.flowTime>.3&&b.dripT<=0&&this.fx){
+      b.dripT=rnd(.55,.9);
+      const p=surfacePoint(this.rig,b.mark);
+      if(p)this.fx.drip(p.x,Math.min(this.gy-3,p.y+clamp((b.flowTime-.3)*10,0,30)));
+    }
+  }
   takeLaser(att,pt,first){
     this.addBurn(pt.x,pt.y);
     if(this.hp<=0||this.state==='spawn'||this.invT>0)return;
     this.lampPullTarget=null;this.shoveTarget=null;
-    this.breakChoke();this.boxing=false;
+    this.breakGrapple();this.breakChoke();this.boxing=false;
     this.hp=Math.max(0,this.hp-(first?3.5:1.6));
     if(this.fx){this.fx.spark(pt.x,pt.y,2,'255,150,40');if(first)this.fx.blood(pt.x,pt.y,att.dir,6,.5);}
     if(this.hp<=0){Game.ko(this,att,{lvx:300,lvy:380,pw:.9,noStagger:true});return;}
@@ -1965,14 +2172,20 @@ class Fighter{
     this.lagHp=Math.max(this.hp,this.lagHp-dt*28);
     this.dashCD=Math.max(0,this.dashCD-dt);
     this.boxCD=Math.max(0,this.boxCD-dt);this.guardCD=Math.max(0,this.guardCD-dt);this.shoveCD=Math.max(0,this.shoveCD-dt);
-    this.chokeCD=Math.max(0,this.chokeCD-dt);
+    this.chokeCD=Math.max(0,this.chokeCD-dt);this.grappleCD=Math.max(0,this.grappleCD-dt);
     this.guardFlinch=Math.max(0,this.guardFlinch-dt);
+    // Homelander first settles out of his hover; the lowered pose and its
+    // dodge window only begin once his feet have actually reached the floor.
+    const wantsCrouch=this.state==='idle'&&c.crouch&&this.y<=1;
+    this.crouchActive=!!(wantsCrouch&&(!isHL||this.hoverY<=.7));
+    this.crouchTime=this.crouchActive?Math.min(1,this.crouchTime+dt):0;
     if(this.invT>0)this.invT-=dt;if(this.landT>0)this.landT-=dt;if(this.blend>0)this.blend-=dt;
     if(this.state!=='attack')this.comboT+=dt;
     if(this.burns.length){for(const b of this.burns)b.life-=dt;this.burns=this.burns.filter(b=>b.life>0);}
     for(const b of this.bloodStains)b.age+=dt;
+    this.updateBleeding(dt);
     if(this.lz&&!(this.state==='attack'&&this.atk&&this.atk.laser))this.lz=null;
-    if(this.state!=='ragdoll'&&this.state!=='spawn'&&this.state!=='lamp_hang'&&(this.y>0||this.vy>0)){
+    if(this.state!=='ragdoll'&&this.state!=='spawn'&&this.state!=='lamp_hang'&&this.state!=='lifted'&&(this.y>0||this.vy>0)){
       this.vy-=2200*dt;this.y+=this.vy*dt;
       if(this.y<=0){const im=-this.vy;this.y=0;this.vy=0;this.onLand(im);}
     }
@@ -1994,7 +2207,7 @@ class Fighter{
       this.faceOpp(targetOpp);
       const mv=c.mx;
       if(c.run&&mv&&!c.hop){this.dir=mv>0?1:-1;this.hlBrake=0;this.state='run';this.st=0;break;}
-      const toward=mv*this.dir,spd=mv?(c.crouch?70:(toward>0?235:185)):0;
+      const toward=mv*this.dir,spd=mv?(this.crouchActive?70:(toward>0?235:185)):0;
       const tgtVx=mv*spd*this.speedMul();
       if(isHL&&this.hlBrake>0){
         this.hlBrake=Math.max(0,this.hlBrake-dt/.34);
@@ -2011,7 +2224,11 @@ class Fighter{
       if(c.hop){this.startHop();}
       else if(c.jump){ if(mv&&this.dashCD<=0)this.startDash(toward>0?1:-1); else if(!mv)this.startJump(); }
       else if(c.laser&&isHL){this.startAttack(3);}
-      else if(c.punch){this.startAttack(this.comboT<.6?this.comboStep:0);}
+      else if(c.punch){
+        const next=this.comboT<.6?this.comboStep:0;
+        if(!this.startAttack(next)&&this.bleed&&this.bleed.pressing)
+          this.startAttack(this.bleed.arm==='N'?1:0);
+      }
       break;}
      case 'run':{
       if(!c.run||!c.mx){
@@ -2025,7 +2242,7 @@ class Fighter{
         this.state='idle';this.st=0;break;
       }
       this.dir=c.mx>0?1:-1;
-      const tgt=this.dir*RUN_SPD*(this.hp<30?.9:1),A=RUN_ACC*dt;
+      const tgt=this.dir*RUN_SPD*(this.hp<30?.9:1)*this.bloodStrength(),A=RUN_ACC*dt;
       this.vx+=clamp(tgt-this.vx,-A,A);
       const rs=clamp(Math.abs(this.vx)/RUN_SPD,0,1);
       if(isHL){
@@ -2119,7 +2336,10 @@ class Fighter{
         if(this.ak===0&&this.st>=a.dur+BOX_GAP){this.startAttack(1,true);break;}
         if(this.ak===1&&this.st>=a.dur){this.boxing=false;this.state='idle';this.st=0;this.comboT=9;this.lastAttackEnd=this.t;}
       }else{
-        if(this.queued&&this.st>=a.cancel&&this.ak<3&&!a.air){this.startAttack(this.ak+1);break;}
+        if(this.queued&&this.st>=a.cancel&&this.ak<3&&!a.air){
+          if(this.startAttack(this.ak+1))break;
+          this.queued=false;
+        }
         if(this.st>=a.dur){this.comboStep=(this.ak<3&&!a.air)?this.ak+1:0;this.comboT=0;this.state=this.y>0?'air':'idle';this.st=0;this.lz=null;this.lastAttackEnd=this.t;}
       }
       break;}
@@ -2136,7 +2356,10 @@ class Fighter{
       if(this.st>=SHOVE_DUR){this.state='idle';this.st=0;this.shoveTarget=null;this.comboT=9;}
       break;}
      case 'guard':{
-      this.vx*=Math.exp(-dt*12);
+      // Some fighters shuffle both ways without lowering the guard.
+      const target=this.guardMoves?this.dir*48*Math.sin(this.st*4.8+this.guardPhase):0;
+      this.vx+=(target-this.vx)*Math.min(1,dt*9);
+      this.walkPh+=this.vx*this.dir*dt*.1;
       if(this.st>=this.guardDur){this.state='idle';this.st=0;}
       break;}
      case 'guard_recoil':{
@@ -2156,6 +2379,75 @@ class Fighter{
       this.x=lerp(this.flankFrom,dest,u);this.vx=0;
       this.dir=this.st>=FLANK_DUR*.9?v.dir:(v.x>=this.x?1:-1);
       if(this.st>=FLANK_DUR&&!this.startChoke(v)){this.flankTarget=null;this.state='idle';this.st=0;}
+      break;}
+     case 'takedown':{
+      const v=this.grappleTarget;
+      if(!v||!allFighters.includes(v)||!this.canGrapple(v)||Math.abs(v.x-this.x)>TAKEDOWN_REACH+25){
+        this.releaseGrapple();break;
+      }
+      this.vx=clamp((v.x-this.x-this.dir*45)*6,-145,145);
+      if(this.st>=TAKEDOWN_IMPACT&&!this.establishPin(v))this.releaseGrapple();
+      break;}
+     case 'ground_pin':
+     case 'ground_choke':{
+      const v=this.grappleTarget;
+      if(this.hp<=0||!v||!allFighters.includes(v)||v.hp<=0||v.grappleBy!==this||v.state!=='pinned'){
+        this.releaseGrapple();break;
+      }
+      this.vx=0;
+      if(this.state==='ground_pin'){
+        if(this.st>=this.pinChokeAt){
+          if(!this.pinChoke||!this.startGroundChoke())this.releaseGrapple();
+        }
+      }else{
+        if(this.st>=this.chokeCounterAt||this.st>=this.chokeReleaseAt){this.releaseGrapple();break;}
+        v.hp=Math.max(0,v.hp-CHOKE_DPS*dt);
+        if(v.hp<=0){Game.ko(v,this,{pw:.55,noStagger:true});break;}
+        if(this.st>=this.chokeDuration){this.releaseGrapple('complete');Snd.thud();}
+      }
+      break;}
+     case 'pinned':{
+      const h=this.grappleBy;
+      if(!h||!allFighters.includes(h)||h.hp<=0||h.grappleTarget!==this||
+         !['ground_pin','ground_choke'].includes(h.state)){
+        this.breakGrapple();if(this.state==='pinned')this.toRagdoll(0,0,true);break;
+      }
+      this.dir=-h.dir;this.x=clamp(h.x-h.dir*10,this.minX,this.maxX);this.y=0;this.vx=0;this.vy=0;this.hoverY=0;
+      break;}
+     case 'lift_hold':
+     case 'lift_jump':{
+      const v=this.grappleTarget;
+      if(this.hp<=0||!v||!allFighters.includes(v)||v.hp<=0||v.grappleBy!==this||v.state!=='lifted'){
+        this.releaseGrapple();break;
+      }
+      this.liftStamina-=dt;
+      if(this.state==='lift_hold'){
+        const rise=ease(clamp(this.st/.85,0,1));
+        const press=this.liftStyle==='press'&&this.st>.85?18*(.5-.5*Math.cos((this.st-.85)*4)):0;
+        this.liftHeight=rise*(46+press);
+        const weight=clamp(wstat(this.skin).weight/wstat(v.skin).weight,.55,1.1);
+        this.vx=this.liftMove*42*weight*rise;this.walkPh+=this.vx*this.dir*dt*.1;
+        if((this.x<this.minX+75&&this.vx<0)||(this.x>this.maxX-75&&this.vx>0))this.liftMove*=-1;
+        if(this.st>=this.liftJumpAt){
+          this.state='lift_jump';this.st=0;this.y=.5;this.vy=570;this.vx=this.dir*65;Snd.hop();
+        }else if(this.liftStamina<=0)this.releaseGrapple('escape');
+      }else{
+        this.vx*=Math.exp(-dt*.7);
+        if(this.st>=.24){
+          // Sync the lifted pose before releasing into independent ragdoll physics.
+          v.x=clamp(this.x+this.dir*46,v.minX,v.maxX);v.y=this.y+this.liftHeight;v.buildRig(0);
+          this.releaseGrapple('throw');Snd.whoosh();
+        }
+      }
+      break;}
+     case 'lifted':{
+      const h=this.grappleBy;
+      if(!h||!allFighters.includes(h)||h.hp<=0||h.grappleTarget!==this||
+         !['lift_hold','lift_jump'].includes(h.state)){
+        this.breakGrapple();if(this.state==='lifted')this.toRagdoll(0,0,true);break;
+      }
+      this.dir=-h.dir;this.x=clamp(h.x+h.dir*46,this.minX,this.maxX);
+      this.y=h.y+h.liftHeight;this.vx=0;this.vy=0;this.hoverY=0;
       break;}
      case 'choke':{
       const v=this.chokeTarget;
@@ -2213,6 +2505,15 @@ class Fighter{
         else{this.state='idle';this.st=0;this.vx*=.3;this.comboT=9;}
       }
       break;}
+     case 'bleed_collapse':{
+      this.vx*=Math.exp(-dt*3);
+      if(this.st>=1.35)this.toRagdoll(0,0,true);
+      break;}
+     case 'run_hit_stop':{
+      this.vx*=Math.exp(-dt*6.5);
+      this.walkPh+=Math.abs(this.vx)*dt*.07;
+      if(this.st>=this.stunT&&Math.abs(this.vx)<30){this.state='idle';this.st=0;this.vx=0;this.runStopFrom=null;}
+      break;}
      case 'hit':{
       this.vx*=Math.exp(-dt*8);
       if(this.st>=this.stunT){this.state='idle';this.st=0;}
@@ -2245,8 +2546,11 @@ class Fighter{
     }
     if(this.state!=='ragdoll'){
       this.x+=this.vx*dt;
-      const min=this.state==='choke'&&this.dir<0?this.minX+CHOKE_OFFSET:this.minX;
-      const max=this.state==='choke'&&this.dir>0?this.maxX-CHOKE_OFFSET:this.maxX;
+      const carrying=this.state==='lift_hold'||this.state==='lift_jump';
+      const min=this.state==='choke'&&this.dir<0?this.minX+CHOKE_OFFSET:
+        carrying&&this.dir<0?this.minX+46:this.minX;
+      const max=this.state==='choke'&&this.dir>0?this.maxX-CHOKE_OFFSET:
+        carrying&&this.dir>0?this.maxX-46:this.maxX;
       this.x=clamp(this.x,min,max);
     }
     c.jump=c.punch=false;
@@ -2255,7 +2559,7 @@ class Fighter{
       this.hoverY=0;
     }else if(this.state==='spawn'){
       this.hoverY=this.sp<3?0:HL_HOVER*ease(clamp(1-this.spT/.45,0,1));
-    }else if(['stagger_fall','push_stagger','shove','lamp_jump','lamp_hang','lamp_pull'].includes(this.state)){
+    }else if(['stagger_fall','push_stagger','shove','lamp_jump','lamp_hang','lamp_pull','takedown','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted','bleed_collapse'].includes(this.state)){
       this.hoverY=0;
     }else if(this.state==='getup'){
       if(this.st<1.76){this.hoverY=0;}
@@ -2269,7 +2573,8 @@ class Fighter{
         (this.state==='idle'&&c.crouch);
       const baseH=grounded?0:this.state==='run'?HL_HOVER+8:HL_HOVER;
       const tgtH=baseH+(grounded?0:Math.sin(this.t*2.7+this.seed)*2.2);
-      this.hoverY+=(tgtH-this.hoverY)*Math.min(1,dt*14);
+      if(this.state==='idle'&&c.crouch)this.hoverY=Math.max(0,this.hoverY-dt*75);
+      else this.hoverY+=(tgtH-this.hoverY)*Math.min(1,dt*14);
     }
     // Orbiting pixel yellow stars while unconscious in temporary knockdown (fade out when getting up).
     if(this.hp>0&&this.state==='ragdoll'&&!this.fastGetup&&this.rag&&(this.rag.t>.12||this.dizzyAlpha>.2)){
@@ -2361,7 +2666,33 @@ class Fighter{
         a1:68+step*8,e1:55,c1:0,a2:54-step*8,e2:62,c2:0,
         f1x:22+step*21,f1h:Math.max(0,step)*15,f2x:-22-step*18,f2h:Math.max(0,-step)*13,mo:.8,bg:0});}
      case 'shove':return sampleKF(SHOVE_KF,this.st);
-     case 'guard':return GUARD_POSE;
+     case 'takedown':{
+      const p=P({H:47,tl:58,hd:22,px:10,a1:75,e1:35,c1:0,a2:72,e2:38,c2:0,
+        f1x:34,f2x:-25,mo:.45,bg:0});
+      p.f1x+=Math.sin(this.st*18)*8;p.f2x-=Math.sin(this.st*18)*8;return p;}
+     case 'ground_pin':return P({H:25,tl:56,hd:25,px:3,a1:100,e1:0,a2:100,e2:0,f1x:22,f2x:3,mo:.35,bg:0});
+     case 'ground_choke':{
+      const squat=P({H:25,tl:56,hd:25,px:3,a1:100,e1:0,a2:100,e2:0,f1x:22,f2x:3,mo:.35,bg:0});
+      const press=P({H:37,tl:48,hd:20,px:3,a1:100,e1:0,a2:100,e2:0,f1x:26,f2x:5,mo:.55,bg:0});
+      return mix(squat,press,ease(clamp(this.st/.4,0,1)));}
+     case 'pinned':{
+      const p=P(LY),step=Math.sin(this.st*8);
+      p.f1x+=step*5;p.f2x-=step*4;p.f1h=2+Math.max(0,step)*5;p.f2h=2+Math.max(0,-step)*4;
+      p.mo=.8;return p;}
+     case 'lift_hold':
+     case 'lift_jump':{
+      const p=P({H:79,tl:-4,hd:-3,px:-4,f1x:24,f2x:-24,mo:.6,bg:0});
+      const step=Math.sin(this.walkPh)*clamp(Math.abs(this.vx)/45,0,1);
+      p.f1x+=step*11;p.f2x-=step*11;p.f1h=Math.max(0,step)*6;p.f2h=Math.max(0,-step)*6;
+      return p;}
+     case 'lifted':{
+      const step=Math.sin(this.st*9),tuck=.5+.5*Math.sin(this.st*3.4);
+      return P({H:80,tl:-8,hd:-7,px:-2,f1x:22+step*13,f1h:12+tuck*25,
+        f2x:-10-step*11,f2h:10+tuck*20,mo:.8,ey:.25,bg:0});}
+     case 'guard':{
+      const p=Object.assign({},GUARD_POSE),w=clamp(Math.abs(this.vx)/48,0,1),step=Math.sin(this.walkPh)*w;
+      p.f1x+=step*12;p.f2x-=step*12;p.f1h=Math.max(0,step)*7;p.f2h=Math.max(0,-step)*7;
+      return p;}
      case 'guard_recoil':return GUARD_RECOIL;
      case 'overextend':{
       const p=Object.assign({},OVEREXTEND_POSE);
@@ -2379,6 +2710,14 @@ class Fighter{
      case 'win':{
       if(isHL){const p=Object.assign({},HL_IDLE,{tl:-5,hd:-10,a1:142,e1:22,c1:1,a2:154,e2:16,c2:1,mo:1});p.a1+=Math.sin(t*8)*5;p.a2+=Math.sin(t*8+1)*5;return p;}
       const p=Object.assign({},WIN);p.H+=Math.sin(t*5)*1.5;p.a1+=Math.sin(t*9)*6;p.a2+=Math.sin(t*9+1)*6;return p;}
+     case 'bleed_collapse':{
+      const weak=P({H:37,tl:48,hd:46,px:2,a1:12,e1:30,c1:0,a2:6,e2:35,c2:0,
+        f1x:28,f2x:-18,mo:.65,ey:.6,bg:0});
+      return mix(this.collapseFrom||D,weak,ease(clamp(this.st/1.3,0,1)));}
+     case 'run_hit_stop':{
+      const base=this.hitZone==='head'?HITH:HITB;
+      return mix(this.runStopFrom||D,base,ease(clamp(this.st/.22,0,1))*.65);
+     }
      case 'hit':{
       const base=this.hitZone==='head'?HITH:HITB;
       const p=isHL?Object.assign({},base,{f1x:10,f1h:14,fa1:42,f2x:-10,f2h:2,fa2:50}):Object.assign({},base);
@@ -2406,10 +2745,10 @@ class Fighter{
       return this.dashF?DASHF:DASHB;}
      case 'attack':return sampleKF(this.atk.kf,this.st);
     }
-    if(s==='idle'&&this.ctrl.crouch){
+    if(s==='idle'&&this.crouchActive){
       const walking=clamp(Math.abs(this.vx)/70,0,1),step=Math.sin(this.walkPh)*walking;
-      // A low, cautious look toward the person on the floor, not a ground attack.
-      return P({H:56+Math.abs(step)*2,tl:28,hd:24+Math.sin(t*2)*3,px:5,
+      // A distinct low squat with a forward-leaning torso.
+      return P({H:49+Math.abs(step)*2,tl:48,hd:24+Math.sin(t*2)*3,px:8,
         a1:55,e1:100,c1:0,a2:42,e2:115,c2:0,
         f1x:25+step*10,f1h:Math.max(0,step)*5,f2x:-20-step*10,f2h:Math.max(0,-step)*5,
         gx:48,gy:22,bt:145,mo:.15});
@@ -2475,17 +2814,28 @@ class Fighter{
       this.x=clamp(this.rig.pel.x,this.minX,this.maxX);return;
     }
     const tp=this.targetPose();
-    const hard=this.state==='getup'||this.state==='spawn'||this.state==='counter_throw'||this.state==='lamp_hang'||this.state==='shove';
+    const hard=['getup','spawn','counter_throw','lamp_hang','shove','pinned','lifted'].includes(this.state);
     const k=hard?1:(this.state==='attack'||this.state==='hit')?1-Math.exp(-dt*45):1-Math.exp(-dt*24);
     this.cur=(this.cur&&!hard)?mix(this.cur,tp,k):Object.assign({},tp);
     const hasBat=this.skin==='negan'&&this.hp>0&&!this.batLost&&!stowsBat(this);
     let R=computeRig(this.cur,this.x,this.gy,this.y+(this.hoverY||0),this.dir,hasBat);
-    if(this.state==='guard')poseGuardArms(R,this.guardFlinch);
+    if(this.state==='guard'||this.state==='guard_recoil')poseGuardArms(R,this);
     if(this.state==='lamp_jump'||this.state==='lamp_hang')poseLampArms(R,this);
     if(this.state==='lamp_pull')poseLampPullArms(R,this.lampPullTarget);
     if(this.state==='choke')poseNeckHold(R,this.chokeTarget);
     if(this.state==='choked')poseStruggleArms(R,this.st);
     if(this.state==='counter_throw')poseCounterGrip(R,this);
+    if(this.state==='takedown')poseTakedownArms(R,this.grappleTarget);
+    if(this.state==='ground_pin'||this.state==='ground_choke')posePinArms(R,this.grappleTarget);
+    if(this.state==='lift_hold'||this.state==='lift_jump')poseLiftArms(R,this.grappleTarget);
+    if(this.state==='pinned')poseStruggleArms(R,this.st,true);
+    if(this.state==='lifted')poseLiftStruggle(R,this.grappleBy,this.st);
+    if(this.bleed&&this.bleed.pressing){
+      const p=surfacePoint(R,this.bleed.mark);
+      if(p){aimArmWorld(R,this.bleed.arm,p.x,p.y);R['c'+this.bleed.arm]=0;R.bd=null;}
+    }
+    if((this.state==='pinned'||this.state==='lifted')&&this.pinBase&&this.st<.35)
+      R=blendRig(this.pinBase,R,ease(clamp(this.st/.35,0,1)));
     if(this.state==='getup'&&this.blend>0&&this.blendFrom)R=blendRig(this.blendFrom,R,ease(1-this.blend/.3));
     this.rig=R;
   }
@@ -2518,7 +2868,8 @@ class AutoCombat{
     this.vaultTarget=null;this.vaultSide=0;this.vaultStart=0;this.watchDistance=170;this.watchUntil=2;
     this.shoveSeen=-1;this.pendingShove=null;this.pendingShoveT=0;
     this.lampCheck=rnd(5,12);this.lampTarget=null;this.hangSeen=null;this.hangStamp=-1;this.hangResponse=null;
-    this.rolled=false;this.intercept=false;this.afterHop=0;
+    this.rolled=false;this.intercept=false;this.afterHop=0;this.reactAction='hop';
+    this.spaceCD=rnd(2,4);this.spaceDuration=0;this.grappleCheck=rnd(2,5);
     this.openingSeen=Object.create(null);this.openingTarget=null;
   }
   setMode(m){this.mode=m;this.modeT=0;}
@@ -2543,14 +2894,18 @@ class AutoCombat{
   update(dt,f,o,all){
     const c=f.ctrl;
     c.mx=0;c.jump=false;c.punch=false;c.run=false;c.laser=false;c.hop=false;c.noFace=false;c.crouch=false;
-    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.lampCheck-=dt;this.modeT+=dt;
+    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.lampCheck-=dt;this.spaceCD-=dt;this.grappleCheck-=dt;this.modeT+=dt;
     this.pendingShoveT=Math.max(0,this.pendingShoveT-dt);
     if(f.hp<=0){this.mode='engage';this.openingTarget=null;this.lampTarget=null;return;}
     const st=f.state;
-    if(['ragdoll','getup','stagger_fall','push_stagger','spawn','hit'].includes(st)){
+    if(f.bleed&&!f.bleed.stopped&&!f.bleed.pressing&&f.bleed.decision<=0&&st==='idle'){
+      f.bleed.decision=rnd(2.2,4);
+      if(Math.random()<.6)f.startPressure();
+    }
+    if(['ragdoll','getup','stagger_fall','push_stagger','spawn','hit','run_hit_stop','pinned','lifted','bleed_collapse'].includes(st)){
       this.mode='engage';this.reactT=-1;this.reactAttacker=null;this.openingTarget=null;this.lampTarget=null;
       this.pendingShove=null;this.vaultTarget=null;this.downTarget=null;this.downDecided=false;
-      if(!['ragdoll','stagger_fall','push_stagger'].includes(st))f.faceOpp(o);
+      if(!['ragdoll','stagger_fall','push_stagger','pinned','lifted','bleed_collapse'].includes(st))f.faceOpp(o);
       return;
     }
     // Once airborne keep the running-jump momentum; interruption or landing
@@ -2593,7 +2948,7 @@ class AutoCombat{
     }
     if(!o){this.mode='engage';this.openingTarget=null;this.lampTarget=null;this.downTarget=null;this.downDecided=false;return;}
     const dx=o.x-f.x,dist=Math.abs(dx),toward=dx>=0?1:-1;
-    if(['guard','guard_recoil','shove','overextend','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull'].includes(st)){
+    if(['guard','guard_recoil','shove','overextend','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','takedown','ground_pin','ground_choke','lift_hold','lift_jump'].includes(st)){
       c.noFace=true;return;
     }
     // Decide once per missed swing, not on every frame. A defender can finish
@@ -2628,6 +2983,7 @@ class AutoCombat{
         if(e.st>e.atk.hs-.02)continue;
         if(this.hopCD<=0&&this.reactT<0&&Math.random()<this.dodgeP*(f.hp<45?1.35:1)){
           this.reactT=rnd(.015,.06);this.reactAttacker=e;
+          this.reactAction=e.atk.fist&&!e.atk.bat&&Math.random()<.32?'duck':'hop';
         }
       }
       if(this.reactT>=0){
@@ -2639,6 +2995,9 @@ class AutoCombat{
           if(this.reactT<0){
             this.reactAttacker=null;this.hopCD=rnd(1.8,3);
             f.dir=threat.x>=f.x?1:-1;
+            if(this.reactAction==='duck'){
+              this.setMode('duck');this.spaceDuration=rnd(.48,.8);c.crouch=true;c.noFace=true;return;
+            }
             if(f.guardCD<=0&&Math.random()<.25&&f.startGuard(threat)){this.afterHop=0;return;}
             c.noFace=true;c.hop=true;this.afterHop=.5;return;
           }
@@ -2654,7 +3013,35 @@ class AutoCombat{
       }
     }
 
-    const oppDown=o.state==='ragdoll'||o.state==='getup'||o.state==='spawn';
+    const oppDown=o.state==='ragdoll'||o.state==='pinned'||o.state==='getup'||o.state==='spawn';
+    if(this.mode==='duck'){
+      if(st!=='idle'||oppDown||this.modeT>=this.spaceDuration){this.setMode('engage');return;}
+      c.noFace=true;c.crouch=true;f.dir=toward;
+      return;
+    }
+    if(this.mode==='space_out'){
+      if(st!=='idle'||oppDown||this.modeT>=this.spaceDuration||dist>230){this.setMode('engage');return;}
+      c.noFace=true;f.dir=toward;
+      if(dist<180)c.mx=-toward;
+      return;
+    }
+    if(this.mode==='low_approach'||this.mode==='lift_approach'){
+      const low=this.mode==='low_approach';
+      if(st!=='idle'||oppDown||this.modeT>2.5||dist>190||!f.canGrapple(o)){
+        this.setMode('engage');return;
+      }
+      c.noFace=true;f.dir=toward;c.crouch=low;
+      if(low){
+        if(dist<=TAKEDOWN_REACH-6&&f.crouchActive&&f.crouchTime>=.07&&f.startTakedown(o)){
+          this.setMode('engage');return;
+        }
+        if(dist>75)c.mx=toward;
+      }else{
+        if(dist<=76&&f.startLift(o)){this.setMode('engage');return;}
+        c.mx=toward;
+      }
+      return;
+    }
     if(this.mode==='lamp_approach'){
       const lamp=this.lampTarget;
       if(!lamp||!Game.lamps.includes(lamp)||lamp.detached||lamp.occupant||oppDown||o.state==='lamp_hang'||this.modeT>3){
@@ -2750,6 +3137,23 @@ class AutoCombat{
       return;
     }
     this.downDecided=false;this.downTarget=null;
+    if(this.grappleCheck<=0){
+      this.grappleCheck=rnd(3,5.5);
+      if(f.grappleCD<=0&&dist<150&&f.y<=5&&!(f.bleed&&f.bleed.pressing)&&f.canGrapple(o)){
+        const roll=Math.random();
+        if(roll<.25){this.setMode('low_approach');c.crouch=true;return;}
+        if(roll<.34){this.setMode('lift_approach');return;}
+      }
+    }
+    // Break up stationary exchanges: sometimes step or hop away and keep a
+    // little space, without changing any attack or guard cooldowns.
+    if(this.spaceCD<=0&&dist<165&&o.y<10&&o.state!=='attack'&&Math.random()<dt*.5){
+      this.spaceCD=rnd(2.8,4.8);this.spaceDuration=rnd(.55,1.3);this.setMode('space_out');
+      const room=toward>0?f.x-f.minX:f.maxX-f.x;
+      if(room>175&&f.dashCD<=0&&Math.random()<.4){c.noFace=true;c.hop=true;}
+      else c.mx=-toward;
+      return;
+    }
     // Give a connected strike one optional, short follow-up decision, rather
     // than re-rolling every frame or changing the normal attack cooldown.
     if(f.lastHitTarget&&this.shoveSeen!==f.atkStamp&&f.t-f.lastAttackEnd<.5){
@@ -2994,7 +3398,7 @@ const Game={
   shake:0,hs:0,ts:1,tsT:0,
   fighters:[],lamps:[],detachedLamps:0,
   droppedBats:[],camera:null,
-  autoSpawn:true,
+  autoSpawn:true,shiftCrouch:false,
   respawnTimer:0,
   koCount:0,
   fx:null,
@@ -3003,7 +3407,7 @@ const Game={
     this.ctx=this.cv.getContext('2d');
     this.ctx.imageSmoothingEnabled=false;
     this.fighters=[];this.droppedBats=[];this.lamps=[];this.detachedLamps=0;
-    this.koCount=0;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;this.respawnTimer=0;this.autoSpawn=true;
+    this.koCount=0;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;this.respawnTimer=0;this.autoSpawn=true;this.shiftCrouch=false;
     this.camera={x:this.W/2,y:270,zoom:1,vignette:0};
     skinCursor=0;
     this.fx=new FX();
@@ -3140,9 +3544,9 @@ const Game={
   },
   ko(v,att,a){
     a=a||{};
-    const delayed=!a.noStagger&&!a.preserveRagdoll&&!a.keepRag&&
+    const delayed=!a.bleedOut&&!a.noStagger&&!a.preserveRagdoll&&!a.keepRag&&
       (a.launch||a.pw>=.4)&&v.canStagger(att)&&Math.random()<STAGGER_KO_CHANCE;
-    v.breakChoke();v.boxing=false;v.shoveTarget=null;v.hp=0;
+    v.breakGrapple();v.breakChoke();v.boxing=false;v.shoveTarget=null;v.hp=0;
     if(v.skin==='negan'&&!v.batLost){
       const R=v.rig;
       const bx=R&&R.bd?R.wN.x+R.bd.x*24:v.x+v.dir*26;
@@ -3151,15 +3555,25 @@ const Game={
       v.batLost=true;
       this.droppedBats.push({
         x:bx,y:by,gy:v.gy,flip:v.dir,
-        vx:att.dir*rnd(130,250)+(v.vx||0)*.35,
-        vy:-rnd(190,310),
+        vx:a.bleedOut?(v.vx||0)*.2:att.dir*rnd(130,250)+(v.vx||0)*.35,
+        vy:a.bleedOut?-40:-rnd(190,310),
         ang,
-        va:(att.dir||1)*rnd(7,13),
+        va:a.bleedOut?0:(att.dir||1)*rnd(7,13),
         settled:false,
         fade:0
       });
     }
     this.koCount++;
+    if(a.bleedOut){
+      // Blood loss ends in an exhausted, gradual collapse, not the impact KO
+      // explosion, hit-stop or a fresh launch of an already prone body.
+      if(v.state!=='ragdoll'){
+        if(v.y>5)v.toRagdoll(0,0,true);
+        else{v.collapseFrom=v.cur?Object.assign({},v.cur):Object.assign({},D);
+          v.state='bleed_collapse';v.st=0;v.vx*=.35;v.vy=0;v.y=0;}
+      }
+      this.respawnTimer=2.4;return;
+    }
     if((a.preserveRagdoll||a.keepRag)&&v.state==='ragdoll'&&v.rag){
       v.rag.t=0;v.rag.settle=0;
       this.fx.blood(v.x,v.gy-22,att.dir,16,.72);
@@ -3178,7 +3592,7 @@ const Game={
     for(const o of this.fighters){
       if(o===f||o.hp<=0)continue;
       const dist=Math.abs(o.x-f.x);
-      const downPenalty=(o.state==='ragdoll'||o.state==='getup'||o.state==='spawn')?280:0;
+      const downPenalty=(o.state==='ragdoll'||o.state==='pinned'||o.state==='getup'||o.state==='spawn')?280:0;
       const sc=dist+downPenalty;
       if(sc<bestScore){bestScore=sc;best=o;}
     }
@@ -3190,6 +3604,7 @@ const Game={
     if(this.tsT>0){this.tsT-=rdt;dt*=this.ts;if(this.tsT<=0)this.ts=1;}
     this.shake*=Math.exp(-rdt*9);
     const alive=this.fighters.filter(f=>f.hp>0);
+    const keyboardFighter=this.shiftCrouch?alive[0]:null;
     if(this.autoSpawn&&alive.length<2){
       this.respawnTimer-=rdt;
       if(this.respawnTimer<=0){
@@ -3206,18 +3621,25 @@ const Game={
     for(const lamp of this.lamps)lamp.update(dt,this);
     // Owners/throwers update before the restrained fighter, independent of
     // spawn order, then the holder's hands are aligned to the current neck.
-    const dependent=f=>f.state==='choked'||f.state==='counter_carried';
+    const dependent=f=>['choked','counter_carried','pinned','lifted'].includes(f.state);
     const order=[...this.fighters.filter(f=>!dependent(f)),...this.fighters.filter(dependent)];
     for(const f of order){
       const opp=f.hp>0?this.findBestOpponent(f):null;
-      if(f.hp>0){
+      if(f.hp>0&&f===keyboardFighter){
+        // Shift is a temporary crouch command for the first living fighter;
+        // releasing it returns the fighter to the normal autonomous AI.
+        const c=f.ctrl;c.mx=0;c.jump=false;c.punch=false;c.run=false;c.hop=false;c.laser=false;c.noFace=false;c.crouch=true;
+      }else if(f.hp>0){
         f.autopilot.update(dt,f,opp,this.fighters);
       }else{
         const c=f.ctrl;c.mx=0;c.jump=false;c.punch=false;c.run=false;c.hop=false;c.laser=false;c.noFace=false;c.crouch=false;
       }
       f.update(dt,opp,this.fighters);
     }
-    for(const f of this.fighters)if(f.state==='choke'&&f.chokeTarget&&f.chokeTarget.rig)f.buildRig(0);
+    for(const f of this.fighters){
+      if(f.state==='choke'&&f.chokeTarget&&f.chokeTarget.rig)f.buildRig(0);
+      if(['takedown','ground_pin','ground_choke','lift_hold','lift_jump'].includes(f.state)&&f.grappleTarget&&f.grappleTarget.rig)f.buildRig(0);
+    }
     for(const b of this.droppedBats){
       if(b.settled){b.fade=Math.min(.14,b.fade+dt*.018);continue;}
       b.vy+=1650*dt;
@@ -3249,12 +3671,12 @@ const Game={
       for(let j=i+1;j<alive.length;j++){
         const B=alive[j];
         if(B.hp<=0||B.y>=60||['ragdoll','spawn','run','counter_carried'].includes(B.state))continue;
-        if(A.chokeTarget===B||B.chokeTarget===A||A.flankTarget===B||B.flankTarget===A||A.lampPullTarget===B||B.lampPullTarget===A)continue;
+        if(A.chokeTarget===B||B.chokeTarget===A||A.flankTarget===B||B.flankTarget===A||A.lampPullTarget===B||B.lampPullTarget===A||A.grappleTarget===B||B.grappleTarget===A)continue;
         const dx=B.x-A.x,m=54;
         if(Math.abs(dx)<m){
           const s=dx>=0?1:-1,push=(m-Math.abs(dx))/2;
-          const fixedA=A.state==='choke'||A.state==='choked'||A.state==='counter_throw';
-          const fixedB=B.state==='choke'||B.state==='choked'||B.state==='counter_throw';
+          const fixedA=['choke','choked','counter_throw','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted'].includes(A.state);
+          const fixedB=['choke','choked','counter_throw','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted'].includes(B.state);
           const ok1=!fixedA&&A.x-s*push>=A.minX&&A.x-s*push<=A.maxX;
           const ok2=!fixedB&&B.x+s*push>=B.minX&&B.x+s*push<=B.maxX;
           if(ok1&&ok2){A.x-=s*push;B.x+=s*push;}
@@ -3331,8 +3753,13 @@ const Game={
       ctx.drawImage(this.batLayer.canvas,0,0,W,H);
     }
 
-    const dependent=f=>f.state==='choked'||f.state==='counter_carried';
-    const ordered=[...this.fighters.filter(f=>f.hp<=0),...this.fighters.filter(f=>f.hp>0&&!dependent(f)),...this.fighters.filter(f=>f.hp>0&&dependent(f))];
+    const dependent=f=>['choked','counter_carried','lifted'].includes(f.state);
+    // A pinned body is below its kneeling opponent; a lifted body is in front
+    // of its holder, whose gripping arm is painted once more over the top.
+    const ordered=[...this.fighters.filter(f=>f.hp<=0),
+      ...this.fighters.filter(f=>f.hp>0&&f.state==='pinned'),
+      ...this.fighters.filter(f=>f.hp>0&&f.state!=='pinned'&&!dependent(f)),
+      ...this.fighters.filter(f=>f.hp>0&&dependent(f))];
     for(const f of ordered){
       if(!f.rig||(f.state==='spawn'&&f.sp===0))continue;
       f.visible=true;
@@ -3364,6 +3791,17 @@ const Game={
         paintLayer(this.batLayer,q=>drawBat(q,f));
       }
       paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,f));
+      if(f.bleed&&f.bleed.pressing&&f.bleed.arm==='F')
+        paintLayer(this.frontLayer,q=>drawPixelArm(q,f.rig,f,'F',true,SK_[f.skin]||SK_.jane));
+      if((f.state==='ground_pin'||f.state==='ground_choke')&&f.grappleTarget&&f.grappleTarget.rig){
+        const victim=f.grappleTarget;
+        paintLayer(this.frontLayer,q=>{
+          drawPixelArm(q,victim.rig,victim,'F',true,SK_[victim.skin]||SK_.jane);
+          drawFighterFrontArm(q,victim);
+        },false);
+      }
+      const tackler=this.fighters.find(h=>h.state==='takedown'&&h.grappleTarget===f&&h.rig);
+      if(tackler)paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,tackler),false);
       // The near arm wraps in front of the opponent's neck rather than being
       // hidden behind the opponent's sprite.
       if(f.state==='choked'&&f.chokedBy&&f.chokedBy.rig){
@@ -3372,6 +3810,9 @@ const Game={
       }else if(f.state==='counter_carried'&&f.chokeTarget&&f.chokeTarget.rig){
         const thrower=f.chokeTarget;
         paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,thrower),false);
+      }else if(f.state==='lifted'&&f.grappleBy&&f.grappleBy.rig){
+        const holder=f.grappleBy;
+        paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,holder),false);
       }
       ctx.restore();
     }
@@ -3425,8 +3866,12 @@ export function startGame(){
   };
   const onResize=()=>Game.resize();
   const onCtx=e=>e.preventDefault();
+  const onKeyDown=e=>{if(e.key==='Shift'&&!e.ctrlKey&&!e.altKey&&!e.metaKey)Game.shiftCrouch=true;};
+  const onKeyUp=e=>{if(e.key==='Shift')Game.shiftCrouch=false;};
+  const onBlur=()=>{Game.shiftCrouch=false;};
   cv.addEventListener('pointerdown',onDown);
   addEventListener('resize',onResize);
+  addEventListener('keydown',onKeyDown);addEventListener('keyup',onKeyUp);addEventListener('blur',onBlur);
   document.addEventListener('contextmenu',onCtx);
   let raf=0,last=performance.now(),running=true;
   const frame=ts=>{
@@ -3449,6 +3894,8 @@ export function startGame(){
       running=false;cancelAnimationFrame(raf);
       cv.removeEventListener('pointerdown',onDown);
       removeEventListener('resize',onResize);
+      removeEventListener('keydown',onKeyDown);removeEventListener('keyup',onKeyUp);removeEventListener('blur',onBlur);
+      Game.shiftCrouch=false;
       document.removeEventListener('contextmenu',onCtx);
     }
   };

@@ -49,6 +49,7 @@ export default function App() {
         <div className="hintBadge">
           <span className="dot" />
           <span id="statTxt" />
+          <span className="shiftHint">· Shift: присесть первому бойцу</span>
         </div>
         <div className="ctrlGroup">
           <button className="sbtn" title="Убрать нокаутированных бойцов" onClick={() => api.current?.clearBodies()}>

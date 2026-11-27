@@ -50,10 +50,10 @@ globalThis.document = {
 };
 
 const source = await readFile(new URL('../src/game/engine.ts', import.meta.url), 'utf8');
-const { code } = await transformWithEsbuild(`${source}\nexport { Game, Fighter };`, 'engine.ts', {
+const { code } = await transformWithEsbuild(`${source}\nexport { Game, Fighter, surfacePoint };`, 'engine.ts', {
   loader: 'ts', format: 'esm', target: 'es2020',
 });
-const { Game, Fighter } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const { Game, Fighter, surfacePoint } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 const originalRandom = Math.random;
 const originalWarn = console.warn;
 let warnings = [];
@@ -775,7 +775,8 @@ test('an interrupted boxing combo never fires the queued second punch', () => {
     if (lethal) boxer.hp = 3;
     boxer.takeHit(opponent, punch);
     assert.equal(boxer.boxing, false);
-    assert.equal(boxer.state, lethal ? 'ragdoll' : 'hit');
+    if (lethal) assert.ok(['ragdoll', 'stagger_fall'].includes(boxer.state), 'lethal hits may stagger before falling');
+    else assert.equal(boxer.state, 'hit');
     tick(1);
     assert.equal(boxer.atkStamp, stamp, 'interrupted second punch must not fire later');
     assert.equal(Game.koCount, lethal ? 1 : 0);
@@ -1619,4 +1620,415 @@ test('seeded unattended fights actually use the new actions while preserving exi
   } finally {
     for (const name of names) Fighter.prototype[name] = original[name];
   }
+});
+
+// Ground wrestling, injury and the more mobile defensive behavior.
+function lowPair({ dir = 1, skin = 'jane', victimSkin = 'walt', dt = 1 / 60 } = {}) {
+  const holder = fighter(440 - dir * 40, dir, skin);
+  const victim = fighter(440 + dir * 40, -dir, victimSkin);
+  disableAI(holder, victim);
+  holder.ctrl.crouch = true;
+  tick(.4, dt);
+  assert.equal(holder.crouchActive, true);
+  return { holder, victim };
+}
+function pinnedPair(options = {}) {
+  const dt = options.dt || 1 / 60;
+  const pair = lowPair(options);
+  assert.equal(pair.holder.startTakedown(pair.victim), true);
+  advanceUntil(() => pair.holder.state === 'ground_pin', Math.ceil(1.2 / dt), dt);
+  assert.equal(pair.victim.state, 'pinned');
+  pair.holder.pinChokeAt = 100;
+  tick(.4, dt);
+  return pair;
+}
+function liftedPair({ dir = 1, style = 'carry', skin = 'jane', victimSkin = 'walt', dt = 1 / 60, reverseOrder = false } = {}) {
+  let holder, victim;
+  if (reverseOrder) {
+    victim = fighter(440 + dir * 34, -dir, victimSkin);
+    holder = fighter(440 - dir * 34, dir, skin);
+  } else {
+    holder = fighter(440 - dir * 34, dir, skin);
+    victim = fighter(440 + dir * 34, -dir, victimSkin);
+  }
+  disableAI(holder, victim);
+  assert.equal(holder.startLift(victim, style), true);
+  return { holder, victim };
+}
+
+test('Shift commands the first living fighter to crouch, and Homelander lands before lowering', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.fighters = [];
+    const first = fighter(350, 1, 'homelander'), second = fighter(650, -1);
+    disableAI(second);
+    first.hoverY = 19;
+    const standing = first.rig.pel.y;
+    Game.shiftCrouch = true;
+    Game.update(dt);
+    assert.equal(first.ctrl.crouch, true);
+    assert.equal(first.crouchActive, false, 'hovering Homelander does not squat in midair');
+    assert.ok(first.hoverY > .7);
+    advanceUntil(() => first.crouchActive, Math.ceil(.6 / dt), dt);
+    assert.ok(first.hoverY <= .7, 'his hover is at the floor before the crouch begins');
+    tick(.3, dt);
+    assert.ok(first.rig.pel.y > standing + 18, 'the crouch visibly lowers the hips');
+    assert.ok((first.rig.sh.x - first.rig.pel.x) * first.dir > 30, 'the torso leans forward');
+    assert.equal(second.ctrl.crouch, false, 'only the first living fighter is controlled');
+    Game.shiftCrouch = false;
+    first.autopilot.update = () => { first.ctrl.crouch = false; };
+    tick(.2, dt);
+    assert.equal(first.crouchActive, false);
+  }
+});
+
+test('a committed crouch ducks real bare-handed strikes but not a knee or bat', () => {
+  for (const dir of [1, -1]) for (const attack of ['jab', 'cross', 'knee', 'bat']) {
+    Game.fighters = [];
+    const defender = fighter(440, dir), attacker = fighter(440 + dir * 90, -dir, attack === 'bat' ? 'negan' : 'jane');
+    disableAI(defender, attacker);
+    defender.ctrl.crouch = true; tick(.25);
+    assert.equal(defender.crouchActive, true);
+    const hp = defender.hp;
+    assert.equal(attacker.startAttack(attack === 'cross' ? 1 : attack === 'knee' ? 2 : 0), true);
+    tick(.31);
+    if (attack === 'jab' || attack === 'cross') {
+      assert.equal(defender.hp, hp, `${attack} should pass over the crouching fighter`);
+      assert.equal(attacker.connected, false);
+    } else assert.ok(defender.hp < hp, `${attack} is not a bare-handed punch`);
+  }
+});
+
+test('both extended guard arms visibly wobble after impact and an NPC can shuffle in both directions', () => {
+  const defender = fighter(410, 1), attacker = fighter(570, -1); disableAI(defender, attacker);
+  assert.equal(defender.startGuard(attacker), true);
+  defender.guardMoves = true; defender.guardPhase = 0; defender.guardDur = 2.3;
+  tick(.12);
+  const before = { N: { ...defender.rig.wN }, F: { ...defender.rig.wF } };
+  defender.takeHit(attacker, punch);
+  defender.buildRig(1 / 60);
+  assert.ok(distance(before.N, defender.rig.wN) > 1, 'near fist reacts to the blocked hit');
+  assert.ok(distance(before.F, defender.rig.wF) > 1, 'far fist reacts to the blocked hit');
+  assert.ok(defender.guardShakeX >= 3.5 && defender.guardShakeY >= 3);
+  Game.hs = 0;
+  const positions = [];
+  for (let i = 0; i < 100; i++) { Game.update(1 / 60); positions.push(defender.x); }
+  const deltas = positions.slice(1).map((x, i) => x - positions[i]);
+  assert.ok(deltas.some(d => d > .05) && deltas.some(d => d < -.05), 'guard shuffles forwards and backwards');
+  assert.equal(defender.state, 'guard');
+});
+
+test('a hit on a grounded runner slows them quickly without a fall; a jumping runner falls', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const a of [punch, launchPunch]) {
+    Game.fighters = [];
+    const runner = fighter(400, 1), attacker = fighter(600, -1); disableAI(runner, attacker);
+    runner.state = 'run'; runner.vx = 480; runner.ctrl.run = true; runner.ctrl.mx = 1;
+    runner.takeHit(attacker, a);
+    assert.equal(runner.state, 'run_hit_stop'); assert.equal(runner.rag, null);
+    const initial = Math.abs(runner.vx), x = runner.x;
+    Game.hs = 0;
+    tick(.3, dt);
+    assert.ok(runner.x > x && Math.abs(runner.vx) < initial * .2, 'forward momentum decays smoothly');
+    assert.notEqual(runner.state, 'ragdoll');
+    advanceUntil(() => runner.state === 'idle', Math.ceil(1.5 / dt), dt);
+    runner.y = .5; runner.vy = 770; runner.state = 'air';
+    runner.takeHit(attacker, a);
+    assert.equal(runner.state, 'ragdoll', 'even the beginning of a jump is airborne and falls');
+    Game.fighters = [];
+    const jumper = fighter(400, 1), striker = fighter(600, -1); disableAI(jumper, striker);
+    jumper.y = 70; jumper.vy = 100; jumper.state = 'air';
+    jumper.takeHit(striker, a);
+    assert.equal(jumper.state, 'ragdoll', 'the same hit knocks an airborne fighter down');
+  }
+});
+
+test('the takedown visibly grips both legs before bringing the opponent down', () => {
+  for (const dir of [1, -1]) {
+    Game.fighters = [];
+    const { holder, victim } = lowPair({ dir });
+    assert.equal(holder.startTakedown(victim), true);
+    tick(.28);
+    assert.equal(holder.state, 'takedown');
+    for (const side of ['N', 'F']) {
+      const knee = victim.rig[`k${side}`], pel = victim.rig.pel;
+      const thigh = { x: pel.x + (knee.x - pel.x) * .62, y: pel.y + (knee.y - pel.y) * .62 };
+      assert.ok(distance(holder.rig[`w${side}`], thigh) < 6, 'each hand reaches a leg');
+    }
+    advanceUntil(() => victim.state === 'pinned', 90);
+  }
+});
+
+test('a low takedown pins a struggling victim on the back and can choke without any throw', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) {
+    Game.fighters = [];
+    const { holder, victim } = pinnedPair({ dir, dt });
+    assert.equal(holder.grappleTarget, victim); assert.equal(victim.grappleBy, holder);
+    assert.equal(victim.canBeHit(), false, 'the prone victim is not an ordinary standing punch target');
+    assert.ok(victim.rig.pel.y > victim.gy - 45 && victim.rig.neck.y > victim.gy - 55, 'victim lies on the floor');
+    assert.ok(holder.rig.pel.y < victim.rig.pel.y - 10, 'holder crouches above the body');
+    for (const side of ['N', 'F']) {
+      assert.ok(victim.rig[`e${side}`].y < victim.gy - 3, 'struggling elbows remain above the floor');
+      assert.ok(distance(holder.rig[`w${side}`], victim.rig.neck) < 10, 'the pinning hands meet the victim');
+    }
+    const pinHeadY = holder.rig.head.y, oldLeg = { ...victim.rig.aN };
+    tick(.2, dt);
+    assert.ok(distance(oldLeg, victim.rig.aN) > 1, 'the victim lightly moves their legs');
+    victim.ctrl.punch = true; victim.ctrl.jump = true;
+    tick(.1, dt);
+    assert.equal(victim.state, 'pinned'); assert.equal(victim.startAttack(0), false);
+    assert.equal(holder.startLift(victim), false, 'no underarm throw can start from a pin');
+    assert.equal(holder.startGroundChoke(), true);
+    holder.chokeCounterAt = holder.chokeReleaseAt = Infinity; holder.chokeDuration = 2.4;
+    tick(.5, dt);
+    assert.ok(holder.rig.head.y < pinHeadY - 10, 'holder visibly straightens into the choke');
+    for (const side of ['N', 'F']) assert.ok(distance(holder.rig[`w${side}`], victim.rig.neck) < 10, 'both hands reach the neck');
+    const cooldown = holder.chokeCD;
+    holder.releaseGrapple('throw');
+    assert.equal(holder.grappleTarget, null); assert.equal(victim.grappleBy, null);
+    assert.equal(victim.state, 'ragdoll'); assert.equal(victim.fallDamage, null, 'ground choke cannot become a throw');
+    assert.ok(Math.abs(holder.chokeCD - cooldown * 2) < 1e-7, 'remaining choke cooldown is doubled once');
+  }
+});
+
+test('a completed ground choke has the old damage, duration, escape odds and longer stun', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.fighters = [];
+    const { holder, victim } = pinnedPair({ dt });
+    assert.equal(holder.startGroundChoke(), true);
+    assert.ok(holder.chokeDuration >= 2.2 && holder.chokeDuration <= 2.9);
+    holder.chokeCounterAt = holder.chokeReleaseAt = Infinity;
+    holder.chokeDuration = 2.4;
+    advanceUntil(() => victim.state === 'ragdoll', Math.ceil(3.2 / dt), dt);
+    assert.equal(holder.state, 'idle'); assert.equal(victim.rag.stunScale, 1.5);
+    assert.ok(victim.hp > 94 && victim.hp < 96, `choke damage: ${100 - victim.hp}`);
+  }
+  for (const roll of [0, .99]) {
+    Game.fighters = []; const { holder } = pinnedPair();
+    const random = Math.random;
+    try { Math.random = () => roll; holder.startGroundChoke(); } finally { Math.random = random; }
+    assert.equal(Number.isFinite(holder.chokeCounterAt), roll === 0);
+    assert.equal(Number.isFinite(holder.chokeReleaseAt), roll === 0);
+    if (roll === 0) {
+      advanceUntil(() => holder.state === 'idle', 120);
+      assert.notEqual(holder.state, 'counter_carried', 'a ground escape is not a counterthrow');
+    }
+  }
+});
+
+test('the underarm lift carries a struggling opponent, raises or lowers them, and times out', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) for (const reverseOrder of [false, true]) {
+    Game.fighters = [];
+    const { holder, victim } = liftedPair({ dt, dir, style: 'press', reverseOrder, skin: 'negan', victimSkin: 'homelander' });
+    holder.liftStamina = 3.3;
+    tick(1, dt);
+    assert.equal(victim.state, 'lifted'); assert.ok(victim.y > 35);
+    for (const side of ['N', 'F']) assert.ok(distance(holder.rig[`w${side}`], victim.rig.sh) < 25, 'hands support the armpits');
+    assert.equal(victim.startAttack(0), false);
+    const y1 = victim.y, leg1 = { ...victim.rig.aN }, x1 = holder.x;
+    tick(.4, dt);
+    assert.ok(victim.y > y1 + 5, 'the holder presses the victim higher');
+    assert.ok(distance(leg1, victim.rig.aN) > 3, 'the victim kicks or tucks their legs');
+    assert.ok(Math.abs(holder.x - x1) > 3 && Math.abs(holder.vx) < 55, 'the load is carried slowly');
+    advanceUntil(() => victim.state === 'ragdoll', Math.ceil(3 / dt), dt);
+    assert.equal(victim.grappleBy, null); assert.equal(holder.grappleTarget, null);
+    assert.equal(victim.fallDamage, null, 'a tired release is not the jump throw');
+  }
+});
+
+test('a jumping underarm throw releases into ragdoll and damages on landing, with rare bleeding', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) {
+    Game.fighters = [];
+    const { holder, victim } = liftedPair({ dt, dir, style: 'throw' });
+    holder.liftJumpAt = 1.1; holder.liftStamina = 4;
+    advanceUntil(() => holder.state === 'lift_jump', Math.ceil(2 / dt), dt);
+    advanceUntil(() => victim.state === 'ragdoll', Math.ceil(1 / dt), dt);
+    assert.equal(victim.fallDamage?.amount, 12); assert.equal(victim.hp, 100);
+    const random = Math.random;
+    try {
+      Math.random = () => 0;
+      advanceUntil(() => victim.hp < 100, Math.ceil(4 / dt), dt);
+    } finally { Math.random = random; }
+    assert.equal(victim.hp, 88, 'only the landing causes the one-time impact damage');
+    assert.ok(victim.bleed, 'a rare severe landing can start a wound');
+    assert.equal(victim.fallDamage, null);
+  }
+});
+
+test('a third-party hit, laser, knockout or removal safely breaks either kind of hold', () => {
+  for (const kind of ['pin', 'lift']) for (const cause of ['hit-holder', 'hit-victim', 'laser', 'ko-holder', 'remove-holder', 'remove-victim']) {
+    Game.fighters = []; Game.koCount = 0;
+    const pair = kind === 'pin' ? pinnedPair() : liftedPair({ style: 'carry' });
+    const { holder, victim } = pair;
+    if (kind === 'lift') tick(.8);
+    const other = fighter(190, 1, 'homelander'); disableAI(other);
+    if (cause === 'hit-holder') holder.takeHit(other, punch);
+    if (cause === 'hit-victim') victim.takeHit(other, punch);
+    if (cause === 'laser') holder.takeLaser(other, holder.rig.head, true);
+    if (cause === 'ko-holder') { holder.hp = 2; holder.takeHit(other, punch); }
+    if (cause === 'remove-holder') Game.fighters = Game.fighters.filter(f => f !== holder);
+    if (cause === 'remove-victim') Game.fighters = Game.fighters.filter(f => f !== victim);
+    if (cause.startsWith('remove')) Game.update(1 / 60);
+    assert.equal(holder.grappleTarget, null, `${kind}/${cause}: holder link`);
+    assert.equal(victim.grappleBy, null, `${kind}/${cause}: victim link`);
+    assert.notEqual(victim.state, kind === 'pin' ? 'pinned' : 'lifted');
+    assert.equal(victim.fallDamage, null, 'an interruption does not make an underarm throw');
+    if (cause === 'ko-holder') assert.equal(Game.koCount, 1);
+  }
+});
+
+test('all five heroes can perform the pin and the lift in either direction with finite poses', () => {
+  for (const skin of ['jane', 'negan', 'homelander', 'walt', 'saul']) for (const dir of [1, -1]) {
+    Game.fighters = [];
+    let { holder, victim } = pinnedPair({ skin, victimSkin: skin, dir });
+    holder.startGroundChoke(); holder.chokeCounterAt = holder.chokeReleaseAt = Infinity;
+    tick(.5);
+    for (const fighter of [holder, victim]) for (const p of Object.values(fighter.rig))
+      if (p && typeof p === 'object' && 'x' in p) assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
+    Game.render(); holder.releaseGrapple();
+    Game.fighters = [];
+    ({ holder, victim } = liftedPair({ skin, victimSkin: skin, dir }));
+    tick(1);
+    for (const fighter of [holder, victim]) for (const p of Object.values(fighter.rig))
+      if (p && typeof p === 'object' && 'x' in p) assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
+    Game.render(); holder.releaseGrapple();
+  }
+});
+
+test('only rare very strong impacts cause an attached, dark pixel wound that drips to the floor', () => {
+  for (const [pw, roll, shouldBleed] of [[.4, 0, false], [1, .99, false], [1, 0, true]]) {
+    Game.fighters = [];
+    const victim = fighter(420, 1), attacker = fighter(510, -1); disableAI(victim, attacker);
+    const random = Math.random;
+    try { Math.random = () => roll; victim.takeHit(attacker, { ...punch, pw, noStagger: true }); }
+    finally { Math.random = random; }
+    assert.equal(!!victim.bleed, shouldBleed, `power ${pw}, roll ${roll}`);
+  }
+  Game.fighters = [];
+  const victim = fighter(420, 1), attacker = fighter(620, -1); disableAI(victim, attacker);
+  const start = { x: (victim.rig.sh.x + victim.rig.pel.x) / 2, y: (victim.rig.sh.y + victim.rig.pel.y) / 2 };
+  assert.equal(victim.startBleeding(start.x, start.y, attacker), true);
+  assert.equal(victim.startBleeding(start.x, start.y, attacker), false, 'a wound is not duplicated');
+  assert.equal(victim.bleed.mark.seg, 'torso');
+  const p = surfacePoint(victim.rig, victim.bleed.mark);
+  victim.ctrl.mx = 1; tick(.3);
+  const moved = surfacePoint(victim.rig, victim.bleed.mark);
+  assert.ok(moved.x > p.x + 10, 'the wound follows its animated body segment');
+  victim.ctrl.mx = 0; tick(.7);
+  assert.ok(victim.bleed.flowTime >= .9 && victim.hp < 99, 'uncovered bleeding costs moderate health');
+  Game.render();
+  assert.ok(Game.bodyLayer.ctx.stats.colors.has('#690c1a'), 'dark pixels are drawn on the body layer');
+  const floorColors = Game.dctx.stats.colors;
+  tick(.7);
+  assert.ok(floorColors.has('#5e0916'), 'small drops land and remain on the floor');
+  Game.clearBlood();
+  assert.ok(victim.bleed, 'washing away stains does not silently heal an active wound');
+});
+
+test('pressing a reachable wound stops flow and damage, occupies one arm, and leaves the other arm usable', () => {
+  for (const skin of ['jane', 'negan', 'homelander']) for (const dir of [1, -1]) {
+    Game.fighters = [];
+    const victim = fighter(400, dir, skin), attacker = fighter(650, -dir); disableAI(victim, attacker);
+    const r = victim.rig, p = { x: (r.sh.x + r.pel.x) / 2, y: (r.sh.y + r.pel.y) / 2 };
+    victim.startBleeding(p.x, p.y, attacker);
+    assert.equal(victim.startPressure(), true); victim.bleed.pressT = 3;
+    const hp = victim.hp, flow = victim.bleed.flowTime;
+    tick(.4);
+    const wp = surfacePoint(victim.rig, victim.bleed.mark);
+    assert.ok(distance(victim.rig[`w${victim.bleed.arm}`], wp) < 8, 'the bent hand covers the wound');
+    assert.equal(victim.hp, hp); assert.equal(victim.bleed.flowTime, flow);
+    const blocked = victim.bleed.arm === 'N' ? 0 : 1;
+    const free = victim.bleed.arm === 'N' ? 1 : 0;
+    assert.equal(victim.startAttack(blocked), false, 'the pressing hand cannot attack');
+    assert.equal(victim.startAttack(free), true, 'the free hand can still strike');
+    assert.notEqual(victim.atk.fist, victim.bleed.arm);
+    tick(.5);
+    assert.equal(victim.hp, hp, 'pressure remains applied during a free-hand attack');
+    victim.bleed.pressT = 0;
+    tick(.5);
+    assert.equal(victim.bleed.pressing, false);
+    assert.ok(victim.hp < hp, 'bleeding resumes when pressure is released');
+  }
+});
+
+test('blood loss weakens walking and running, ends in a slow collapse, and stops shortly after death', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.fighters = []; Game.koCount = 0;
+    const f = fighter(300, 1), sourceF = fighter(800, -1); disableAI(f, sourceF);
+    const p = { x: (f.rig.sh.x + f.rig.pel.x) / 2, y: (f.rig.sh.y + f.rig.pel.y) / 2 };
+    f.startBleeding(p.x, p.y, sourceF);
+    const healthy = f.speedMul();
+    f.bleed.lost = 25; f.hp = 20;
+    assert.ok(f.speedMul() < healthy * .6, 'blood loss reduces walking speed');
+    f.state = 'run'; f.ctrl.run = true; f.ctrl.mx = 1; f.vx = 0;
+    tick(.6, dt);
+    assert.ok(Math.abs(f.vx) < 320, 'the same weakness reduces running speed');
+    f.state = 'idle'; f.ctrl.run = false; f.ctrl.mx = 0; f.vx = 0; f.hp = .6;
+    const oldBloodParticles = Game.fx.bl.filter(b => !b.drip).length;
+    advanceUntil(() => f.hp <= 0, Math.ceil(1 / dt), dt);
+    assert.equal(f.state, 'bleed_collapse'); assert.equal(f.rag, null, 'death does not instantly launch a ragdoll');
+    assert.equal(Game.koCount, 1); assert.equal(Game.tsT, 0, 'no impact hit-stop');
+    assert.ok(Game.fx.bl.filter(b => !b.drip).length <= oldBloodParticles, 'no explosive KO blood spray');
+    tick(.6, dt); assert.equal(f.state, 'bleed_collapse');
+    advanceUntil(() => f.state === 'ragdoll', Math.ceil(2 / dt), dt);
+    advanceUntil(() => f.bleed.stopped, Math.ceil(4 / dt), dt);
+    const flow = f.bleed.flowTime;
+    tick(1, dt);
+    assert.equal(f.bleed.flowTime, flow, 'bleeding stops after death');
+    assert.equal(Game.koCount, 1);
+  }
+});
+
+test('unattended fights naturally use the new defenses and rare grapples without dangling links', () => {
+  const counts = { duck: 0, duckDodge: 0, space: 0, lowApproach: 0, liftApproach: 0, takedown: 0, pin: 0, groundChoke: 0,
+    lift: 0, carry: 0, press: 0, jumpThrow: 0, bleeding: 0, pressure: 0 };
+  const dodges = new Set();
+  const names = ['startTakedown', 'establishPin', 'startGroundChoke', 'startLift', 'startBleeding', 'startPressure', 'releaseGrapple', 'tryHit'];
+  const originals = Object.fromEntries(names.map(name => [name, Fighter.prototype[name]]));
+  try {
+    for (const name of names) Fighter.prototype[name] = function (...args) {
+      const oldState = this.state;
+      const result = originals[name].apply(this, args);
+      if (name === 'tryHit' && this.dodgedBy?.crouchActive && args[0]?.fist) {
+        const key = `${this.id}:${this.atkStamp}`;
+        if (!dodges.has(key)) { dodges.add(key); counts.duckDodge++; }
+      }
+      if (name === 'startTakedown' && result) counts.takedown++;
+      if (name === 'establishPin' && result) counts.pin++;
+      if (name === 'startGroundChoke' && result) counts.groundChoke++;
+      if (name === 'startLift' && result) { counts.lift++; if (this.liftStyle === 'carry') counts.carry++; if (this.liftStyle === 'press') counts.press++; }
+      if (name === 'releaseGrapple' && oldState === 'lift_jump' && args[0] === 'throw') counts.jumpThrow++;
+      if (name === 'startBleeding' && result) counts.bleeding++;
+      if (name === 'startPressure' && result) counts.pressure++;
+      return result;
+    };
+    for (const seed of [19, 31, 57, 83, 101, 133, 177, 251, 277, 301, 389, 491, 601, 701, 809, 907]) {
+      seedRandom(seed); Game.init();
+      const modes = new Map();
+      for (let frame = 0; frame < 240 * 60; frame++) {
+        Game.update(1 / 60);
+        for (const f of Game.fighters) {
+          const mode = f.autopilot.mode, prev = modes.get(f.id);
+          if (prev !== mode) {
+            if (mode === 'duck') counts.duck++;
+            if (mode === 'space_out') counts.space++;
+            if (mode === 'low_approach') counts.lowApproach++;
+            if (mode === 'lift_approach') counts.liftApproach++;
+          }
+          modes.set(f.id, mode);
+          assert.ok(Number.isFinite(f.x) && Number.isFinite(f.y) && Number.isFinite(f.hp));
+          if (f.state === 'pinned' || f.state === 'lifted') {
+            assert.equal(f.grappleBy?.grappleTarget, f, `${f.state} victim has a valid owner`);
+            assert.ok(Game.fighters.includes(f.grappleBy));
+          }
+          if (['ground_pin', 'ground_choke', 'lift_hold', 'lift_jump'].includes(f.state)) {
+            assert.equal(f.grappleTarget?.grappleBy, f, `${f.state} holder has a valid victim`);
+            assert.ok(Game.fighters.includes(f.grappleTarget));
+          }
+        }
+      }
+    }
+    console.log('new autonomous events:', counts);
+    for (const key of ['duck', 'duckDodge', 'space', 'lowApproach', 'liftApproach', 'takedown', 'pin', 'groundChoke', 'lift', 'carry', 'press', 'jumpThrow', 'bleeding', 'pressure'])
+      assert.ok(counts[key] > 0, `${key} never occurred autonomously`);
+    assert.ok(counts.lift < 100, 'underarm grabs remain relatively rare');
+  } finally { for (const name of names) Fighter.prototype[name] = originals[name]; }
 });
