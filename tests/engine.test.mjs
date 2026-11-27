@@ -271,6 +271,211 @@ test('guard only faces the incoming attacker: a punch from behind interrupts it'
   }
 });
 
+test('a held guard blocks a series for about two seconds and can be chosen before an attack', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) {
+    Game.fighters = [];
+    const defender = fighter(480, dir), attacker = fighter(480 + dir * 90, -dir);
+    disableAI(defender, attacker);
+    const random = Math.random;
+    try { Math.random = () => .5; assert.equal(defender.startGuard(attacker), true); }
+    finally { Math.random = random; }
+    assert.ok(defender.guardDur >= 1.7 && defender.guardDur <= 2.4);
+    assert.equal(defender.guardCD, 2.4, 'the existing guard cooldown range is unchanged');
+    for (let hit = 0; hit < 3; hit++) {
+      tick(.45, dt);
+      defender.takeHit(attacker, punch);
+      assert.equal(defender.state, 'guard');
+      assert.equal(defender.hp, 100, `punch ${hit + 1} is blocked`);
+    }
+    advanceUntil(() => defender.state === 'idle', Math.ceil(2 / dt), dt);
+  }
+  {
+    Game.fighters = [];
+    const defender = fighter(480, 1), boxer = fighter(565, -1); disableAI(defender, boxer);
+    let blocked = 0; const hit = defender.takeHit.bind(defender);
+    defender.takeHit = (...args) => { if (defender.state === 'guard') blocked++; return hit(...args); };
+    assert.equal(defender.startGuard(boxer), true);
+    assert.equal(boxer.startBoxing(), true);
+    advanceUntil(() => boxer.state === 'idle', 180);
+    assert.equal(blocked, 2, 'the actual two-punch combo strikes the same held guard twice');
+    assert.equal(defender.hp, 100); assert.equal(defender.state, 'guard');
+  }
+  {
+    Game.fighters = [];
+    const defender = fighter(400, 1), attacker = fighter(580, -1); disableAI(attacker);
+    const ai = defender.autopilot;
+    ai.lampCheck = ai.farCD = ai.attackWait = ai.hopCD = 100;
+    const random = Math.random;
+    try { Math.random = () => 0; ai.update(1 / 60, defender, attacker, Game.fighters); }
+    finally { Math.random = random; }
+    assert.equal(attacker.state, 'idle');
+    assert.equal(defender.state, 'guard', 'guard may be raised before an attack starts');
+  }
+});
+
+test('a shove winds both arms back, extends them together, and can end in balance or a fall', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) for (const falls of [false, true]) {
+    Game.fighters = [];
+    const attacker = fighter(480 - dir * 40, dir, 'negan'), victim = fighter(480 + dir * 40, -dir, 'walt');
+    disableAI(attacker, victim);
+    const random = Math.random, startX = victim.x;
+    try {
+      Math.random = () => falls ? 0 : .99;
+      assert.equal(attacker.startShove(victim), true);
+      tick(.1, dt);
+      for (const side of ['N', 'F']) {
+        const r = attacker.rig;
+        assert.ok((r[`e${side}`].x - r.sh.x) * dir < -20, 'the bent elbow winds back');
+        assert.ok(kneeAngle(r.sh, r[`e${side}`], r[`w${side}`]) < 100, 'the elbow is bent before the push');
+      }
+      advanceUntil(() => victim.state === 'push_stagger', Math.ceil(1 / dt), dt);
+      for (const side of ['N', 'F']) {
+        const r = attacker.rig;
+        assert.ok((r[`w${side}`].x - r.sh.x) * dir > 55, 'the hand shoots forward');
+        assert.ok(kneeAngle(r.sh, r[`e${side}`], r[`w${side}`]) > 160, 'the arm straightens at impact');
+      }
+      assert.equal(victim.hp, 100, 'a push is not a damaging punch');
+      assert.equal(victim.shoveWillFall, falls);
+    } finally { Math.random = random; }
+    tick(.3, dt);
+    assert.ok((victim.x - startX) * dir > 15, 'the victim stumbles away from the attacker');
+    advanceUntil(() => victim.state === (falls ? 'ragdoll' : 'idle'), Math.ceil(3 / dt), dt);
+    assert.equal(victim.hp, 100);
+    assert.equal(attacker.startShove(victim), false, 'the new move cannot be spammed');
+  }
+});
+
+test('all heroes can shove and be shoved in either direction without breaking their rigs', () => {
+  const skins = ['jane', 'negan', 'homelander', 'walt', 'saul'];
+  for (const dt of [1 / 30, 1 / 120]) for (const dir of [1, -1]) for (let i = 0; i < skins.length; i++) {
+    Game.fighters = [];
+    const attacker = fighter(480 - dir * 40, dir, skins[i]);
+    const victim = fighter(480 + dir * 40, -dir, skins[(i + 1) % skins.length]);
+    disableAI(attacker, victim);
+    const random = Math.random;
+    try {
+      Math.random = () => i % 2 ? 0 : .99;
+      assert.equal(attacker.startShove(victim), true);
+      advanceUntil(() => victim.state === 'push_stagger', Math.ceil(1 / dt), dt);
+    } finally { Math.random = random; }
+    assert.equal(victim.staggerDir, dir);
+    advanceUntil(() => ['idle', 'ragdoll'].includes(victim.state), Math.ceil(3 / dt), dt);
+    for (const p of [attacker.rig.head, attacker.rig.wN, attacker.rig.wF, victim.rig.head, victim.rig.pel]) {
+      assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
+    }
+    Game.render();
+  }
+});
+
+test('a falling shove victim comes to rest on their back, away from the push', () => {
+  for (const dir of [1, -1]) {
+    Game.fighters = [];
+    const attacker = fighter(480 - dir * 40, dir), victim = fighter(480 + dir * 40, -dir);
+    disableAI(attacker, victim);
+    const random = Math.random;
+    try { Math.random = () => 0; victim.receiveShove(attacker); }
+    finally { Math.random = random; }
+    assert.equal(victim.shoveWillFall, true);
+    advanceUntil(() => victim.state === 'ragdoll', 180);
+    const rag = victim.rag;
+    for (let i = 0; i < 150; i++) rag.update(1 / 60);
+    assert.ok((rag.p.head.x - rag.p.pel.x) * dir > 20, 'the head falls behind the hips');
+  }
+});
+
+test('a follow-up hit during either backward stagger immediately causes a ragdoll', () => {
+  for (const kind of ['push_stagger', 'stagger_fall']) for (const dir of [1, -1]) {
+    Game.fighters = [];
+    const attacker = fighter(480 - dir * 40, dir), victim = fighter(480 + dir * 40, -dir);
+    disableAI(attacker, victim);
+    if (kind === 'push_stagger') {
+      const random = Math.random;
+      try { Math.random = () => .99; victim.receiveShove(attacker); }
+      finally { Math.random = random; }
+      assert.equal(victim.shoveWillFall, false, 'even a recoverable push becomes a fall when hit');
+    } else victim.startStagger();
+    tick(.2);
+    victim.takeHit(attacker, punch);
+    assert.equal(victim.state, 'ragdoll', kind);
+    assert.equal(victim.hp, 95);
+    assert.ok((victim.rag.p.pel.x - victim.rag.p.pel.px) * dir > 0);
+  }
+});
+
+test('a shove respects a front guard, a missed target, and interruption', () => {
+  {
+    const attacker = fighter(400, 1), victim = fighter(480, -1); disableAI(attacker, victim);
+    victim.startGuard(attacker);
+    attacker.startShove(victim); tick(.4);
+    assert.equal(victim.state, 'guard'); assert.equal(victim.hp, 100);
+  }
+  {
+    Game.fighters = [];
+    const attacker = fighter(400, 1), victim = fighter(480, -1); disableAI(attacker, victim);
+    attacker.startShove(victim); victim.x = 650; tick(.4);
+    assert.equal(victim.state, 'idle', 'moving out of reach avoids contact');
+  }
+  {
+    Game.fighters = [];
+    const attacker = fighter(400, 1), victim = fighter(480, -1), third = fighter(320, 1);
+    disableAI(attacker, victim, third);
+    attacker.startShove(victim); attacker.takeHit(third, punch); tick(.6);
+    assert.equal(attacker.shoveTarget, null);
+    assert.equal(victim.state, 'idle', 'an interrupted wind-up never lands');
+  }
+  {
+    Game.fighters = [];
+    const attacker = fighter(400, 1), victim = fighter(480, -1); disableAI(attacker, victim);
+    attacker.startShove(victim); Game.fighters = Game.fighters.filter(f => f !== victim); tick(.6);
+    assert.equal(attacker.shoveTarget, null);
+    assert.equal(victim.state, 'idle', 'removing a target cannot leave a ghost shove');
+  }
+});
+
+test('AI may follow a connected normal punch with a shove', () => {
+  const attacker = fighter(400, 1), victim = fighter(480, -1); disableAI(victim);
+  const ai = attacker.autopilot;
+  ai.attackWait = ai.farCD = ai.lampCheck = ai.hopCD = 100;
+  attacker.startAttack(0);
+  advanceUntil(() => attacker.state === 'idle' && attacker.connected, 120);
+  assert.equal(attacker.lastHitTarget, victim); assert.equal(victim.hp, 95);
+  const random = Math.random;
+  try {
+    Math.random = () => 0;
+    advanceUntil(() => attacker.state === 'shove', 100);
+    assert.equal(attacker.shoveTarget, victim);
+    advanceUntil(() => victim.state === 'push_stagger', 100);
+  } finally { Math.random = random; }
+  assert.equal(victim.hp, 95, 'the follow-up push does not replace the original punch');
+});
+
+test('interrupted attacks and airborne dives cannot leave a stale shove or dive queued', () => {
+  {
+    const attacker = fighter(400, 1), victim = fighter(480, -1), third = fighter(315, 1);
+    disableAI(victim, third);
+    const ai = attacker.autopilot; ai.attackWait = ai.farCD = ai.lampCheck = ai.hopCD = 100;
+    attacker.startAttack(0);
+    advanceUntil(() => attacker.connected && attacker.state === 'attack', 90);
+    attacker.takeHit(third, punch);
+    const random = Math.random;
+    try {
+      Math.random = () => 0;
+      advanceUntil(() => attacker.state === 'idle', 180);
+      ai.update(1 / 60, attacker, victim, Game.fighters);
+    } finally { Math.random = random; }
+    assert.equal(ai.pendingShove, null, 'a broken attack is not treated as a completed hit');
+    assert.notEqual(attacker.state, 'shove');
+  }
+  {
+    Game.fighters = [];
+    const attacker = fighter(400, 1), victim = fighter(480, -1); disableAI(attacker, victim);
+    victim.startDive();
+    assert.equal(victim.receiveShove(attacker), true);
+    assert.equal(victim.state, 'push_stagger');
+    assert.equal(victim.dive, false, 'a push cancels the interrupted airborne attack');
+  }
+});
+
 test('a dodged punch can overextend only on a miss, and the defender can autonomously flank it', () => {
   for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
     for (const dir of [1, -1]) {
@@ -374,6 +579,45 @@ test('voluntary release, punches, lasers and knockout all break both ends of a c
     assert.notEqual(victim.state, 'choked', `${cause}: victim state`);
     if (cause.startsWith('ko-')) assert.equal(Game.koCount, 1);
   }
+});
+
+test('only the remaining cooldown after a choke is doubled, on completion or any interruption', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const cause of ['release', 'hit-holder', 'hit-victim', 'complete', 'counter']) {
+    Game.fighters = [];
+    const { holder, victim } = heldPair({ dt });
+    const third = fighter(200, 1); disableAI(third);
+    assert.equal(holder.chokeCooldownPending, true);
+    const before = holder.chokeCD;
+    if (cause === 'release') holder.releaseChoke();
+    if (cause === 'hit-holder') holder.takeHit(third, punch);
+    if (cause === 'hit-victim') victim.takeHit(third, punch);
+    if (cause === 'complete') holder.chokeDuration = holder.st + .2;
+    if (cause === 'counter') holder.beginCounter();
+    if (cause === 'complete' || cause === 'counter') {
+      let previous = before;
+      for (let i = 0; i < Math.ceil(2 / dt) && holder.chokeCooldownPending; i++) {
+        previous = holder.chokeCD;
+        Game.update(dt);
+      }
+      assert.equal(holder.chokeCooldownPending, false, `${cause} finishes the cooldown once`);
+      assert.ok(Math.abs(holder.chokeCD - 2 * previous) <= 2 * dt + 1e-6, `${cause} doubles the remaining time`);
+    } else {
+      assert.equal(holder.chokeCooldownPending, false);
+      assert.ok(Math.abs(holder.chokeCD - 2 * before) < 1e-6, cause);
+    }
+    const remaining = holder.chokeCD;
+    holder.finishChokeCooldown();
+    assert.equal(holder.chokeCD, remaining, 'cleanup cannot double it a second time');
+  }
+  Game.fighters = [];
+  const f = fighter(400, 1), o = fighter(600, -1); disableAI(f, o);
+  const random = Math.random;
+  try {
+    Math.random = () => .5;
+    assert.equal(f.startBoxing(), true); assert.equal(f.boxCD, 1.75);
+    f.state = 'idle'; f.boxing = false;
+    f.startDash(1); assert.equal(f.dashCD, .6);
+  } finally { Math.random = random; }
 });
 
 test('a counterthrow carries the attacker over a shoulder, releases midway, and damages them only on landing', () => {
@@ -721,6 +965,19 @@ test('strong front hits sometimes stagger backward before a knockout or temporar
   assert.equal(v.state, 'ragdoll', 'the ordinary immediate fall remains possible');
 });
 
+test('the slightly higher stagger chance applies to knockdowns and some ordinary lethal front hits', () => {
+  for (const lethal of [false, true]) for (const [roll, expected] of [[.35, 'stagger_fall'], [.41, 'ragdoll']]) {
+    Game.fighters = [];
+    const victim = fighter(480, 1), attacker = fighter(570, -1); disableAI(victim, attacker);
+    if (lethal) victim.hp = 5;
+    const random = Math.random;
+    try { Math.random = () => roll; victim.takeHit(attacker, lethal ? punch : launchPunch); }
+    finally { Math.random = random; }
+    assert.equal(victim.state, expected, `${lethal ? 'lethal' : 'knockdown'} at ${roll}`);
+    assert.equal(victim.hp <= 0, lethal);
+  }
+});
+
 function hangingPair({ index = 1, dir = 1, skin = 'jane' } = {}) {
   Game.init(); Game.autoSpawn = false; Game.fighters = [];
   const lamp = Game.lamps[index];
@@ -780,35 +1037,73 @@ test('an undetached lamp swings as a damped pendulum and never falls below mid-s
   assert.ok(energy < initial * .03, `swing should damp out: ${energy}`);
 });
 
-test('all heroes can jump to each reachable lamp and hold the moving rope with one or two hands', () => {
+test('every hero holds the moving lamp naturally with both hands throughout a pull-up', () => {
   for (const skin of ['jane', 'negan', 'homelander', 'walt', 'saul']) for (const index of [0, 1, 2]) for (const dir of [1, -1]) {
     const { f, lamp } = hangingPair({ skin, index, dir });
     assert.equal(lamp.occupant, f);
     assert.ok(f.y > 0 && f.lampStamina > 0);
-    for (const style of ['near', 'far', 'two', 'switch']) {
-      f.lampGripStyle = style; tick(.05);
-      const p = lamp.point(f.lampClimb);
-      const dn = distance(f.rig.wN, p), df = distance(f.rig.wF, p);
-      if (style === 'near' || style === 'two') assert.ok(dn < 6, `${skin} ${dir} ${style}: near hand`);
-      if (style === 'far' || style === 'two') assert.ok(df < 6, `${skin} ${dir} ${style}: far hand`);
-      if (style === 'switch') assert.ok(Math.min(dn, df) < 6, 'an alternating hand still grips the rope');
-      Game.render();
+    f.lampAction = 'pullup'; f.lampDiveAt = Infinity; f.st = 0;
+    let maxGap = -Infinity, minGap = Infinity;
+    for (let frame = 0; frame < 85; frame++) {
+      Game.update(1 / 60);
+      const p = lamp.grip(), gap = f.rig.sh.y - p.y;
+      maxGap = Math.max(maxGap, gap); minGap = Math.min(minGap, gap);
+      for (const hand of ['wN', 'wF']) assert.ok(distance(f.rig[hand], p) < 6, `${skin} ${dir}: ${hand} keeps its grip`);
+      if (f.st > .3) assert.ok((p.x - f.rig.head.x) * dir > 20, 'the face stays visible beside the rope');
     }
+    assert.ok(maxGap - minGap > 15, `pull-up must raise the shoulders: ${skin} ${dir}`);
     assert.ok(Math.abs(lamp.theta) > .001 || Math.abs(lamp.omega) > .001, 'grabbing sets the lamp in motion');
+    Game.render();
   }
 });
 
-test('pull-up, rope climbing, finite stamina and a deliberate dive all use the live lamp position', () => {
+test('grabbing the rope transitions smoothly without teleporting the upper body', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) {
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const lamp = Game.lamps.reduce((a, b) => a.y < b.y ? a : b);
+    const f = fighter(lamp.x, dir), o = fighter(lamp.x + dir * 240, -dir); disableAI(f, o);
+    assert.equal(f.startLampJump(lamp), true);
+    let transition = 0, next = 0;
+    for (let i = 0; i < Math.ceil(2 / dt); i++) {
+      const before = { ...f.rig.sh }, was = f.state;
+      Game.update(dt);
+      if (was === 'lamp_jump' && f.state === 'lamp_hang') {
+        transition = distance(before, f.rig.sh);
+        const first = { ...f.rig.sh }; Game.update(dt); next = distance(first, f.rig.sh);
+        break;
+      }
+    }
+    assert.equal(f.state, 'lamp_hang');
+    assert.ok(transition < 35 && next < 22, `grab should be continuous at ${dt}: ${transition}, ${next}`);
+  }
+});
+
+test('a small physical swing and pull-up lead to a jump, with finite stamina and the old dive still available', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    const { f, o, lamp } = hangingPair();
+    f.lampAction = 'pullup'; f.lampDiveAt = 1.8; f.st = 0;
+    const startX = lamp.x, random = Math.random;
+    let travel = 0, bent = false;
+    try {
+      Math.random = () => .99; // choose an ordinary jump, not the optional dive
+      while (f.state === 'lamp_hang') {
+        Game.update(dt);
+        travel = Math.max(travel, Math.abs(lamp.x - startX));
+        if (f.state === 'lamp_hang' && f.st > .65 && f.st < 1) {
+          bent ||= kneeAngle(f.rig.sh, f.rig.eN, f.rig.wN) < 90;
+          assert.ok(distance(f.rig.wN, lamp.grip()) < 6 && distance(f.rig.wF, lamp.grip()) < 6);
+        }
+      }
+    } finally { Math.random = random; }
+    assert.ok(bent, 'both arms bend when the body is pulled up');
+    assert.ok(travel > 5 && travel < 80, `the swing is visible but gentle: ${travel}`);
+    assert.equal(f.state, 'air'); assert.equal(f.dive, false);
+    assert.ok(f.vy > 0 && f.vx * f.dir > 0, 'release is an intentional jump');
+    assert.equal(lamp.occupant, null);
+    assert.ok(o.hp > 0);
+  }
   {
     const { f, lamp } = hangingPair();
-    f.lampGripStyle = 'two'; f.lampAction = 'climb';
-    tick(1.9);
-    assert.ok(f.lampClimb > 30, 'the fighter can climb a short distance');
-    assert.ok(distance(f.rig.wN, lamp.point(f.lampClimb)) < 6);
-    f.lampAction = 'pullup'; f.st = .5; f.lampClimb = 0;
-    tick(.1);
-    const gap = f.rig.sh.y - lamp.point(f.lampClimb).y;
-    assert.ok(gap < 46, `pull-up should bend the arms and lift the body, got ${gap}`);
     f.lampAction = 'hide'; f.lampStamina = .05;
     tick(.2);
     assert.notEqual(f.state, 'lamp_hang', 'stamina cannot last forever');
@@ -824,6 +1119,18 @@ test('pull-up, rope climbing, finite stamina and a deliberate dive all use the l
     advanceUntil(() => o.hp < 100 || !f.dive, 120);
     assert.ok(o.hp < 100, 'a well-timed lamp dive can hit the opponent');
   }
+});
+
+test('the lamp shade and rope render on a dedicated pixel-resolution layer', () => {
+  assert.equal(Game.lampLayer.scale, Game.S / 3);
+  const before = Game.lampLayer.ctx.stats.fillRect;
+  Game.render();
+  assert.ok(Game.lampLayer.ctx.stats.fillRect - before >= Game.lamps.length * 10, 'the shade has stepped pixel detail');
+  assert.ok(Game.lampLayer.ctx.stats.colors.has('#ffe0a0'));
+  assert.ok(Game.lampLayer.ctx.stats.stroke >= Game.lamps.length, 'the suspension rope is rendered on the same layer');
+  Game.detachLamp(Game.lamps[0]);
+  Game.render();
+  assert.ok(Game.lampLayer.ctx.stats.colors.has('#81735a'), 'detached lamps still render without their light');
 });
 
 test('a hit, laser or KO during a lamp jump or hang releases the rope and starts airborne ragdoll', () => {
@@ -1053,8 +1360,9 @@ test('a downed opponent is not kicked, and the original airborne kick is retaine
   const random = Math.random;
   try { Math.random = () => .99; ai.update(1 / 60, attacker, victim, Game.fighters); }
   finally { Math.random = random; }
-  assert.equal(ai.mode, 'engage', 'retreat remains optional');
-  assert.equal(attacker.ctrl.mx, -1, 'otherwise the fighter approaches as before');
+  assert.equal(ai.mode, 'keep_distance', 'a fighter can choose to keep a safe distance instead of retreating');
+  ai.update(1 / 60, attacker, victim, Game.fighters);
+  assert.equal(attacker.ctrl.mx, 1, 'the fighter backs away rather than crowding a fallen opponent');
   for (let i = 0; i < 240; i++) {
     Game.update(1 / 60);
     assert.equal(victim.hp, 100, 'the grounded fighter is never kicked');
@@ -1066,6 +1374,94 @@ test('a downed opponent is not kicked, and the original airborne kick is retaine
   diver.startDive();
   advanceUntil(() => standing.hp < 100, 90);
   assert.equal(standing.hp, 90, 'the preexisting flying kick still lands');
+});
+
+test('a fighter can keep distance or crouch and creep while watching a downed opponent', () => {
+  for (const mode of ['keep_distance', 'inspect_down']) for (const dir of [1, -1]) {
+    Game.fighters = [];
+    const victim = fighter(480, dir, 'walt'); disableAI(victim);
+    const rag = sleepingBody(victim, 0); rag.stunScale = 100; victim.x = rag.p.pel.x;
+    const initialDistance = mode === 'keep_distance' ? 75 : 235;
+    const attacker = fighter(victim.x + dir * initialDistance, -dir, 'jane');
+    const ai = attacker.autopilot;
+    ai.retreatP = 0; ai.attackWait = ai.farCD = ai.lampCheck = ai.hopCD = 100;
+    const standingPelvis = attacker.rig.pel.y, startX = attacker.x, random = Math.random;
+    try { Math.random = () => mode === 'keep_distance' ? .99 : .4; ai.update(1 / 60, attacker, victim, Game.fighters); }
+    finally { Math.random = random; }
+    assert.equal(ai.mode, mode);
+    tick(.5);
+    assert.equal(attacker.ctrl.crouch, mode === 'inspect_down');
+    assert.ok((attacker.x - startX) * dir * (mode === 'keep_distance' ? 1 : -1) > 10);
+    if (mode === 'inspect_down') {
+      assert.ok(attacker.rig.pel.y > standingPelvis + 15, 'the watching fighter is visibly crouched');
+      assert.ok(Math.abs(attacker.vx) < 80, 'the approach is a careful creep, not a sprint');
+    } else assert.ok(Math.abs(attacker.x - victim.x) > initialDistance + 30);
+    assert.equal(victim.hp, 100, 'the downed opponent is inspected, never kicked');
+    victim.startGetup();
+    Game.update(1 / 60);
+    assert.equal(attacker.ctrl.crouch, false, 'watching stops as the opponent rises');
+    assert.equal(ai.mode, 'engage');
+  }
+});
+
+test('a fighter backs up, runs and cleanly jumps across a safely prone body at 30, 60 and 120 FPS', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const side of [1, -1]) {
+    Game.fighters = [];
+    const body = fighter(480, side, 'walt'); disableAI(body);
+    const rag = sleepingBody(body, 0, dt); body.x = rag.p.pel.x; body.hp = 0;
+    const jumper = fighter(body.x + side * 90, -side, 'jane');
+    const ai = jumper.autopilot; ai.attackWait = ai.farCD = ai.lampCheck = ai.hopCD = 100;
+    const random = Math.random;
+    try { Math.random = () => 0; Game.update(dt); } finally { Math.random = random; }
+    assert.equal(ai.mode, 'vault_retreat', 'even a corpse excluded as a combat target can be chosen as an obstacle');
+    let ran = false, jumped = false, crossed = false, maxAway = 0;
+    for (let frame = 0; frame < Math.ceil(5 / dt); frame++) {
+      Game.update(dt);
+      maxAway = Math.max(maxAway, (jumper.x - body.x) * side);
+      if (jumper.state === 'run') ran = true;
+      if (jumper.bodyJump) {
+        jumped = true; assert.equal(jumper.dive, false, 'the old flying kick is not used as a vault');
+        if (!crossed && (jumper.x - body.x) * side < -10) {
+          crossed = true;
+          assert.ok(jumper.y > 35, `the jumper clears the body while airborne (height ${jumper.y})`);
+        }
+      }
+      if (crossed && jumper.state === 'idle' && !jumper.bodyJump) break;
+    }
+    assert.ok(maxAway > 170 && ran && jumped && crossed, JSON.stringify({ dt, side, maxAway, ran, jumped, crossed, mode: ai.mode }));
+    assert.equal(jumper.state, 'idle'); assert.equal(jumper.hp, 100); assert.equal(body.hp, 0);
+    assert.equal(jumper.rag, null, 'a successful jump lands without a forced tumble');
+  }
+});
+
+test('vault planning rejects a fighter who may rise, aborts on recovery, and avoids arena walls', () => {
+  const body = fighter(480, 1, 'walt'); disableAI(body);
+  const rag = sleepingBody(body); body.x = rag.p.pel.x;
+  const jumper = fighter(body.x + 90, -1); const ai = jumper.autopilot;
+  assert.equal(ai.planVault(jumper, body), false, 'a normally recovering ragdoll may stand up at any moment');
+  rag.stunScale = 100; body.fastGetup = true;
+  assert.equal(ai.planVault(jumper, body), false, 'fast recovery is also unsafe');
+  body.fastGetup = false;
+  assert.equal(ai.planVault(jumper, body), true, 'a long-stunned grounded fighter is safe to vault');
+  body.startGetup();
+  ai.update(1 / 60, jumper, body, Game.fighters);
+  assert.equal(ai.mode, 'engage'); assert.equal(ai.vaultTarget, null);
+
+  Game.fighters = [];
+  const edge = fighter(100, 1); disableAI(edge);
+  const edgeRag = sleepingBody(edge); edge.x = edgeRag.p.pel.x; edge.hp = 0;
+  const nearEdge = fighter(edge.x + 90, -1);
+  assert.equal(nearEdge.autopilot.planVault(nearEdge, edge), false, 'there must be room on both sides');
+
+  Game.fighters = [];
+  const removed = fighter(480, 1); disableAI(removed);
+  const removedRag = sleepingBody(removed); removed.x = removedRag.p.pel.x; removed.hp = 0;
+  const observer = fighter(removed.x + 90, -1);
+  assert.equal(observer.autopilot.planVault(observer, removed), true);
+  Game.clearBodies();
+  observer.autopilot.update(1 / 60, observer, null, Game.fighters);
+  assert.equal(observer.autopilot.mode, 'engage');
+  assert.equal(observer.autopilot.vaultTarget, null, 'removing the body cancels the run-up');
 });
 
 test('restored retreat and wait do not prevent a response to a hanging opponent', () => {
@@ -1084,9 +1480,75 @@ test('restored retreat and wait do not prevent a response to a hanging opponent'
   }
 });
 
-test('seeded unattended fights keep lamp links, stagger and restored behavior valid', () => {
-  const counts = { stagger: 0, staggerKO: 0, getup: 0, jump: 0, grab: 0, pull: 0, dive: 0, retreat: 0, wait: 0 };
-  const names = ['startStagger', 'startGetup', 'startLampJump', 'grabLamp', 'startLampPull', 'releaseLamp'];
+test('shoves, holds and body clearing remain safe in a crowded autonomous brawl', () => {
+  seedRandom(379); Game.init(); Game.autoSpawn = false; Game.fighters = [];
+  for (const [i, skin] of ['jane', 'negan', 'homelander', 'walt', 'saul'].entries()) fighter(120 + i * 175, i < 2 ? 1 : -1, skin);
+  let shoves = 0, previous = new Map();
+  for (let frame = 0; frame < 90 * 60; frame++) {
+    if (frame > 0 && frame % (15 * 60) === 0) Game.spawnFighter(150 + (frame / 60 * 17) % (Game.W - 300));
+    if (frame > 0 && frame % (20 * 60) === 0) Game.clearBodies();
+    Game.update(1 / 60);
+    for (const f of Game.fighters) {
+      assert.ok(Number.isFinite(f.x) && Number.isFinite(f.y) && f.hp >= 0);
+      if (f.state === 'shove' && previous.get(f.id) !== 'shove') shoves++;
+      if (f.state === 'choke') assert.equal(f.chokeTarget?.chokedBy, f);
+      if (f.state === 'choked') assert.equal(f.chokedBy?.chokeTarget, f);
+      if (f.state === 'lamp_hang') assert.equal(f.lampRef?.occupant, f);
+      if (f.bodyJump) assert.ok(f.state === 'air' && !f.dive);
+      previous.set(f.id, f.state);
+    }
+    for (const lamp of Game.lamps) if (lamp.occupant) assert.ok(Game.fighters.includes(lamp.occupant));
+    if (frame % 900 === 0) Game.render();
+  }
+  assert.ok(shoves > 0, 'close-range pushes also occur with several opponents');
+});
+
+test('autonomous fights remain stable and use the new behavior at 30, 60 and 120 FPS', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    const counts = { shove: 0, guard: 0, watch: 0, kos: 0 };
+    for (const seed of [19, 31, 57, 83]) {
+      seedRandom(seed); Game.init();
+      const previousState = new Map(), previousMode = new Map();
+      for (let frame = 0; frame < Math.round(120 / dt); frame++) {
+        Game.update(dt);
+        for (const f of Game.fighters) {
+          assert.ok(Number.isFinite(f.x) && Number.isFinite(f.y) && f.y >= 0 && f.hp >= 0);
+          assert.ok(f.x >= f.minX - .01 && f.x <= f.maxX + .01);
+          if (f.state === 'shove' && previousState.get(f.id) !== 'shove') counts.shove++;
+          if (f.state === 'guard' && previousState.get(f.id) !== 'guard') counts.guard++;
+          if (['keep_distance', 'inspect_down'].includes(f.autopilot.mode) && previousMode.get(f.id) !== f.autopilot.mode) counts.watch++;
+          if (f.bodyJump) assert.ok(f.state === 'air' && !f.dive, 'a vault cannot turn into the flying kick');
+          if (f.state === 'push_stagger') assert.ok(f.st < f.staggerDur + dt, 'a shove reaction cannot get stuck');
+          if (f.state === 'choke') assert.equal(f.chokeTarget?.chokedBy, f);
+          if (f.state === 'choked') assert.equal(f.chokedBy?.chokeTarget, f);
+          if (f.state === 'lamp_hang') {
+            assert.equal(f.lampRef?.occupant, f);
+            if (f.st > .3) {
+              const p = f.lampRef.grip();
+              assert.ok(distance(f.rig.wN, p) < 7 && distance(f.rig.wF, p) < 7);
+            }
+          }
+          if (f.rag) for (const p of Object.values(f.rag.p)) assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
+          previousState.set(f.id, f.state); previousMode.set(f.id, f.autopilot.mode);
+        }
+        for (const lamp of Game.lamps) if (lamp.occupant) assert.equal(lamp.occupant.lampRef, lamp);
+        if (frame === 0 || frame === Math.round(60 / dt)) Game.render();
+      }
+      counts.kos += Game.koCount;
+    }
+    console.log(`${Math.round(1 / dt)} FPS autonomous events:`, counts);
+    for (const [name, count] of Object.entries(counts)) assert.ok(count > 0, `${name} did not occur at ${1 / dt} FPS`);
+  }
+});
+
+test('seeded unattended fights actually use the new actions while preserving existing mechanics', () => {
+  const counts = {
+    stagger: 0, staggerKO: 0, kos: 0, getup: 0, jump: 0, grab: 0, pull: 0, dive: 0, lampLeap: 0,
+    retreat: 0, wait: 0, keepDistance: 0, inspect: 0, vault: 0, vaultCross: 0,
+    shove: 0, shoveAfterHit: 0, shoveContact: 0, shoveFall: 0, shoveRecover: 0, proactiveGuard: 0,
+  };
+  const names = ['startStagger', 'startGetup', 'startLampJump', 'grabLamp', 'startLampPull', 'releaseLamp',
+    'startShove', 'receiveShove', 'startBodyJump', 'startGuard'];
   const original = Object.fromEntries(names.map(name => [name, Fighter.prototype[name]]));
   try {
     for (const name of names) Fighter.prototype[name] = function (...args) {
@@ -1100,11 +1562,19 @@ test('seeded unattended fights keep lamp links, stagger and restored behavior va
       if (name === 'grabLamp' && result) counts.grab++;
       if (name === 'startLampPull' && result) counts.pull++;
       if (name === 'releaseLamp' && args[0] === 'dive') counts.dive++;
+      if (name === 'releaseLamp' && args[0] === 'jump') counts.lampLeap++;
+      if (name === 'startShove' && result) {
+        counts.shove++;
+        if (this.lastHitTarget === args[0] && this.t - this.lastAttackEnd < .8) counts.shoveAfterHit++;
+      }
+      if (name === 'receiveShove' && result && this.state === 'push_stagger') counts.shoveContact++;
+      if (name === 'startBodyJump' && result) counts.vault++;
+      if (name === 'startGuard' && result && args[0]?.state !== 'attack') counts.proactiveGuard++;
       return result;
     };
     for (const seed of [19, 31, 57, 83, 101, 133, 177, 251, 277, 301, 389, 491, 601, 701, 809, 907]) {
       seedRandom(seed); Game.init();
-      const previousMode = new Map();
+      const previousMode = new Map(), previousState = new Map(), vaults = new Map();
       for (let frame = 0; frame < 240 * 60; frame++) {
         Game.update(1 / 60);
         assert.ok(Game.detachedLamps <= 2);
@@ -1119,17 +1589,31 @@ test('seeded unattended fights keep lamp links, stagger and restored behavior va
           if (f.rag) for (const p of Object.values(f.rag.p)) {
             assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
           }
-          if (f.autopilot.mode === 'retreat' && previousMode.get(f.id) !== 'retreat') counts.retreat++;
-          if (f.autopilot.mode === 'wait' && previousMode.get(f.id) !== 'wait') counts.wait++;
-          previousMode.set(f.id, f.autopilot.mode);
+          const previous = previousMode.get(f.id), mode = f.autopilot.mode;
+          if (mode === 'retreat' && previous !== 'retreat') counts.retreat++;
+          if (mode === 'wait' && previous !== 'wait') counts.wait++;
+          if (mode === 'keep_distance' && previous !== mode) counts.keepDistance++;
+          if (mode === 'inspect_down' && previous !== mode) counts.inspect++;
+          if (previousState.get(f.id) === 'push_stagger' && f.state === 'ragdoll') counts.shoveFall++;
+          if (previousState.get(f.id) === 'push_stagger' && f.state === 'idle') counts.shoveRecover++;
+          if (f.bodyJump && f.autopilot.vaultTarget && !vaults.has(f.id)) {
+            vaults.set(f.id, { body: f.autopilot.vaultTarget, side: f.autopilot.vaultSide, crossed: false });
+          }
+          const vault = vaults.get(f.id);
+          if (vault && f.bodyJump && !vault.crossed && (f.x - vault.body.x) * vault.side < -10) {
+            counts.vaultCross++; vault.crossed = true;
+          }
+          if (!f.bodyJump && vault) vaults.delete(f.id);
+          previousMode.set(f.id, mode); previousState.set(f.id, f.state);
         }
         for (const lamp of Game.lamps) {
           if (!lamp.detached) assert.ok(lamp.y <= Game.H / 2);
           if (lamp.occupant) assert.equal(lamp.occupant.lampRef, lamp);
         }
       }
+      counts.kos += Game.koCount;
     }
-    console.log('retained and restored autonomous events:', counts);
+    console.log('autonomous combat and downed-opponent events:', counts);
     for (const [name, count] of Object.entries(counts)) assert.ok(count > 0, `${name} never happened autonomously`);
     assert.ok(counts.jump < 35, 'lamp attempts stay rare over many complete matches');
   } finally {
