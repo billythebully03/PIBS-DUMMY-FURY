@@ -13,8 +13,7 @@ const HL_HOVER=19;
 const RUN_SPD=520, RUN_ACC=1250;
 const BOX_GAP=.1, OVEREXTEND_DUR=1.12, FLANK_DUR=.34;
 const CHOKE_OFFSET=48, CHOKE_DPS=2.2, COUNTER_RELEASE=.43, COUNTER_DUR=.86;
-const GROUND_KICK_DUR=.7, GROUND_KICK_IMPACT=.36, GROUND_KICK_DAMAGE=2;
-const QUICK_PUSH_DUR=1.18, QUICK_KIP_DUR=.9, LAMP_PULL_DUR=.7;
+const LAMP_PULL_DUR=.7;
 // PibsPhy6/WeightPhysic: вес/рост/хп и множители. Тяжелее = медленнее и
 // сложнее сбить с ног; легче = быстрее и проще сбить. Масса в регдолле.
 const WSTATS={
@@ -268,29 +267,6 @@ const GETUP_HL=KF([
 [2.3,HL_IDLE]
 ]);
 const GETUP_DUR=2.3;
-// The two quick recoveries start in genuinely different lying orientations.
-const FACE_DOWN=P({H:13,tl:82,hd:80,a1:4,e1:16,c1:0,a2:-4,e2:20,c2:0,f1x:-54,f2x:-62,ey:.8,mo:.4,bg:0});
-const QUICK_PUSH=KF([
-  [0,FACE_DOWN],
-  [.22,{H:22,tl:72,hd:50,a1:4,e1:18,c1:0,a2:-6,e2:24,c2:0,f1x:-48,f2x:-57,mo:.7,bg:0}],
-  [.52,{H:39,tl:58,hd:24,a1:-15,e1:16,c1:0,a2:-22,e2:20,c2:0,f1x:-24,f2x:-44,mo:.7,bg:0}],
-  [.85,{H:65,tl:33,hd:12,a1:20,e1:55,a2:16,e2:64,f1x:25,f2x:-22,mo:.5,bg:0}],
-  [QUICK_PUSH_DUR,{}]
-]);
-const QUICK_KIP=KF([
-  [0,LY],
-  [.18,{H:15,tl:-75,hd:-65,a1:120,e1:20,c1:0,a2:112,e2:25,c2:0,f1x:28,f1h:30,f2x:38,f2h:26,mo:.6,bg:0}],
-  [.43,{H:48,tl:-35,hd:-26,a1:145,e1:10,c1:0,a2:135,e2:14,c2:0,f1x:40,f1h:30,f2x:24,f2h:20,mo:.7,bg:0}],
-  [.66,{H:73,tl:10,hd:8,a1:74,e1:45,a2:65,e2:55,f1x:35,f2x:-25,mo:.4,bg:0}],
-  [QUICK_KIP_DUR,{}]
-]);
-const GROUND_KICK=KF([
-  [0,{}],
-  [.19,{H:80,tl:-17,hd:-8,px:-5,a1:48,e1:75,a2:30,e2:90,f1x:5,f1h:24,f2x:-24,mo:.2,bg:0}],
-  [.36,{H:77,tl:-24,hd:-12,px:-8,a1:48,e1:68,a2:34,e2:80,f1x:66,f1h:4,fa1:8,f2x:-24,mo:.4,bg:0}],
-  [.47,{H:77,tl:-22,hd:-10,px:-8,a1:48,e1:68,a2:34,e2:80,f1x:66,f1h:3,fa1:8,f2x:-24,mo:.4,bg:0}],
-  [GROUND_KICK_DUR,{}]
-]);
 const LAMP_REACH=P({H:88,tl:2,hd:-8,a1:170,e1:0,c1:0,a2:160,e2:8,c2:0,f1x:15,f1h:20,f2x:-14,f2h:12,mo:.35,bg:0});
 const LAMP_HANG=P({H:87,tl:-6,hd:-10,a1:170,e1:0,c1:0,a2:24,e2:35,c2:0,f1x:15,f1h:14,fa1:25,f2x:-8,f2h:4,fa2:30,mo:.4,bg:0});
 const LAMP_PULL=P({H:66,tl:-18,hd:-8,px:-6,a1:95,e1:35,c1:0,a2:85,e2:35,c2:0,f1x:29,f2x:-28,mo:.5,bg:0});
@@ -526,7 +502,7 @@ function drawBat(g,f){
   g.restore();
 }
 function stowsBat(f){
-  return f.boxing||['guard','guard_recoil','flank','choke','choked','counter_throw','counter_carried','ground_kick','quick_getup','scramble','lamp_jump','lamp_hang','lamp_pull'].includes(f.state);
+  return f.boxing||['guard','guard_recoil','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull'].includes(f.state);
 }
 function drawStowedBat(g,f){
   const R=f.rig;if(!R||f.batLost||f.hp<=0)return;
@@ -1448,15 +1424,14 @@ class Fighter{
       overextendFor:null,overextendStamp:0,flankTarget:null,flankFrom:0,
       chokeCD:0,chokeTarget:null,chokedBy:null,chokeDuration:0,chokeCounterAt:Infinity,chokeReleaseAt:Infinity,
       counterBase:null,counterReleased:false,fallDamage:null,
-      groundKickTarget:null,groundKickCount:0,groundKickCD:0,groundKickPause:0,groundKickHit:false,
-      staggerDir:0,staggerDur:0,quickKind:null,quickEscape:false,quickBumpDone:false,scrambleDir:0,
+      staggerDir:0,staggerDur:0,
       lampGoal:null,lampRef:null,lampGripStyle:'two',lampAction:'hide',lampStamina:0,lampClimb:0,
       lampBreakAt:Infinity,lampDiveAt:Infinity,lampHangStamp:0,lampPullTarget:null,lampPullDone:false,
       bloodStains:[],blinkT:rnd(2.2,5.5),blink:0,coughT:rnd(1,2.6)
     });
   }
   spawn(delay){this.state='spawn';this.sp=0;this.spT=delay||.05;this.visible=false;this.y=this.spawnY;this.vy=0;this.vx=0;this.st=0;this.cur=null;this.hoverY=0;}
-  canBeHit(){return this.hp>0&&!['ragdoll','getup','quick_getup','spawn','win'].includes(this.state)&&this.invT<=0;}
+  canBeHit(){return this.hp>0&&this.state!=='ragdoll'&&this.state!=='getup'&&this.state!=='spawn'&&this.state!=='win'&&this.invT<=0;}
   faceOpp(o){if(this.ctrl.noFace)return;if(this.skin==='homelander'&&this.hlBrake>.42)return;if(o&&this.y<2&&Math.abs(o.x-this.x)>10)this.dir=o.x>this.x?1:-1;}
   speedMul(){return wstat(this.skin).speedMul*(this.hp<30?.85:1);}
   startAttack(i,boxing=false){
@@ -1473,34 +1448,6 @@ class Fighter{
     if(this.state!=='idle'||this.hp<=0||this.y>5||this.guardCD>0||!att)return false;
     this.dir=att.x>=this.x?1:-1;this.state='guard';this.st=0;this.vx=0;
     this.guardDur=rnd(.42,.62);this.guardCD=rnd(1.8,3);this.hlBrake=0;return true;
-  }
-  canKickGround(v){
-    return this.hp>0&&this.state==='idle'&&this.y<5&&this.groundKickCD<=0&&this.groundKickPause<=0&&
-      this.groundKickCount<3&&v&&v!==this&&Game.fighters.includes(v)&&v.hp>0&&
-      v.state==='ragdoll'&&v.rag&&v.rag.sleeping&&Math.abs(v.rag.p.pel.x-this.x)<78;
-  }
-  startGroundKick(v){
-    if(!this.canKickGround(v))return false;
-    this.dir=v.rag.p.pel.x>=this.x?1:-1;this.vx=0;this.state='ground_kick';this.st=0;
-    this.groundKickTarget=v;this.groundKickHit=false;this.groundKickCount++;
-    if(this.groundKickCount>=3)this.groundKickCD=rnd(7,10);
-    Snd.whoosh();return true;
-  }
-  finishGroundKickSeries(){
-    if(this.groundKickCount>0)this.groundKickCD=Math.max(this.groundKickCD,rnd(6,9));
-    this.groundKickTarget=null;this.groundKickCount=0;this.groundKickPause=0;
-    if(this.autopilot)this.autopilot.groundTarget=null;
-  }
-  hitGroundTarget(){
-    const v=this.groundKickTarget;
-    if(!v||!Game.fighters.includes(v)||v.hp<=0||v.state!=='ragdoll'||!v.rag||!v.rag.sleeping||
-       Math.abs(v.rag.p.pel.x-this.x)>=85)return;
-    // A grounded kick is deliberately NOT a physics impulse: no ragdoll point,
-    // previous Verlet sample, position, or sleeping state is changed.
-    v.hp=Math.max(0,v.hp-GROUND_KICK_DAMAGE);
-    if(this.fx)this.fx.puff(v.rag.p.pel.x,v.rag.p.pel.y-4,2,.45);
-    Snd.thud();
-    if(v.hp<=0)Game.ko(v,this,{pw:.25,preserveRagdoll:true});
   }
   canStagger(att){
     return !!(att&&this.rig&&this.y<5&&this.hp>=0&&
@@ -1723,7 +1670,6 @@ class Fighter{
       return;
     }
     const mayStagger=this.canStagger(att),lampImpact=this.state==='lamp_jump'||this.state==='lamp_hang';
-    if(this.groundKickCount>0)this.finishGroundKickSeries();
     this.lampPullTarget=null;
     this.breakChoke();this.boxing=false;
     this.hp=Math.max(0,this.hp-a.dmg);
@@ -1755,12 +1701,10 @@ class Fighter{
   }
   handDamage(a,vic){}
   toRagdoll(vx,vy){
-    if(this.groundKickCount>0)this.finishGroundKickSeries();
     this.clearLamp();this.lampPullTarget=null;
     this.breakChoke();this.boxing=false;
     if(!this.rig)return;
     this.rag=new Ragdoll(this.rig,this);this.rag.launch(vx,vy);
-    this.rag.recoverAt=this.fastGetup ? .6 : rnd(1.8,2.6);this.rag.quickDecided=false;
     this.state='ragdoll';this.st=0;this.y=0;this.vx=0;this.vy=0;this.invT=0;this.dive=false;this.lz=null;
     this.hoverY=0;this.hlBrake=0;this.hlBrakeFrom=null;
     if(this.fx&&this.rig.pel.y>this.gy-100)this.fx.landing(this.x,this.gy,.6);
@@ -1781,37 +1725,10 @@ class Fighter{
     if(this.fx)this.fx.impact(this.rag.p.pel.x,this.gy-12,hit.source.dir,.5);
     if(this.hp<=0)Game.ko(this,hit.source,{pw:.8,preserveRagdoll:true});
   }
-  quickGetupKind(){
-    if(!this.rag||!this.rag.sleeping)return null;
-    const p=this.rag.p,side=(p.head.x-p.pel.x)*this.dir;
-    if(side>35)return 'push';
-    // A kip-up needs a face-up body and at least one leg that can tuck.
-    const bent=['N','F'].some(s=>Math.hypot(p['a'+s].x-p.pel.x,p['a'+s].y-p.pel.y)<(THIGH+SHIN)*.95);
-    return side< -35&&bent?'kip':null;
-  }
-  startGetup(kind='normal',escape=false,opponent=null){
-    if(!this.rag)return;
+  startGetup(){
     const R=this.rag.toRig(this);this.blendFrom=R;
-    this.x=clamp(this.rag.p.pel.x,this.minX,this.maxX);this.rag=null;
-    this.state=kind==='normal'?'getup':'quick_getup';this.quickKind=kind;
-    this.quickEscape=kind==='push'&&escape;this.quickBumpDone=false;
-    this.scrambleDir=opponent?(opponent.x>=this.x?-1:1):-this.dir;
-    this.st=0;this.blend=.3;this.cur=null;
+    this.x=clamp(this.rag.p.pel.x,this.minX,this.maxX);this.rag=null;this.state='getup';this.st=0;this.blend=.3;this.cur=null;
     this.hoverY=0;this.hlLiftFx=false;
-  }
-  bumpFromKip(all){
-    if(this.quickBumpDone)return;
-    this.quickBumpDone=true;
-    for(const o of all){
-      if(o===this||!o.canBeHit()||o.y>45||Math.abs(o.x-this.x)>85)continue;
-      const oldDir=this.dir,away=o.x>=this.x?1:-1;this.dir=away;
-      const hp=o.hp;
-      o.takeHit(this,{dmg:3,zone:'torso',pw:.35,stun:.3,kb:90,noStagger:true});
-      this.dir=oldDir;
-      // A guarded fighter absorbs the shove; an unguarded one is knocked over.
-      if(o.hp>0&&o.hp<hp&&o.state!=='ragdoll')o.toRagdoll(away*130,120);
-      break;
-    }
   }
   /* ---------------- Homelander's eye laser ---------------- */
   laserEye(){const h=this.rig.head;return {x:h.x+this.dir*9,y:h.y-5};}
@@ -1828,7 +1745,6 @@ class Fighter{
   takeLaser(att,pt,first){
     this.addBurn(pt.x,pt.y);
     if(this.hp<=0||this.state==='spawn'||this.invT>0)return;
-    if(this.groundKickCount>0)this.finishGroundKickSeries();
     this.lampPullTarget=null;
     this.breakChoke();this.boxing=false;
     this.hp=Math.max(0,this.hp-(first?3.5:1.6));
@@ -1983,9 +1899,6 @@ class Fighter{
     this.lagHp=Math.max(this.hp,this.lagHp-dt*28);
     this.dashCD=Math.max(0,this.dashCD-dt);
     this.boxCD=Math.max(0,this.boxCD-dt);this.guardCD=Math.max(0,this.guardCD-dt);this.chokeCD=Math.max(0,this.chokeCD-dt);
-    const kickCooldown=this.groundKickCD;
-    this.groundKickCD=Math.max(0,this.groundKickCD-dt);this.groundKickPause=Math.max(0,this.groundKickPause-dt);
-    if(kickCooldown>0&&this.groundKickCD===0)this.groundKickCount=0;
     this.guardFlinch=Math.max(0,this.guardFlinch-dt);
     if(this.invT>0)this.invT-=dt;if(this.landT>0)this.landT-=dt;if(this.blend>0)this.blend-=dt;
     if(this.state!=='attack')this.comboT+=dt;
@@ -2204,13 +2117,6 @@ class Fighter{
       }
       this.vx=0;this.vy=0;this.y=0;
       break;}
-     case 'ground_kick':{
-      this.vx=0;
-      if(!this.groundKickHit&&this.st>=GROUND_KICK_IMPACT){this.groundKickHit=true;this.hitGroundTarget();}
-      if(this.st>=GROUND_KICK_DUR){
-        this.state='idle';this.st=0;this.groundKickTarget=null;this.groundKickPause=.32;
-      }
-      break;}
      case 'stagger_fall':{
       const u=clamp(this.st/this.staggerDur,0,1);
       this.vx=this.staggerDir*(u<.78?100+25*Math.sin(this.st*18):45);
@@ -2231,32 +2137,19 @@ class Fighter{
           this.fx.pool(bPt.x,this.gy+rnd(1,13),clamp((85-this.hp)/9,2.5,10));
         }
       }
+      // Keep the original get-up timings, but do not stand in midair after
+      // falling from a lamp; the retained ragdoll physics determines contact.
       if(this.hp>0&&r.grounded()){
-        const stunScale=r.stunScale||1,ready=(r.recoverAt||2)*stunScale;
-        if(r.t>=ready&&(r.sleeping||r.settle>.35||r.t>4.2*stunScale))this.startGetup();
+        const stunScale=r.stunScale||1;
+        if(this.fastGetup){ if((r.t>.35&&r.settle>.08)||r.t>1.2)this.startGetup(); }
+        else if(r.t>.9*stunScale&&r.settle>.35)this.startGetup();
+        else if(r.t>4.2*stunScale)this.startGetup();
       }
       break;}
      case 'getup':{
       this.vx=0;
       if(this.fastGetup)this.st+=dt*.8; // gets up faster after a dive/trip
       if(this.st>=GETUP_DUR){this.state='idle';this.st=0;this.invT=.45;this.comboT=9;this.fastGetup=false;}
-      break;}
-     case 'quick_getup':{
-      this.vx=0;
-      if(this.quickKind==='kip'&&this.st>=.43)this.bumpFromKip(allFighters);
-      if(this.quickKind==='push'&&this.quickEscape&&this.st>=.6){
-        this.state='scramble';this.st=0;this.dir=this.scrambleDir;this.vx=this.dir*135;this.blend=0;break;
-      }
-      const dur=this.quickKind==='kip'?QUICK_KIP_DUR:QUICK_PUSH_DUR;
-      if(this.st>=dur){this.state='idle';this.st=0;this.invT=.22;this.comboT=9;this.quickKind=null;}
-      break;}
-     case 'scramble':{
-      this.dir=this.scrambleDir;
-      this.vx+=(this.dir*300-this.vx)*Math.min(1,dt*4);
-      this.walkPh+=dt*19;
-      if(this.st>=1.05||this.x<=this.minX+5||this.x>=this.maxX-5){
-        this.state='idle';this.st=0;this.vx*=.35;this.quickKind=null;this.quickEscape=false;
-      }
       break;}
     }
     if(this.state!=='ragdoll'){
@@ -2271,7 +2164,7 @@ class Fighter{
       this.hoverY=0;
     }else if(this.state==='spawn'){
       this.hoverY=this.sp<3?0:HL_HOVER*ease(clamp(1-this.spT/.45,0,1));
-    }else if(['quick_getup','scramble','stagger_fall','ground_kick','lamp_jump','lamp_hang','lamp_pull'].includes(this.state)){
+    }else if(['stagger_fall','lamp_jump','lamp_hang','lamp_pull'].includes(this.state)){
       this.hoverY=0;
     }else if(this.state==='getup'){
       if(this.st<1.76){this.hoverY=0;}
@@ -2359,8 +2252,6 @@ class Fighter{
       if(this.sp<3){const p=Object.assign({},T_POSE);if(this.sp===2){p.H+=Math.sin(this.st*38)*1.2*(this.spT/.55);p.tl+=Math.sin(this.st*30)*2*(this.spT/.55);}p.ey=0;return p;}
       return mix(T_POSE,isHL?HL_IDLE:D,ease(1-this.spT/.45));}
      case 'getup':return sampleKF(this.skin==='negan'?GETUP_NEGAN:isHL?GETUP_HL:GETUP,this.st);
-     case 'quick_getup':return sampleKF(this.quickKind==='kip'?QUICK_KIP:QUICK_PUSH,this.st);
-     case 'ground_kick':return sampleKF(GROUND_KICK,this.st);
      case 'lamp_jump':return LAMP_REACH;
      case 'lamp_hang':{
       const p=Object.assign({},LAMP_HANG),wave=Math.sin(this.st*3+this.seed);
@@ -2373,11 +2264,6 @@ class Fighter{
       return P({H:lerp(80,67,u),tl:lerp(-16,-55,u)+step*4,hd:lerp(-14,-38,u),px:lerp(-5,-14,u),
         a1:68+step*8,e1:55,c1:0,a2:54-step*8,e2:62,c2:0,
         f1x:22+step*21,f1h:Math.max(0,step)*15,f2x:-22-step*18,f2h:Math.max(0,-step)*13,mo:.8,bg:0});}
-     case 'scramble':{
-      const step=Math.sin(this.walkPh);
-      return P({H:63+Math.abs(step)*5,tl:50+Math.sin(this.st*14)*6,hd:15,px:10,
-        a1:22-step*35,e1:55,a2:18+step*35,e2:60,f1x:30+step*25,f1h:Math.max(0,-step)*24,
-        f2x:-22-step*22,f2h:Math.max(0,step)*20,mo:.7,bg:0});}
      case 'guard':return GUARD_POSE;
      case 'guard_recoil':return GUARD_RECOIL;
      case 'overextend':{
@@ -2484,7 +2370,7 @@ class Fighter{
       this.x=clamp(this.rig.pel.x,this.minX,this.maxX);return;
     }
     const tp=this.targetPose();
-    const hard=this.state==='getup'||this.state==='quick_getup'||this.state==='spawn'||this.state==='counter_throw'||this.state==='lamp_hang';
+    const hard=this.state==='getup'||this.state==='spawn'||this.state==='counter_throw'||this.state==='lamp_hang';
     const k=hard?1:(this.state==='attack'||this.state==='hit')?1-Math.exp(-dt*45):1-Math.exp(-dt*24);
     this.cur=(this.cur&&!hard)?mix(this.cur,tp,k):Object.assign({},tp);
     const hasBat=this.skin==='negan'&&this.hp>0&&!this.batLost&&!stowsBat(this);
@@ -2495,24 +2381,28 @@ class Fighter{
     if(this.state==='choke')poseNeckHold(R,this.chokeTarget);
     if(this.state==='choked')poseStruggleArms(R,this.st);
     if(this.state==='counter_throw')poseCounterGrip(R,this);
-    if((this.state==='getup'||this.state==='quick_getup')&&this.blend>0&&this.blendFrom)R=blendRig(this.blendFrom,R,ease(1-this.blend/.3));
+    if(this.state==='getup'&&this.blend>0&&this.blendFrom)R=blendRig(this.blendFrom,R,ease(1-this.blend/.3));
     this.rig=R;
   }
 }
 /* ============================ AUTONOMOUS BRAWL CONTROLLER ============================ */
 /*
-  Fighters normally engage. A rare tactical retreat keeps them facing their
-  opponent; a grounded kick or quick recovery is a separate optional decision.
-  Charges, dodges, boxing, flanks and grapples retain their own cooldowns.
+  Modes:
+   engage  - walk up and fight (combo), Homelander may open with the eye laser from range
+   retreat - when the enemy is down: turn away and walk/run to the far end of the arena
+   wait    - turn around and wait for the enemy to stand up
+   charge  - sprint at the enemy and (usually) leap into a flying kick; the timing can be wrong on purpose
+  Also: reacts to incoming strikes with a back-hop (dodge), intercepts runners,
+  and occasionally interacts with the hanging lamps.
 */
 class AutoCombat{
   constructor(){
     this.attackWait=rnd(.25,.75);this.mode='engage';this.modeT=0;
     this.hopCD=rnd(0,1);this.reactT=-1;this.reactAttacker=null;this.seen=Object.create(null);
-    this.downDecided=false;this.groundTarget=null;this.groundBudget=0;
-    this.farCD=rnd(.3,1.5);this.laserCD=rnd(1,3);this.retreatCheck=rnd(1,3);
+    this.downDecided=false;this.farCD=rnd(.3,1.5);this.laserCD=rnd(1,3);
+    this.dodgeP=rnd(.28,.5);this.retreatP=rnd(.35,.6);
+    this.jumpDist=250;this.goalX=0;this.retRun=false;
     this.lampCheck=rnd(5,12);this.lampTarget=null;this.hangSeen=null;this.hangStamp=-1;this.hangResponse=null;
-    this.dodgeP=rnd(.28,.5);this.jumpDist=250;
     this.rolled=false;this.intercept=false;this.afterHop=0;
     this.openingSeen=Object.create(null);this.openingTarget=null;
   }
@@ -2528,23 +2418,16 @@ class AutoCombat{
   update(dt,f,o,all){
     const c=f.ctrl;
     c.mx=0;c.jump=false;c.punch=false;c.run=false;c.laser=false;c.hop=false;c.noFace=false;
-    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.retreatCheck-=dt;this.lampCheck-=dt;this.modeT+=dt;
-    if(!o||f.hp<=0){this.mode='engage';this.openingTarget=null;this.lampTarget=null;if(this.groundTarget)f.finishGroundKickSeries();return;}
+    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.lampCheck-=dt;this.modeT+=dt;
+    if(!o||f.hp<=0){this.mode='engage';this.openingTarget=null;this.lampTarget=null;return;}
     const st=f.state;
     const dx=o.x-f.x,dist=Math.abs(dx),toward=dx>=0?1:-1;
-    if(this.groundTarget&&(!all.includes(this.groundTarget)||this.groundTarget.hp<=0||
-      this.groundTarget.state!=='ragdoll'||o!==this.groundTarget))f.finishGroundKickSeries();
-    if(st==='ragdoll'||st==='getup'||st==='quick_getup'||st==='scramble'||st==='stagger_fall'||st==='spawn'||st==='hit'){
+    if(st==='ragdoll'||st==='getup'||st==='stagger_fall'||st==='spawn'||st==='hit'){
       this.mode='engage';this.reactT=-1;this.reactAttacker=null;this.openingTarget=null;this.lampTarget=null;
-      if(st==='ragdoll'&&f.rag&&f.rag.sleeping&&f.rag.t>.65&&!f.rag.quickDecided&&!f.fastGetup){
-        f.rag.quickDecided=true;
-        const kind=f.quickGetupKind();
-        if(kind&&Math.random()<.22){f.startGetup(kind,kind==='push'&&Math.random()<.35,o);return;}
-      }
-      if(st!=='ragdoll'&&st!=='scramble'&&st!=='stagger_fall')f.faceOpp(o);
+      if(st!=='ragdoll'&&st!=='stagger_fall')f.faceOpp(o);
       return;
     }
-    if(['guard','guard_recoil','overextend','flank','choke','choked','counter_throw','counter_carried','ground_kick','lamp_jump','lamp_hang','lamp_pull'].includes(st)){
+    if(['guard','guard_recoil','overextend','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull'].includes(st)){
       c.noFace=true;return;
     }
     // Decide once per missed swing, not on every frame. A defender can finish
@@ -2565,7 +2448,7 @@ class AutoCombat{
         }else{c.mx=delta>0?1:-1;return;}
       }
     }
-    if(st!=='run'&&st!=='air'&&st!=='hop')f.faceOpp(o);
+    if(this.mode!=='retreat'&&st!=='run'&&st!=='air'&&st!=='hop')f.faceOpp(o);
     if(st==='air'||st==='hop'||st==='dash')return;
 
     // ---- dodge: notice a fresh strike aimed at me and hop back ----
@@ -2605,7 +2488,7 @@ class AutoCombat{
       }
     }
 
-    const oppDown=['ragdoll','getup','quick_getup','spawn'].includes(o.state);
+    const oppDown=o.state==='ragdoll'||o.state==='getup'||o.state==='spawn';
     if(this.mode==='lamp_approach'){
       const lamp=this.lampTarget;
       if(!lamp||!Game.lamps.includes(lamp)||lamp.detached||lamp.occupant||oppDown||o.state==='lamp_hang'||this.modeT>3){
@@ -2622,7 +2505,9 @@ class AutoCombat{
         this.hangSeen=o;this.hangStamp=o.lampHangStamp;
         const roll=Math.random();this.hangResponse=roll<.32?'ignore':roll<.64?'pull':'strike';
       }
-      if(this.mode==='charge')this.setMode('engage');
+      // A hanging opponent interrupts the old charge/retreat/wait behavior so
+      // the chosen lamp response can run instead of walking past the rope.
+      if(['charge','retreat','wait'].includes(this.mode))this.setMode('engage');
       if(this.hangResponse==='ignore')return;
       if(this.hangResponse==='pull'){
         if(st!=='idle')return;
@@ -2639,57 +2524,42 @@ class AutoCombat{
       }
       return;
     }
-    if(this.mode==='tactical_retreat'){
-      if(st!=='idle'||oppDown||this.modeT>1.05||dist>235){this.setMode('engage');return;}
-      f.dir=toward;c.noFace=true;
-      const wall=toward>0?f.x-f.minX:f.maxX-f.x;
-      const behind=all.some(e=>e!==f&&e!==o&&e.hp>0&&e.y<60&&
-        !['ragdoll','spawn'].includes(e.state)&&(e.x-f.x)*toward<0&&Math.abs(e.x-f.x)<105);
-      if(wall<25||behind){this.setMode('engage');return;}
-      if(o.state==='attack'&&o.atk&&o.st<o.atk.he&&dist<o.atk.reach+45&&f.guardCD<=0){
-        if(f.startGuard(o)){this.setMode('engage');return;}
-      }
-      c.mx=-toward;return;
+    if(this.mode==='retreat'){
+      c.noFace=true;
+      const gd=this.goalX-f.x;
+      if(Math.abs(gd)>36&&this.modeT<7&&!(!oppDown&&dist<190)){
+        const d=gd>0?1:-1;c.mx=d;c.run=this.retRun;
+        if(st==='idle')f.dir=d;
+      }else{this.setMode(Math.abs(gd)>36?'engage':'wait');}
+      return;
     }
+    if(this.mode==='wait'){
+      if(st!=='idle')return;
+      if(!oppDown&&this.modeT>.5){
+        if(f.skin==='homelander'&&this.laserCD<=0&&dist>180){c.laser=true;this.laserCD=rnd(5,9);this.setMode('engage');return;}
+        if(dist>300)this.startCharge(dist);else this.setMode('engage');
+      }
+      if(this.modeT>7)this.setMode('engage');
+      return;
+    }
+    // ---- engage ----
+    if(st==='attack'||st!=='idle')return;
     if(oppDown){
       if(!this.downDecided){
         this.downDecided=true;
-        // A limited series is chosen once for this knockdown, never each frame.
-        if(o.state==='ragdoll'&&o.rag&&f.groundKickCD<=0&&Math.random()<.38){
-          const roll=Math.random();this.groundBudget=roll<.55?1:roll<.9?2:3;
-          this.groundTarget=o;
-        }
+        const W=Game.W;this.goalX=o.x<W/2?W-120:120;
+        if(Math.abs(f.x-this.goalX)>260&&Math.random()<this.retreatP){this.retRun=Math.random()<.55;this.setMode('retreat');return;}
       }
-      if(this.groundTarget===o&&o.rag){
-        if(f.groundKickCount>=this.groundBudget||f.groundKickCD>0){f.finishGroundKickSeries();return;}
-        const d=o.rag.p.pel.x-f.x,away=Math.abs(d),move=d>=0?1:-1;
-        if(st==='run'){
-          if(away>185){c.mx=move;c.run=true;} // brake before reaching a body
-          return;
-        }
-        if(st!=='idle')return;
-        if(away>72){c.mx=move;c.run=away>260;return;}
-        if(o.rag.sleeping)f.startGroundKick(o);
-        return;
-      }
-      if(st==='idle'&&dist>145)c.mx=toward;
+      if(dist>112)c.mx=toward;
       return;
     }
     this.downDecided=false;
-    if(st!=='idle')return;
     if(this.lampCheck<=0&&dist>150&&o.state!=='lamp_hang'){
       this.lampCheck=rnd(5,9);
       if(Math.random()<.06){
         const lamp=Game.lamps.filter(l=>!l.detached&&!l.occupant&&Math.abs(l.x-f.x)<200)
           .sort((a,b)=>Math.abs(a.x-f.x)-Math.abs(b.x-f.x))[0];
         if(lamp){this.lampTarget=lamp;this.lampCheck=rnd(20,35);this.setMode('lamp_approach');return;}
-      }
-    }
-    // Each eligible tactical decision is 95% engage / 5% back away.
-    if(this.retreatCheck<=0&&dist<210){
-      this.retreatCheck=rnd(2,4);
-      if(Math.random()<.05){
-        this.setMode('tactical_retreat');f.dir=toward;c.noFace=true;c.mx=-toward;return;
       }
     }
     const incoming=(o.state==='run'||o.dive)&&dist<230&&((f.x-o.x)*o.dir>0);
@@ -2711,11 +2581,6 @@ class AutoCombat{
       c.mx=0;
       if(f.boxCD<=0&&Math.random()<.32&&f.startBoxing()){
         this.attackWait=rnd(.95,1.25);return;
-      }
-      // An occasional committed finisher makes hard knockdowns possible without
-      // replacing the normal jabs, crosses, boxing or Homelander's laser.
-      if(f.skin!=='homelander'&&Math.random()<.14){
-        f.startAttack(3);this.attackWait=rnd(1.2,1.7);return;
       }
       c.punch=true;
       this.attackWait=rnd(.72,1.05);
@@ -3047,7 +2912,6 @@ const Game={
     a=a||{};
     const delayed=!a.noStagger&&!a.preserveRagdoll&&!a.keepRag&&
       (a.launch||a.pw>=.8)&&v.canStagger(att)&&Math.random()<.3;
-    if(v.groundKickCount>0)v.finishGroundKickSeries();
     v.breakChoke();v.boxing=false;v.hp=0;
     if(v.skin==='negan'&&!v.batLost){
       const R=v.rig;
@@ -3084,7 +2948,7 @@ const Game={
     for(const o of this.fighters){
       if(o===f||o.hp<=0)continue;
       const dist=Math.abs(o.x-f.x);
-      const downPenalty=['ragdoll','getup','quick_getup','spawn'].includes(o.state)?280:0;
+      const downPenalty=(o.state==='ragdoll'||o.state==='getup'||o.state==='spawn')?280:0;
       const sc=dist+downPenalty;
       if(sc<bestScore){bestScore=sc;best=o;}
     }
