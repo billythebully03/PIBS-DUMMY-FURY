@@ -10,10 +10,13 @@ function makeCanvas(width = 960, height = 540) {
   const canvas = { width, height, style: {} };
   const stats = { drawImage: 0, fillRect: 0, stroke: 0, arc: 0, colors: new Set(), texts: [] };
   let fillStyle = '#000';
+  let strokeStyle = '#000';
   const ctx = {
     canvas, stats,
     get fillStyle() { return fillStyle; },
     set fillStyle(value) { fillStyle = value; stats.colors.add(value); },
+    get strokeStyle() { return strokeStyle; },
+    set strokeStyle(value) { strokeStyle = value; stats.colors.add(value); },
     save() {}, restore() {}, setTransform() {}, transform() {}, translate() {},
     rotate() {}, scale() {}, clearRect() {}, beginPath() {}, closePath() {},
     moveTo() {}, lineTo() {}, quadraticCurveTo() {}, bezierCurveTo() {},
@@ -77,6 +80,18 @@ function fighter(x, dir, skin = 'jane') {
   f.reset(x, dir);
   f.update(1 / 60, null, [f]);
   return f;
+}
+
+// Jane + a standing target at a valid mental-influence range.
+function mentalPair(dir = 1, victimFirst = false, targetSkin = 'walt') {
+  const a = fighter(dir === 1 ? 330 : 630, dir, 'jane');
+  const v = fighter(a.x + dir * 220, -dir, targetSkin);
+  a.mentalCD = 0;
+  // Freeze only the autonomous decisions, not the actual fighter physics.
+  a.autopilot.update = () => {};
+  v.autopilot.update = () => {};
+  Game.fighters = victimFirst ? [v, a] : [a, v];
+  return { a, v };
 }
 
 function advanceUntil(predicate, maxFrames = 900, dt = 1 / 60) {
@@ -594,5 +609,385 @@ test('portrait sizing keeps the full arena visible and vertically letterboxed', 
   } finally {
     globalThis.innerWidth = oldWidth; globalThis.innerHeight = oldHeight;
     Game.resize();
+  }
+});
+
+test('mental influence requires a minimum range and a large cooldown', () => {
+  const { a, v } = mentalPair();
+  // Too close: cannot cast.
+  v.x = a.x + 40;
+  assert.equal(a.canMental(v), false, 'too close to use mental influence');
+  // Too far: cannot cast.
+  v.x = a.x + 900;
+  assert.equal(a.canMental(v), false, 'too far to use mental influence');
+  // Correct range.
+  v.x = a.x + 250;
+  assert.equal(a.canMental(v), true);
+  assert.equal(a.startMental(v), true);
+  // Big cooldown, and it is consumed even on a successful cast.
+  assert.ok(a.mentalCD >= 12 && a.mentalCD <= 18, `big cooldown expected, got ${a.mentalCD}`);
+  assert.equal(a.canMental(v), false, 'cooldown blocks immediate recast');
+});
+
+test('mental influence runs the full cutscene: glow, clutch, run, wall slam, stun', () => {
+  for (const dir of [1, -1]) {
+    seedRandom(4321);
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const { a, v } = mentalPair(dir, dir < 0);
+    assert.equal(a.startMental(v), true);
+    const phases = new Set();
+    let glowSeen = false, slammed = false, stunned = false, runningFrames = 0;
+    const initialX = v.x;
+    const wall = dir > 0 ? v.maxX : v.minX;
+    for (let i = 0; i < Math.ceil(8 / (1 / 60)); i++) {
+      Game.update(1 / 60);
+      if (v.mentalPhase) phases.add(v.mentalPhase);
+      if (v.mentalPhase === 'run') runningFrames++;
+      if (v.mentalGlow > 0.3) glowSeen = true;
+      if (v.mentalPhase === 'stun') {
+        slammed = true;
+        assert.ok(Math.abs(v.x - (wall - dir * 8)) < 1, `victim should stop at the wall (dir=${dir})`);
+      }
+      if (v.mentalStunT > 0 && v.mentalPhase === 'stun') stunned = true;
+      if (v.state === 'idle' && v.mentalPhase === 'idle') break;
+    }
+    const label = `dir=${dir}`;
+    for (const p of ['clutch', 'turn', 'run', 'stun']) {
+      assert.ok(phases.has(p), `${label}: missing victim phase ${p}`);
+    }
+    assert.ok(glowSeen, `${label}: purple outline must appear`);
+    assert.ok(runningFrames > 5, `${label}: victim must actually run to the wall`);
+    assert.ok(slammed, `${label}: victim must reach the wall`);
+    assert.ok(stunned, `${label}: victim must be stunned at the wall`);
+    assert.ok((v.x - initialX) * dir > 0, `${label}: victim must move toward the wall`);
+    // Influence ends and the victim returns to idle.
+    assert.equal(v.mentalInfluence, false);
+    assert.equal(v.state, 'idle');
+  }
+});
+
+test('the victim ignores hits at self: damage is taken but is not knocked down', () => {
+  const { a, v } = mentalPair();
+  assert.equal(a.startMental(v), true);
+  advanceUntil(() => v.isMentalVictim());
+  const hpBefore = v.hp;
+  const enemy = fighter(230, 1, 'saul');
+  enemy.autopilot.update = () => {};
+  v.takeHit(enemy, { dmg: 8, zone: 'torso', pw: 0.9, stun: 0.4, kb: 200 });
+  assert.equal(v.hp, hpBefore - 8, 'victim still takes damage');
+  assert.equal(v.state, 'mental_influence', 'ordinary hit does not knock the victim down');
+  assert.ok(v.mentalInfluence, 'influence survives ordinary damage');
+  // A launching attack can still move the victim into ragdoll physics.
+  v.takeHit(enemy, { dmg: 5, zone: 'torso', pw: 1, launch: true, lvx: 200, lvy: 420 });
+  assert.equal(v.state, 'ragdoll', 'launching attacks can break the influence');
+});
+
+test('lasers, trips and KOs interrupt a cast and clear the victim influence', () => {
+  for (const kind of ['laser', 'trip', 'ko']) {
+    seedRandom(7788);
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const { a, v } = mentalPair();
+    assert.equal(a.startMental(v), true);
+    advanceUntil(() => v.isMentalVictim());
+    const enemy = fighter(190, 1, 'homelander');
+    enemy.autopilot.update = () => {};
+    if (kind === 'laser') a.takeLaser(enemy, a.rig.pel, true);
+    if (kind === 'trip') enemy.trip(a);
+    if (kind === 'ko') Game.ko(a, enemy, { lvx: 300, lvy: 400, pw: 1 });
+    assert.notEqual(a.state, 'mental', kind);
+    assert.equal(a.mentalTarget, null, kind);
+    assert.equal(v.mentalInfluence, false, kind);
+    assert.equal(v.mentalCaster, null, kind);
+    assert.notEqual(v.state, 'mental_influence', kind);
+    assert.ok(a.mentalCD > 0, kind);
+    if (kind === 'laser') assert.ok(a.burns.length > 0, 'laser burn remains on Jane');
+  }
+});
+
+test('the purple glow is drawn on the FX layer while under influence', () => {
+  const { a, v } = mentalPair();
+  assert.equal(a.startMental(v), true);
+  advanceUntil(() => v.isMentalVictim());
+  const stats = Game.fxLayer.ctx.stats;
+  stats.colors.clear();
+  stats.arc = 0;
+  Game.render();
+  assert.ok(stats.arc > 0, 'glow should draw arcs around body segments');
+  assert.ok(stats.colors.has('rgba(168,85,247,1)') || [...stats.colors].some(c => typeof c === 'string' && c.includes('168,85,247')),
+    'purple glow color should be painted');
+});
+
+test('mental text label and phrase are drawn and expire with the influence', () => {
+  const { a, v } = mentalPair();
+  assert.equal(a.startMental(v), true);
+  advanceUntil(() => v.isMentalVictim());
+  const textStats = Game.textLayer.ctx.stats;
+  textStats.texts.length = 0;
+  Game.render();
+  assert.ok(textStats.texts.some(t => t.text === 'UNDER INFLUENCE'), 'victim label should be drawn');
+  const castLabel = textStats.texts.find(t => t.text === 'MENTAL PUSH');
+  assert.ok(castLabel, 'caster label should be drawn');
+  // The phrase is spoken during the cast.
+  advanceUntil(() => v.mentalPhase === 'stun');
+  textStats.texts.length = 0;
+  Game.render();
+  // After the victim is stunned and influence fades, labels disappear.
+  advanceUntil(() => v.state === 'idle');
+  textStats.texts.length = 0;
+  Game.render();
+  assert.ok(!textStats.texts.some(t => t.text === 'UNDER INFLUENCE'));
+  assert.ok(!textStats.texts.some(t => t.text === 'MENTAL PUSH'));
+});
+
+test('camera follows Jane and zooms during the mental cast, then eases back', () => {
+  const { a, v } = mentalPair();
+  a.x = 430; v.x = 650;
+  a.buildRig(1 / 60); v.buildRig(1 / 60);
+  assert.equal(a.startMental(v), true);
+  for (let i = 0; i < 20; i++) Game.update(1 / 60);
+  assert.ok(Game.camera.zoom > 1.05 && Game.camera.zoom < 1.2);
+  assert.ok(Game.camera.vignette > 0.5);
+  const oldCameraX = Game.camera.x;
+  a.x += 45;
+  for (let i = 0; i < 15; i++) Game.update(1 / 60);
+  assert.ok(Game.camera.x > oldCameraX, 'camera should follow the caster');
+  const interrupter = fighter(250, 1, 'saul');
+  interrupter.autopilot.update = () => {};
+  a.takeHit(interrupter, { dmg: 5, zone: 'head', pw: .4, stun: .3, kb: 80 });
+  const zoom = Game.camera.zoom;
+  Game.update(1 / 60);
+  assert.ok(Game.camera.zoom < zoom, 'camera must ease out after interruption');
+  for (let i = 0; i < 180; i++) Game.update(1 / 60);
+  assert.ok(Math.abs(Game.camera.zoom - 1) < .001);
+  assert.ok(Game.camera.vignette < .001);
+});
+
+test('interrupting before induction cancels the cast and consumes cooldown', () => {
+  const { a, v } = mentalPair();
+  assert.equal(a.startMental(v), true);
+  for (let i = 0; i < 5; i++) Game.update(1 / 60);
+  const enemy = fighter(200, 1, 'saul');
+  a.takeHit(enemy, { dmg: 5, zone: 'head', pw: .4, stun: .3, kb: 80 });
+  assert.equal(a.state, 'hit');
+  assert.ok(a.mentalCD > 0, 'an interrupted attempt still consumes cooldown');
+  assert.equal(v.mentalInfluence, false);
+});
+
+test('a launched victim under influence stays incapacitated until the stun ends', () => {
+  const { a, v } = mentalPair();
+  assert.equal(a.startMental(v), true);
+  advanceUntil(() => v.isMentalVictim());
+  const enemy = fighter(230, 1, 'saul'); enemy.autopilot.update = () => {};
+  v.takeHit(enemy, { dmg: 8, zone: 'head', pw: 1, launch: true, lvx: 200, lvy: 420 });
+  assert.equal(v.state, 'ragdoll');
+  for (let i = 0; i < 120; i++) Game.update(1 / 60);
+  assert.equal(v.state, 'ragdoll', 'launched victim cannot get up early');
+  advanceUntil(() => v.state === 'getup' || v.state === 'idle');
+});
+
+test('spoken lines vary across casts without changing within one cast', () => {
+  const phrases = new Set();
+  for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
+    seedRandom(seed * 997);
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const { a, v } = mentalPair();
+    assert.equal(a.startMental(v), true);
+    advanceUntil(() => v.isMentalVictim());
+    assert.ok(a.mentalPhrase && a.mentalPhrase.length <= 24);
+    phrases.add(a.mentalPhrase);
+    const phrase = a.mentalPhrase;
+    for (let i = 0; i < 10; i++) Game.update(1 / 60);
+    assert.equal(a.mentalPhrase, phrase, 'the phrase must not cycle mid-cast');
+  }
+  assert.ok(phrases.size > 2, 'spoken lines should vary');
+});
+
+test('the AI uses mental influence with a cooldown at range', () => {
+  const a = fighter(330, 1, 'jane'), v = fighter(550, -1, 'walt');
+  Game.fighters = [a, v];
+  a.mentalCD = 0;
+  Math.random = () => .001;
+  a.autopilot.update(1 / 60, a, v, [a, v]);
+  assert.equal(a.state, 'mental');
+  assert.ok(a.mentalCD >= 12 && a.mentalCD <= 18);
+  // Cooldown blocks a second cast.
+  a.state = 'idle';
+  a.autopilot.update(1 / 60, a, v, [a, v]);
+  assert.notEqual(a.state, 'mental', 'cooldown must block immediate recast');
+});
+
+test('portrait sizing keeps the entire arena and both fighters visible', () => {
+  const oldWidth = innerWidth, oldHeight = innerHeight;
+  try {
+    globalThis.innerWidth = 390; globalThis.innerHeight = 844;
+    Game.resize();
+    assert.equal(Game.W, 800);
+    assert.ok(parseFloat(Game.cv.style.width) <= innerWidth + 0.01);
+    assert.ok(parseFloat(Game.cv.style.height) < innerHeight);
+    assert.ok(parseFloat(Game.cv.style.top) > 0, 'letterboxed arena is vertically centered');
+    const { a, v } = mentalPair();
+    v.x = a.x + 350; v.buildRig(1 / 60);
+    assert.equal(a.startMental(v), true);
+    advanceUntil(() => v.isMentalVictim());
+    const c = Game.camera;
+    const screenX = worldX => (worldX - c.x) * c.zoom + Game.W / 2;
+    assert.ok(screenX(a.x) > 0 && screenX(a.x) < Game.W);
+    assert.ok(screenX(v.x) > 0 && screenX(v.x) < Game.W);
+    assert.ok(Math.abs(Game.screenToWorldX(screenX(v.x)) - v.x) < 1e-8);
+    const texts = Game.textLayer.ctx.stats.texts;
+    texts.length = 0;
+    Game.render();
+    const label = texts.find(t => t.text === 'UNDER INFLUENCE');
+    assert.ok(label, `label not found; texts=${JSON.stringify(texts.map(t => ({text:t.text,font:t.font})))}`);
+    const fontWorld = Number(label.font.match(/(\d+(\.\d+)?)px/)[1]);
+    assert.ok(fontWorld * Game.displayScale * c.zoom >= 10.9, 'phone text stays readable');
+  } finally {
+    globalThis.innerWidth = oldWidth; globalThis.innerHeight = oldHeight;
+    Game.resize();
+  }
+});
+
+test('removing the target before induction cancels the cast', () => {
+  const { a, v } = mentalPair();
+  assert.equal(a.startMental(v), true);
+  Game.fighters = [a];
+  Game.update(1 / 60);
+  assert.equal(a.state, 'idle');
+  assert.equal(v.mentalInfluence, false);
+});
+
+test('seeded autonomous matches still induce mental influence alongside the new moves', () => {
+  let casts = 0, influences = 0;
+  for (const seed of [57, 83, 101]) {
+    seedRandom(seed);
+    Game.init();
+    let sawCast = false, sawInfluence = false;
+    for (let i = 0; i < 40 * 60; i++) {
+      Game.update(1 / 60);
+      if (Game.fighters.some(f => f.skin === 'jane' && f.state === 'mental')) sawCast = true;
+      if (Game.fighters.some(f => f.isMentalVictim())) sawInfluence = true;
+      if (sawCast && sawInfluence) break;
+    }
+    if (sawCast) casts++;
+    if (sawInfluence) influences++;
+  }
+  assert.ok(casts >= 2, 'Jane should choose the ability in unattended fights');
+  assert.ok(influences >= 2, 'opponents should be put under influence');
+});
+
+test('autonomous matches maintain finite physics and valid mental state', () => {
+  for (const seed of [11, 982451653]) {
+    seedRandom(seed);
+    Game.init();
+    for (let frame = 0; frame < 5400; frame++) {
+      Game.update(1 / 60);
+      if (frame % 60 === 0) Game.render();
+      for (const f of Game.fighters) {
+        assert.ok(Number.isFinite(f.x) && Number.isFinite(f.y) && Number.isFinite(f.hp), `invalid fighter at frame ${frame}`);
+        if (f.isMentalVictim()) {
+          assert.equal(f.state, 'mental_influence');
+        }
+        if (f.rag) for (const p of Object.values(f.rag.p)) {
+          assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y), `invalid ragdoll at frame ${frame}`);
+        }
+      }
+    }
+  }
+});
+
+test('mental induction safely releases either member of a choke or counterthrow', () => {
+  for (const dir of [1, -1]) for (const targetRole of ['holder', 'victim', 'counter-holder', 'counter-victim']) {
+    Game.fighters = [];
+    const { holder, victim } = heldPair({ dir, reverseOrder: dir < 0, holderSkin: 'negan' });
+    const caster = fighter(200, 1, 'jane');
+    disableAI(caster);
+    caster.mentalCD = 0;
+    const target = targetRole.endsWith('holder') ? holder : victim;
+    assert.equal(caster.startMental(target), true, `${dir} ${targetRole}: cast`);
+    tick(.8);
+    if (targetRole.startsWith('counter')) holder.beginCounter();
+    advanceUntil(() => target.isMentalVictim(), 90);
+    assert.equal(holder.chokeTarget, null, `${dir} ${targetRole}: holder link`);
+    assert.equal(victim.chokedBy, null, `${dir} ${targetRole}: victim link`);
+    const other = target === holder ? victim : holder;
+    assert.ok(!['choke', 'choked', 'counter_throw', 'counter_carried'].includes(other.state));
+    assert.equal(target.mentalCaster, caster);
+    tick(.25);
+    assert.equal(target.state, 'mental_influence');
+    assert.equal(holder.chokeTarget, null);
+    assert.equal(victim.chokedBy, null);
+  }
+});
+
+test('launch, laser, knockout or removal clean up both sides of mental influence', () => {
+  for (const cause of ['launch-victim', 'laser-victim', 'ko-victim', 'hit-caster', 'remove-caster', 'remove-victim']) {
+    Game.fighters = []; Game.koCount = 0;
+    const { a, v } = mentalPair();
+    assert.equal(a.startMental(v), true);
+    advanceUntil(() => v.isMentalVictim());
+    const enemy = fighter(150, 1, 'homelander'); disableAI(enemy);
+    if (cause === 'launch-victim') v.takeHit(enemy, launchPunch);
+    if (cause === 'laser-victim') v.takeLaser(enemy, v.rig.head, true);
+    if (cause === 'ko-victim') { v.hp = 3; v.takeHit(enemy, punch); }
+    if (cause === 'hit-caster') a.takeHit(enemy, punch);
+    if (cause === 'remove-caster') Game.fighters = Game.fighters.filter(f => f !== a);
+    if (cause === 'remove-victim') Game.fighters = Game.fighters.filter(f => f !== v);
+    Game.update(1 / 60);
+    assert.equal(a.mentalTarget, null, `${cause}: cast target`);
+    assert.notEqual(a.state, 'mental', `${cause}: caster state`);
+    assert.equal(v.mentalInfluence, false, `${cause}: victim flag`);
+    assert.equal(v.mentalCaster, null, `${cause}: victim caster`);
+    assert.notEqual(v.state, 'mental_influence', `${cause}: victim state`);
+    if (cause.endsWith('victim') && cause !== 'remove-victim') assert.equal(v.state, 'ragdoll', cause);
+  }
+});
+
+test('a completed mental wall impact stays stunned after the caster recovers', () => {
+  const { a, v } = mentalPair();
+  assert.equal(a.startMental(v), true);
+  advanceUntil(() => v.mentalPhase === 'stun');
+  tick(.6);
+  assert.equal(a.state, 'idle');
+  assert.equal(v.state, 'mental_influence');
+  assert.equal(v.mentalPhase, 'stun');
+  assert.equal(v.mentalCaster, null);
+  advanceUntil(() => v.state === 'idle', 300);
+  assert.equal(v.mentalInfluence, false);
+});
+
+test('upstream character weight affects walking speed and ragdoll launch', () => {
+  const light = fighter(350, 1, 'saul'), heavy = fighter(620, -1, 'homelander');
+  disableAI(light, heavy);
+  assert.ok(light.speedMul() > heavy.speedMul(), 'lighter fighter walks faster');
+  // Equal impulses and random spin: the heavier body should move less.
+  Math.random = () => .5;
+  light.toRagdoll(400, 400); heavy.toRagdoll(400, 400);
+  const lightImpulse = light.rag.p.pel.x - light.rag.p.pel.px;
+  const heavyImpulse = heavy.rag.p.pel.x - heavy.rag.p.pel.px;
+  assert.ok(lightImpulse > heavyImpulse, 'heavier fighter receives less ragdoll velocity');
+});
+
+test('body-attached blood marks survive movement and clear with blood', () => {
+  const f = fighter(480, 1, 'negan'); disableAI(f);
+  f.addBloodStain(f.rig.head.x, f.rig.head.y - 6);
+  assert.equal(f.bloodStains.length, 1);
+  assert.equal(f.bloodStains[0].layer, 'head');
+  tick(.5);
+  assert.ok(f.bloodStains[0].age > 0);
+  Game.render();
+  assert.ok([...Game.headLayer.ctx.stats.colors].some(c => typeof c === 'string' && c.startsWith('rgb(1')));
+  Game.clearBlood();
+  assert.equal(f.bloodStains.length, 0);
+});
+
+test('explicit character selection spawns the requested fighter', () => {
+  for (const [skin, label] of [
+    ['jane', 'ПАТРИК ДЖЕЙН'], ['negan', 'НИГАН'], ['homelander', 'ХОУМЛЕНДЕР'],
+    ['walt', 'УОЛТЕР'], ['saul', 'СОЛ'],
+  ]) {
+    const selected = Game.spawnFighter(360, 1, 0, skin);
+    assert.equal(selected.skin, skin);
+    assert.ok(selected.name.includes(label));
+    assert.equal(Game.fighters.at(-1), selected);
   }
 });
