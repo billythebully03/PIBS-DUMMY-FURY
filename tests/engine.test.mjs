@@ -50,7 +50,7 @@ const source = await readFile(new URL('../src/game/engine.ts', import.meta.url),
 const { code } = await transformWithEsbuild(`${source}\nexport { Game, Fighter };`, 'engine.ts', {
   loader: 'ts', format: 'esm', target: 'es2020',
 });
-const { Game } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const { Game, Fighter } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 const originalRandom = Math.random;
 const originalWarn = console.warn;
 let warnings = [];
@@ -77,44 +77,6 @@ function fighter(x, dir, skin = 'jane') {
   f.reset(x, dir);
   f.update(1 / 60, null, [f]);
   return f;
-}
-
-// Let a ragdoll settle without advancing Fighter's automatic get-up timer, then
-// translate it to the middle of the arena while removing residual velocities.
-function groundedVictim(x = 500, skin = 'jane') {
-  const v = fighter(x, -1, skin);
-  v.toRagdoll(0, 180);
-  for (let i = 0; i < 180; i++) v.rag.update(1 / 60);
-  const dx = x - v.rag.p.pel.x;
-  for (const p of Object.values(v.rag.p)) {
-    p.x += dx;
-    p.px = p.x;
-    p.py = p.y;
-  }
-  v.x = x;
-  v.rag.t = 0;
-  v.rag.settle = 0;
-  return v;
-}
-
-function grabPair(skin = 'jane', dir = 1, victimFirst = false) {
-  const a = fighter(500, dir, skin);
-  const v = groundedVictim(500);
-  a.reset(v.x - dir * 70, dir);
-  a.update(1 / 60, null, [a, v]);
-  Game.fighters = victimFirst ? [v, a] : [a, v];
-  return { a, v };
-}
-
-function hypnosisPair(dir = 1, victimFirst = false, targetSkin = 'walt') {
-  const a = fighter(dir === 1 ? 330 : 630, dir, 'jane');
-  const v = fighter(a.x + dir * 220, -dir, targetSkin);
-  a.hypCD = 0;
-  // Freeze only the autonomous decisions, not the actual fighter physics.
-  a.autopilot.update = () => {};
-  v.autopilot.update = () => {};
-  Game.fighters = victimFirst ? [v, a] : [a, v];
-  return { a, v };
 }
 
 function advanceUntil(predicate, maxFrames = 900, dt = 1 / 60) {
@@ -193,546 +155,444 @@ test('Homelander glides with airborne feet and anatomically bent legs in both di
   }
 });
 
-test('grab preparation shows progress and is cancelled immediately by a hit', () => {
-  const { a, v } = grabPair();
-  assert.equal(a.startGrabPrep(v, 1), true);
-  for (let i = 0; i < 30; i++) Game.update(1 / 60);
-  assert.equal(a.state, 'grab_prep');
-  const stats = Game.fxLayer.ctx.stats;
-  stats.colors.clear();
-  const arcs = stats.arc;
-  Game.render();
-  assert.ok(stats.arc - arcs >= 4 && stats.colors.has('#37d858'), 'progress circle must fill green');
-  const attacker = fighter(300, 1, 'walt');
-  a.takeHit(attacker, { dmg: 8, zone: 'torso', pw: 0.4, stun: 0.25, kb: 90 });
-  assert.equal(a.state, 'hit');
-  assert.equal(a.grabTarget, null);
-  assert.equal(v.grabbedBy, null);
-  assert.equal(v.rag.pin, null);
-  assert.ok(a.grabCD >= 6, 'interruption should impose a cooldown');
-  stats.colors.clear();
-  Game.render();
-  assert.ok(!stats.colors.has('#37d858'), 'progress circle must disappear when interrupted');
-});
+function disableAI(...fighters) {
+  for (const f of fighters) f.autopilot.update = () => {};
+}
 
-test('overhead grabs stay attached in either spawn order and at different frame rates', () => {
-  for (const skin of ['jane', 'negan', 'homelander', 'walt', 'saul']) {
-    for (const dir of [1, -1]) {
-      for (const dt of [1 / 30, 1 / 60, 1 / 144]) {
-        seedRandom(12345);
-        Game.init(); Game.autoSpawn = false; Game.fighters = [];
-        const { a, v } = grabPair(skin, dir, dir === -1);
-        v.hp = 80;
-        v.rag.t = 2.9; // A grabbed victim must not wake up while the indicator fills.
-        assert.equal(a.startGrabPrep(v, dir), true);
-        const strokes = Game.dctx.stats.stroke;
-        let threw = false, turned = false, minHeadY = Infinity, maxNearError = 0, maxFarError = 0;
-        let impactSide = null, abort = null;
-        const initial = { attackerX: a.x, victimX: v.x, pelvisX: v.rag.p.pel.x };
-        for (let i = 0; i < Math.ceil(5 / dt); i++) {
-          Game.update(dt);
-          if (!threw && a.state !== 'grab_prep' && a.state !== 'grab_throw') {
-            abort = { step: i, attacker: a.state, attackerX: a.x, victim: v.state, victimX: v.x, pelvisX: v.rag?.p.pel.x };
-            break;
-          }
-          if (a.state === 'grab_throw') {
-            threw = true;
-            if (a.dir === -dir) turned = true;
-            minHeadY = Math.min(minHeadY, v.rag.p.head.y);
-            if (a.grabHand && !a.grabSlammed) {
-              const ankle = v.rag.p[a.grabAnkle];
-              maxNearError = Math.max(maxNearError, distance(a.rig.wN, ankle));
-              maxFarError = Math.max(maxFarError, distance(a.rig.wF, ankle));
-            }
-            if (a.grabSlammed && impactSide === null) impactSide = (v.x - a.x) * -dir;
-          }
-          if (threw && a.state === 'idle') break;
-        }
-        const label = `${skin}, dir=${dir}, dt=${dt}`;
-        assert.ok(threw && turned, `${label}: throw must turn around: ${JSON.stringify({ initial, abort })}`);
-        assert.ok(minHeadY < a.gy - 170, `${label}: victim should swing overhead`);
-        assert.ok(maxNearError < 1 && maxFarError < 5, `${label}: hands detached (${maxNearError}, ${maxFarError})`);
-        assert.equal(v.hp, 64, `${label}: slam must deal damage exactly once`);
-        assert.ok(impactSide > 30, `${label}: victim should land on the opposite side`);
-        assert.ok(Game.dctx.stats.stroke > strokes, `${label}: slam should crack the floor`);
-        assert.equal(v.state, 'ragdoll', `${label}: victim should remain knocked down`);
-        assert.ok(v.rag.t < 0.2 && v.dizzyAlpha > 0.2, `${label}: slam should extend stun`);
-        assert.equal(v.grabbedBy, null);
-        assert.equal(v.rag.pin, null);
-        if (skin === 'negan') assert.ok(a.rig.bd && !a.batLost, 'Lucille should return after the slam');
-      }
-    }
+function tick(seconds, dt = 1 / 60) {
+  for (let i = 0; i < Math.round(seconds / dt); i++) Game.update(dt);
+}
+
+// Start with the missed puncher stumbling in front of the fighter who dodged.
+// Their real flank animation must complete before the hold can be established.
+function heldPair({ dir = 1, reverseOrder = false, dt = 1 / 60, holderSkin = 'jane', victimSkin = 'walt' } = {}) {
+  const x = Game.W / 2;
+  let victim, holder;
+  if (reverseOrder) {
+    holder = fighter(x + dir * 105, -dir, holderSkin);
+    victim = fighter(x, dir, victimSkin);
+  } else {
+    victim = fighter(x, dir, victimSkin);
+    holder = fighter(x + dir * 105, -dir, holderSkin);
   }
-});
+  disableAI(victim, holder);
+  victim.startOverextend(holder);
+  assert.equal(holder.startFlank(victim), true);
+  advanceUntil(() => holder.state === 'choke', 120, dt);
+  assert.equal(victim.state, 'choked');
+  holder.chokeCounterAt = Infinity;
+  holder.chokeReleaseAt = Infinity;
+  holder.chokeDuration = 2.4;
+  tick(.25, dt);
+  return { holder, victim };
+}
 
-test('hits, lasers, trips and KOs release an active grab', () => {
-  for (const kind of ['hit', 'laser', 'trip', 'ko', 'victim-ko']) {
-    seedRandom(12345);
-    Game.init(); Game.autoSpawn = false; Game.fighters = [];
-    const { a, v } = grabPair('negan', 1, true);
-    assert.equal(a.startGrabPrep(v, 1), true);
-    for (let i = 0; i < 120 && !v.rag.pin; i++) Game.update(1 / 60);
-    assert.ok(v.rag.pin, `${kind}: expected the victim to be held`);
-    const enemy = fighter(280, 1, 'homelander');
-    if (kind === 'hit') a.takeHit(enemy, { dmg: 8, zone: 'torso', pw: 0.4, stun: 0.25, kb: 90 });
-    if (kind === 'laser') a.takeLaser(enemy, a.rig.pel, true);
-    if (kind === 'trip') enemy.trip(a);
-    if (kind === 'ko') Game.ko(a, enemy, { lvx: 300, lvy: 400, pw: 1 });
-    if (kind === 'victim-ko') Game.ko(v, enemy, { lvx: 300, lvy: 400, pw: 1 });
-    assert.equal(a.grabTarget, null, `${kind}: attacker must release target`);
-    assert.equal(v.grabbedBy, null, `${kind}: victim must be unlocked`);
-    assert.equal(v.rag.pin, null, `${kind}: ragdoll must be unpinned`);
-    if (kind === 'ko' || kind === 'victim-ko') {
-      Game.clearBodies();
-      assert.ok(!Game.fighters.includes(kind === 'ko' ? a : v));
-    }
-  }
-});
+const punch = { dmg: 5, zone: 'head', pw: .4, stun: .34, kb: 95 };
+const launchPunch = { dmg: 11, zone: 'head', pw: 1, launch: true, lvx: 285, lvy: 700 };
 
-test('a lethal slam preserves the ragdoll, and the throw cannot be aimed into a wall', () => {
-  const { a, v } = grabPair('negan', 1, true);
-  v.hp = 10;
-  const kills = Game.koCount;
-  assert.equal(a.startGrabPrep(v, 1), true);
-  for (let i = 0; i < 360; i++) {
-    Game.update(1 / 60);
-    if (v.hp <= 0 && a.state === 'idle') break;
-  }
-  assert.equal(v.hp, 0);
-  assert.equal(v.state, 'ragdoll');
-  assert.ok(v.rag && !v.rag.pin);
-  assert.equal(Game.koCount, kills + 1);
-  const wallVictim = groundedVictim(235);
-  const wallAttacker = fighter(190, 1);
-  assert.equal(wallAttacker.canThrowFromHere(wallVictim), false);
-  assert.equal(wallAttacker.startGrabPrep(wallVictim, 1), false);
-});
-
-test('the autonomous fighter can choose and approach a grounded target', () => {
-  const { a, v } = grabPair();
-  v.rag.settle = 0.1;
-  Math.random = () => 0.01;
-  a.autopilot.update(1 / 60, a, v, [a, v]);
-  assert.equal(a.autopilot.mode, 'grab_approach');
-  for (let i = 0; i < 60 && a.state !== 'grab_prep'; i++) Game.update(1 / 60);
-  assert.equal(a.state, 'grab_prep');
-  assert.equal(v.grabbedBy, a);
-});
-
-test('the AI can reconsider a knockdown after moving into range', () => {
-  const { a, v } = grabPair();
-  Math.random = () => 0.01;
-  a.x = v.x - 380;
-  a.autopilot.update(1 / 60, a, v, [a, v]);
-  assert.notEqual(a.autopilot.grabChecked, v.rag.id, 'out-of-range targets must not consume the decision');
-  a.x = v.x - 70;
-  a.autopilot.setMode('engage');
-  a.autopilot.update(1 / 60, a, v, [a, v]);
-  assert.equal(a.autopilot.mode, 'grab_approach');
-  assert.equal(a.autopilot.grabChecked, v.rag.id);
-});
-
-test('autonomous matches maintain finite physics and valid grab ownership', () => {
-  for (const seed of [11, 982451653]) {
-    seedRandom(seed);
-    Game.init();
-    for (let frame = 0; frame < 5400; frame++) {
+test('the NPC boxing combo uses opposite fists, a short gap and its own cooldown', () => {
+  for (const skin of ['jane', 'negan', 'homelander']) {
+    Game.fighters = [];
+    const f = fighter(370, 1, skin), opponent = fighter(680, -1);
+    disableAI(f, opponent);
+    assert.equal(f.startBoxing(), true);
+    assert.equal(f.atk.fist, 'N');
+    const first = f.atk, firstStamp = f.atkStamp;
+    let gapSeen = false, transition = -1;
+    for (let i = 1; i <= 60; i++) {
       Game.update(1 / 60);
-      if (frame % 60 === 0) Game.render();
-      for (const f of Game.fighters) {
-        assert.ok(Number.isFinite(f.x) && Number.isFinite(f.y) && Number.isFinite(f.hp), `invalid fighter at frame ${frame}`);
-        if (f.grabTarget) assert.equal(f.grabTarget.grabbedBy, f, `broken grab target at frame ${frame}`);
-        if (f.grabbedBy) assert.equal(f.grabbedBy.grabTarget, f, `broken grab owner at frame ${frame}`);
-        if (f.rag) for (const p of Object.values(f.rag.p)) {
-          assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y), `invalid ragdoll at frame ${frame}`);
-        }
-      }
+      if (f.ak === 0 && f.st >= first.dur) gapSeen = true;
+      if (f.ak === 1 && f.state === 'attack') { transition = i / 60; break; }
+    }
+    assert.ok(gapSeen, `${skin} should visibly recover briefly between punches`);
+    assert.ok(transition >= .47 && transition < .53, `second punch at ${transition}s`);
+    assert.equal(f.atk.fist, 'F');
+    assert.equal(f.atkStamp, firstStamp + 1);
+    advanceUntil(() => f.state === 'idle', 60);
+    assert.equal(f.startBoxing(), false, 'combo cooldown must prevent instant repetition');
+    if (skin === 'negan') {
+      const count = Game.batLayer.ctx.stats.drawImage;
+      Game.render();
+      assert.ok(Game.batLayer.ctx.stats.drawImage > count, 'Lucille remains visible after boxing');
+      assert.equal(f.batLost, false);
     }
   }
 });
 
-test('Jane completes every hypnosis phase with a real projectile at several frame rates', () => {
+test('a front guard absorbs ordinary punches; powerful or lethal blows cause a back-hop rather than ragdoll', () => {
   for (const dir of [1, -1]) {
-    for (const dt of [1 / 30, 1 / 60, 1 / 144]) {
-      seedRandom(4321);
-      Game.init(); Game.autoSpawn = false; Game.fighters = [];
-      const { a, v } = hypnosisPair(dir, dir < 0);
-      assert.equal(a.startHypnosis(v), true);
-      assert.ok(a.hypCD >= 5 && a.hypCD <= 9, 'cooldown should match the laser');
-      const phases = new Set(), gunIDs = new Set();
-      let shotSeen = false, knockedKnee = false, quietPose = null;
-      for (let i = 0; i < Math.ceil(9 / dt); i++) {
-        Game.update(dt);
-        if (a.hypPhase) phases.add(a.hypPhase);
-        if (a.hypGun) gunIDs.add(a.hypGun.id);
-        if (Game.bullets.length || Game.tracers.length) shotSeen = true;
-        if (v.state === 'trance' && v.st > 1) {
-          if (!quietPose) quietPose = { x: v.x, dir: v.dir, head: { ...v.rig.head }, pel: { ...v.rig.pel } };
-          assert.equal(v.x, quietPose.x, 'tranced fighter must remain stationary');
-          assert.equal(v.dir, quietPose.dir, 'tranced fighter must keep facing forward');
-          assert.deepEqual(v.rig.head, quietPose.head, 'held trance pose should not bob');
-          assert.deepEqual(v.rig.pel, quietPose.pel, 'held trance pose should not bob');
-          if (Math.abs(v.rig.kN.y - (v.gy - 6.5)) < 5 || Math.abs(v.rig.kF.y - (v.gy - 6.5)) < 5) knockedKnee = true;
-        }
-        if (phases.has('recover') && a.state === 'idle') break;
-      }
-      const label = `dir=${dir}, dt=${dt}`;
-      for (const p of ['focus', 'holster', 'draw', 'aim', 'raise', 'recoil', 'recover']) {
-        assert.ok(phases.has(p), `${label}: missing phase ${p}`);
-      }
-      assert.ok(shotSeen, `${label}: a visible projectile or trail must exist`);
-      assert.ok(knockedKnee, `${label}: victim must kneel`);
-      assert.equal(v.hp, 91, `${label}: bullet deals 9 damage once`);
-      assert.equal(v.state, 'trance', `${label}: hypnosis outlives the cast`);
-      assert.ok(v.tranceT > 1, `${label}: hypnosis must remain for a while`);
-      assert.equal(gunIDs.size, 1, `${label}: cast creates one gun`);
-      assert.equal(Game.droppedGuns.length, 1, `${label}: gun is thrown exactly once`);
-      assert.equal(Game.droppedGuns[0].id, [...gunIDs][0]);
-      assert.equal(a.hypGun, null);
-      assert.ok(a.hypCD > 0, `${label}: cannot immediately recast`);
+    Game.fighters = [];
+    const defender = fighter(480, dir), attacker = fighter(480 + dir * 85, -dir);
+    disableAI(defender, attacker);
+    assert.equal(defender.startGuard(attacker), true);
+    tick(.12);
+    assert.ok(distance(defender.rig.wN, defender.rig.head) < 24);
+    assert.ok(distance(defender.rig.wF, defender.rig.head) < 24);
+    const smoke = Game.fx.sm.length, blood = Game.fx.bl.length;
+    defender.takeHit(attacker, punch);
+    assert.equal(defender.hp, 100);
+    assert.equal(defender.state, 'guard', 'an ordinary block should stay in guard');
+    assert.ok(Game.fx.sm.length >= smoke + 4, 'blocked impact produces a little dust');
+    assert.equal(Game.fx.bl.length, blood, 'blocked punch should not cause blood');
+    defender.takeHit(attacker, launchPunch);
+    assert.equal(defender.state, 'guard_recoil');
+    assert.equal(defender.rag, null);
+    assert.ok(defender.vx * dir < 0 && defender.vy > 0);
+    assert.ok(defender.hp > 0 && defender.hp < 100);
+    advanceUntil(() => defender.state === 'idle', 120);
+    assert.equal(defender.startGuard(attacker), false, 'guard has a cooldown');
+
+    defender.guardCD = 0; defender.hp = 3;
+    assert.equal(defender.startGuard(attacker), true);
+    defender.takeHit(attacker, punch);
+    assert.equal(defender.state, 'guard_recoil');
+    assert.ok(defender.hp >= 1, 'a blocked lethal punch must not cause an instant KO');
+    assert.equal(Game.koCount, 0);
+  }
+});
+
+test('guard only faces the incoming attacker: a punch from behind interrupts it', () => {
+  for (const dir of [1, -1]) {
+    Game.fighters = [];
+    const defender = fighter(480, dir), front = fighter(480 + dir * 90, -dir);
+    const rear = fighter(480 - dir * 80, dir);
+    disableAI(defender, front, rear);
+    defender.startGuard(front);
+    defender.takeHit(rear, punch);
+    assert.equal(defender.hp, 95);
+    assert.equal(defender.state, 'hit');
+  }
+});
+
+test('a dodged punch can overextend only on a miss, and the defender can autonomously flank it', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    for (const dir of [1, -1]) {
+      Game.fighters = [];
+      const attacker = fighter(480 - dir * 55, dir), dodger = fighter(480 + dir * 55, -dir);
+      disableAI(attacker);
+      dodger.autopilot.attackWait = 20;
+      Math.random = () => 0; // choose overextension and the single flank decision
+      attacker.startAttack(0);
+      dodger.startHop();
+      advanceUntil(() => attacker.state === 'overextend', 90, dt);
+      assert.equal(attacker.connected, false);
+      assert.equal(attacker.overextendFor, dodger);
+      assert.ok(attacker.vx * dir > 0, 'the missed swing carries the attacker forward');
+      advanceUntil(() => dodger.state === 'flank' || dodger.state === 'choke', 150, dt);
+      if (dodger.state === 'flank') advanceUntil(() => dodger.state === 'choke', 90, dt);
+      assert.equal(attacker.state, 'choked');
+      assert.equal(dodger.chokeTarget, attacker);
+      assert.ok((attacker.x - dodger.x) * dir > 0, 'holder is behind the stumbling fighter');
+      assert.equal(dodger.dir, dir, 'holder turns to face the same way as the victim');
     }
   }
 });
 
-test('the phrase is static and readable, while the separate trance label pulses and expires', () => {
-  const { a, v } = hypnosisPair();
-  assert.equal(a.startHypnosis(v), true);
-  advanceUntil(() => v.state === 'trance');
-  assert.ok(v.trancePhrase && v.trancePhrase.length <= 24);
-  const textStats = Game.textLayer.ctx.stats;
-  textStats.texts.length = 0;
-  Game.render();
-  const phrase = v.trancePhrase;
-  assert.ok(textStats.texts.some(t => t.text === phrase));
-  const firstLabel = textStats.texts.find(t => t.text === 'In trance');
-  assert.ok(firstLabel && firstLabel.color.startsWith('rgb(255,'));
-  for (let i = 0; i < 25; i++) Game.update(1 / 60);
-  textStats.texts.length = 0;
-  Game.render();
-  assert.equal(v.trancePhrase, phrase, 'the phrase must not cycle or animate');
-  assert.ok(textStats.texts.some(t => t.text === phrase));
-  const secondLabel = textStats.texts.find(t => t.text === 'In trance');
-  assert.notEqual(secondLabel.color, firstLabel.color, 'yellow label should gently pulse');
-  advanceUntil(() => v.speechT <= 0);
-  textStats.texts.length = 0;
-  Game.render();
-  assert.ok(textStats.texts.some(t => t.text === 'In trance'));
-  assert.ok(!textStats.texts.some(t => t.text === phrase), 'the speech cloud goes away independently');
-  advanceUntil(() => v.tranceT <= 0);
-  assert.equal(v.state, 'idle');
-  textStats.texts.length = 0;
-  Game.render();
-  assert.ok(!textStats.texts.some(t => t.text === 'In trance'));
+test('whiffs without a dodge, and swings that hit a different fighter, do not trigger a stumble', () => {
+  Math.random = () => 0;
+  let attacker = fighter(300, 1), target = fighter(650, -1);
+  disableAI(attacker, target);
+  attacker.startAttack(0); tick(.3);
+  assert.notEqual(attacker.state, 'overextend');
+  Game.fighters = [];
+  attacker = fighter(380, 1);
+  const bystander = fighter(455, -1), dodger = fighter(490, -1);
+  disableAI(attacker, bystander, dodger);
+  attacker.startAttack(0); dodger.startHop(); tick(.3);
+  assert.equal(attacker.connected, true);
+  assert.notEqual(attacker.state, 'overextend');
+  assert.equal(bystander.hp, 95);
 });
 
-test('camera follows Jane, briefly slows time and returns smoothly after interruption', () => {
-  const { a, v } = hypnosisPair();
-  a.x = 430; v.x = 650;
-  a.buildRig(1 / 60); v.buildRig(1 / 60);
-  assert.equal(a.startHypnosis(v), true);
-  for (let i = 0; i < 20; i++) Game.update(1 / 60);
-  assert.ok(a.st < 20 / 60 - 0.03, 'initial cinematic slowdown should affect game time');
-  assert.ok(Game.camera.zoom > 1.1 && Game.camera.zoom < 1.2);
-  assert.ok(Game.camera.vignette > 0.5);
-  assert.ok(Math.abs(Game.screenToWorldX(Game.W / 2) - Game.camera.x) < 1e-8);
-  const oldCameraX = Game.camera.x;
-  a.x += 45;
-  for (let i = 0; i < 15; i++) Game.update(1 / 60);
-  assert.ok(Game.camera.x > oldCameraX, 'camera should follow the caster');
-  const interrupter = fighter(250, 1, 'saul');
-  interrupter.autopilot.update = () => {};
-  a.takeHit(interrupter, { dmg: 5, zone: 'head', pw: .4, stun: .3, kb: 80 });
-  assert.equal(Game.camera.owner, null);
-  const zoom = Game.camera.zoom;
-  Game.update(1 / 60);
-  assert.ok(Game.camera.zoom < zoom && Game.camera.zoom > 1, 'camera must ease out, not jump');
-  for (let i = 0; i < 180; i++) Game.update(1 / 60);
-  assert.ok(Math.abs(Game.camera.zoom - 1) < .001);
-  assert.ok(Game.camera.vignette < .001);
-  assert.equal(Game.camera.slowLeft, 0);
-});
-
-test('interrupting before induction cancels the cast without spawning a gun or trance', () => {
-  const { a, v } = hypnosisPair();
-  assert.equal(a.startHypnosis(v), true);
-  for (let i = 0; i < 5; i++) Game.update(1 / 60);
-  const enemy = fighter(200, 1, 'saul');
-  a.takeHit(enemy, { dmg: 5, zone: 'head', pw: .4, stun: .3, kb: 80 });
-  assert.equal(a.state, 'hit');
-  assert.equal(a.hypGun, null);
-  assert.equal(Game.droppedGuns.length, 0, 'there is no gun to drop before it is drawn');
-  assert.equal(v.tranceT, 0);
-  assert.ok(a.hypCD > 0, 'an interrupted attempt still consumes cooldown');
-  assert.equal(Game.camera.owner, null);
-  assert.equal(Game.bullets.length, 0);
-});
-
-test('interruption drops the unique gun but does not break an established trance', () => {
-  const { a, v } = hypnosisPair();
-  assert.equal(a.startHypnosis(v), true);
-  advanceUntil(() => a.hypPhase === 'aim');
-  const gunID = a.hypGun.id, hp = v.hp;
-  const enemy = fighter(230, 1, 'saul');
-  enemy.autopilot.update = () => {};
-  a.takeHit(enemy, { dmg: 5, zone: 'head', pw: .4, stun: .3, kb: 80 });
-  assert.equal(a.state, 'hit');
-  assert.equal(a.hypGun, null);
-  assert.equal(Game.droppedGuns.length, 1);
-  assert.equal(Game.droppedGuns[0].id, gunID);
-  assert.equal(v.state, 'trance');
-  assert.ok(v.tranceT > 2);
-  assert.ok(a.hypCD > 0);
-  assert.equal(Game.bullets.length, 0);
-  v.takeHit(enemy, { dmg: 5, zone: 'torso', pw: .4, stun: .3, kb: 80 });
-  assert.equal(v.hp, hp - 5, 'tranced fighter can still take damage');
-  assert.equal(v.state, 'trance', 'ordinary damage does not remove the trance');
-  const remaining = v.tranceT;
-  for (let i = 0; i < 30; i++) Game.update(1 / 60);
-  assert.ok(v.tranceT > 0 && v.tranceT < remaining);
-  assert.equal(Game.droppedGuns.length, 1, 'a cancelled gun must not respawn');
-  assert.equal(a.hypGun, null);
-
-  // Expire the cooldown explicitly to test that the next cast draws a new gun,
-  // rather than fetching the old physical object off the floor.
-  a.state = 'idle'; a.vx = 0; a.hypCD = 0;
-  const next = fighter(a.x + 250, -1, 'homelander');
-  next.autopilot.update = () => {};
-  Game.fighters.push(next);
-  assert.equal(a.startHypnosis(next), true);
-  advanceUntil(() => a.hypPhase === 'draw');
-  assert.ok(a.hypGun && a.hypGun.id !== gunID);
-  assert.equal(Game.droppedGuns[0].id, gunID);
-  a.cancelHypnosis();
-  a.cancelHypnosis();
-  assert.equal(Game.droppedGuns.length, 2, 'repeated cleanup must not duplicate the gun');
-  assert.notEqual(Game.droppedGuns[0].id, Game.droppedGuns[1].id);
-});
-
-test('lasers, trips and KOs interrupt a cast and leave the victim hypnotized', () => {
-  for (const kind of ['laser', 'trip', 'ko']) {
-    seedRandom(7788);
-    Game.init(); Game.autoSpawn = false; Game.fighters = [];
-    const { a, v } = hypnosisPair();
-    assert.equal(a.startHypnosis(v), true);
-    advanceUntil(() => a.hypPhase === 'aim');
-    const enemy = fighter(190, 1, 'homelander');
-    enemy.autopilot.update = () => {};
-    if (kind === 'laser') a.takeLaser(enemy, a.rig.pel, true);
-    if (kind === 'trip') enemy.trip(a);
-    if (kind === 'ko') Game.ko(a, enemy, { lvx: 300, lvy: 400, pw: 1 });
-    assert.notEqual(a.state, 'hypnosis', kind);
-    assert.equal(a.hypGun, null, kind);
-    assert.equal(Game.droppedGuns.length, 1, kind);
-    assert.equal(v.state, 'trance', kind);
-    assert.ok(v.tranceT > 0, kind);
-    assert.equal(Game.camera.owner, null, kind);
-    if (kind === 'laser') assert.ok(a.burns.length > 0, 'laser burn remains on Jane');
+test('a choke keeps both hands around the lower, bent victim while allowing a small struggle and shuffle', () => {
+  for (const dir of [1, -1]) for (const reverseOrder of [false, true]) {
+    Game.fighters = [];
+    const { holder, victim } = heldPair({ dir, reverseOrder });
+    let min = holder.x, max = holder.x, handMotion = 0;
+    const initialHand = { x: victim.rig.wN.x - victim.rig.neck.x, y: victim.rig.wN.y - victim.rig.neck.y };
+    for (let i = 0; i < 45; i++) {
+      Game.update(1 / 60);
+      min = Math.min(min, holder.x); max = Math.max(max, holder.x);
+      handMotion = Math.max(handMotion, distance(initialHand, { x: victim.rig.wN.x - victim.rig.neck.x, y: victim.rig.wN.y - victim.rig.neck.y }));
+      assert.ok(Math.abs((victim.x - holder.x) * dir - 48) < .01, 'pair position should not depend on fighter update order');
+      assert.ok(distance(holder.rig.wN, victim.rig.neck) < 17, 'near hand remains on neck');
+      assert.ok(distance(holder.rig.wF, victim.rig.neck) < 17, 'far hand remains on neck');
+    }
+    assert.ok(max - min > 2 && max - min < 25, 'pair can shuffle slightly');
+    assert.ok(handMotion > 2, 'victim hands visibly struggle');
+    assert.ok(victim.rig.pel.y > holder.rig.pel.y + 12, 'victim is visibly lower');
+    assert.ok((victim.rig.head.x - holder.rig.head.x) * dir > 20, 'both heads remain visible rather than overlapping');
+    for (const suffix of ['N', 'F']) {
+      assert.ok(kneeAngle(victim.rig.pel, victim.rig[`k${suffix}`], victim.rig[`a${suffix}`]) < 155, 'victim knees are bent');
+      assert.ok(kneeCross(victim.rig, suffix) < 0, 'victim knees bend anatomically');
+    }
+    Game.render();
   }
 });
 
-test('a launched tranced opponent remains incapacitated until the debuff expires', () => {
-  const { a, v } = hypnosisPair();
-  assert.equal(a.startHypnosis(v), true);
-  advanceUntil(() => v.state === 'trance');
-  const enemy = fighter(230, 1, 'saul'); enemy.autopilot.update = () => {};
-  v.takeHit(enemy, { dmg: 8, zone: 'head', pw: 1, launch: true, lvx: 200, lvy: 420 });
-  assert.equal(v.state, 'ragdoll');
-  assert.ok(v.tranceT > 0);
-  for (let i = 0; i < 120; i++) Game.update(1 / 60);
-  assert.equal(v.state, 'ragdoll', 'tranced ragdoll cannot get up early');
-  assert.ok(v.tranceT > 0);
-  advanceUntil(() => v.tranceT <= 0);
-  advanceUntil(() => v.state === 'getup' || v.state === 'idle');
-});
-
-test('the projectile can hit an intervening fighter instead of magically reaching its target', () => {
-  const { a, v } = hypnosisPair();
-  a.x = 280; v.x = 560; a.buildRig(1 / 60); v.buildRig(1 / 60);
-  const blocker = fighter(450, -1, 'saul'); blocker.autopilot.update = () => {};
-  assert.equal(a.startHypnosis(v), true);
-  advanceUntil(() => a.hypPhase === 'recoil');
-  advanceUntil(() => blocker.hp < 100 || v.hp < 100);
-  assert.equal(blocker.hp, 91);
-  assert.equal(v.hp, 100, 'a body in the projectile path absorbs the shot');
-  assert.equal(v.state, 'trance');
-});
-
-test('a lethal bullet emits fragments before transitioning into a normal ragdoll', () => {
-  const { a, v } = hypnosisPair(-1, true, 'negan');
-  v.hp = 9;
-  const originalKOs = Game.koCount;
-  assert.equal(a.startHypnosis(v), true);
-  advanceUntil(() => v.hp <= 0);
-  assert.equal(v.state, 'fragmenting');
-  assert.equal(v.rag, null);
-  assert.ok(Game.fx.bits.length > 0);
-  assert.equal(Game.koCount, originalKOs + 1);
-  assert.equal(v.tranceT, 0);
-  Game.render();
-  advanceUntil(() => v.state === 'ragdoll');
-  assert.ok(v.rag);
-  assert.equal(v.hp, 0);
-  assert.equal(Game.koCount, originalKOs + 1);
-});
-
-test('aim duration and spoken lines vary across casts without changing within one cast', () => {
-  const delays = new Set(), phrases = new Set();
-  for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
-    seedRandom(seed * 997);
-    Game.init(); Game.autoSpawn = false; Game.fighters = [];
-    const { a, v } = hypnosisPair();
-    assert.equal(a.startHypnosis(v), true);
-    advanceUntil(() => a.hypPhase === 'aim');
-    assert.ok(a.hypAimWait >= .55 && a.hypAimWait <= 1.8);
-    delays.add(a.hypAimWait.toFixed(3));
-    phrases.add(v.trancePhrase);
-    const wait = a.hypAimWait, phrase = v.trancePhrase;
-    for (let i = 0; i < 10; i++) Game.update(1 / 60);
-    assert.equal(a.hypAimWait, wait);
-    assert.equal(v.trancePhrase, phrase);
+test('a completed choke deals small passive damage and produces a longer temporary ragdoll', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.fighters = [];
+    const { holder, victim } = heldPair({ dt });
+    const duration = holder.chokeDuration;
+    advanceUntil(() => victim.state === 'ragdoll', Math.ceil(4 / dt), dt);
+    assert.equal(holder.state, 'idle');
+    assert.equal(holder.chokeTarget, null);
+    assert.equal(victim.chokedBy, null);
+    assert.equal(victim.rag.stunScale, 1.5);
+    assert.ok(victim.hp > 93 && victim.hp < 96, `passive damage was ${100 - victim.hp}`);
+    assert.ok(duration >= 2 && duration <= 3);
+    const rag = victim.rag;
+    advanceUntil(() => victim.state === 'getup', Math.ceil(8 / dt), dt);
+    assert.ok(rag.t >= 1.35, 'the minimum ragdoll stun is 1.5 times the usual .9 seconds');
   }
-  assert.ok(delays.size > 3, 'shot timing should vary');
-  assert.ok(phrases.size > 2, 'spoken lines should vary');
 });
 
-test('blood impacts during the cast stick to Jane, darken over time and can be cleared', () => {
-  const { a, v } = hypnosisPair();
-  assert.equal(a.startHypnosis(v), true);
-  for (let i = 0; i < 12; i++) Game.update(1 / 60);
-  const p = a.rig.pel;
-  Game.fx.bl.push({ x: p.x, y: p.y, vx: 0, vy: 0, r: 2, fy: a.gy + 30, life: 2, shape: 'block' });
-  Game.update(1 / 60);
-  assert.equal(a.bloodStains.length, 1);
-  assert.ok(a.bloodStains[0].kind === 'blood' && a.bloodStains[0].layer);
-  const mark = a.bloodStains[0];
-  const before = mark.age;
-  for (let i = 0; i < 60; i++) Game.update(1 / 60);
-  assert.ok(mark.age > before + .5);
-  assert.equal(a.bloodStains[0], mark, 'a fleck should follow the same body segment');
-  const body = Game.bodyLayer.ctx.stats;
-  body.colors.clear(); Game.render();
-  assert.ok([...body.colors].some(c => typeof c === 'string' && c.startsWith('rgb(')), 'stain must be painted on the fighter layer');
-  const enemy = fighter(230, 1, 'saul');
-  a.takeHit(enemy, { dmg: 5, zone: 'torso', pw: .4, stun: .3, kb: 80 });
-  assert.ok(a.bloodStains.length >= 2, 'a direct hit also leaves a mark when it interrupts');
-  Game.clearBlood();
-  assert.equal(a.bloodStains.length, 0);
+test('voluntary release, punches, lasers and knockout all break both ends of a choke', () => {
+  for (const cause of ['release', 'hit-holder', 'hit-victim', 'laser', 'ko-holder', 'ko-victim', 'removed-holder']) {
+    Game.fighters = []; Game.koCount = 0;
+    const { holder, victim } = heldPair();
+    const third = fighter(280, 1, 'homelander');
+    disableAI(third);
+    if (cause === 'release') holder.releaseChoke(true);
+    if (cause === 'hit-holder') holder.takeHit(third, punch);
+    if (cause === 'hit-victim') victim.takeHit(third, punch);
+    if (cause === 'laser') holder.takeLaser(third, holder.rig.head, true);
+    if (cause === 'ko-holder') { holder.hp = 4; holder.takeHit(third, punch); }
+    if (cause === 'ko-victim') { victim.hp = .01; Game.update(1 / 60); }
+    if (cause === 'removed-holder') { Game.fighters = Game.fighters.filter(f => f !== holder); Game.update(1 / 60); }
+    assert.equal(holder.chokeTarget, null, `${cause}: holder link`);
+    assert.equal(victim.chokedBy, null, `${cause}: victim link`);
+    assert.notEqual(holder.state, 'choke', `${cause}: holder state`);
+    assert.notEqual(victim.state, 'choked', `${cause}: victim state`);
+    if (cause.startsWith('ko-')) assert.equal(Game.koCount, 1);
+  }
 });
 
-test('the AI uses hypnosis with a cooldown and can switch the camera between simultaneous casts', () => {
-  const a = fighter(330, 1, 'jane'), v = fighter(550, -1, 'walt');
-  Game.fighters = [a, v];
-  a.hypCD = 0;
-  Math.random = () => .001;
-  a.autopilot.update(1 / 60, a, v, [a, v]);
-  assert.equal(a.state, 'hypnosis');
-  assert.ok(a.hypCD >= 5 && a.hypCD <= 9);
-  assert.equal(Game.camera.owner, a);
-  const other = fighter(600, -1, 'jane'), target = fighter(380, 1, 'negan');
-  Game.fighters.push(other, target);
-  other.hypCD = 0;
-  assert.equal(other.startHypnosis(target), true);
-  assert.equal(Game.camera.owner, a, 'simultaneous casts should not cause a camera jump');
-  a.cancelHypnosis();
-  assert.equal(Game.camera.owner, other, 'camera transfers to the remaining active cast');
-  other.cancelHypnosis();
-  assert.equal(Game.camera.owner, null);
+test('a counterthrow carries the attacker over a shoulder, releases midway, and damages them only on landing', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) for (const reverseOrder of [false, true]) {
+    Game.fighters = [];
+    const { holder, victim } = heldPair({ dir, reverseOrder, dt });
+    holder.beginCounter();
+    assert.equal(holder.state, 'counter_carried');
+    assert.equal(victim.state, 'counter_throw');
+    const startY = holder.rig.pel.y;
+    tick(.24, dt);
+    assert.equal(holder.state, 'counter_carried');
+    assert.ok(holder.rig.pel.y < startY - 35, 'attacker lifts over the shoulder');
+    assert.ok(Math.abs(holder.x - holder.rig.pel.x) < 1, 'hit detection follows the carried body');
+    assert.ok(distance(victim.rig.wN, holder.rig.pel) < 16, 'thrower grips the carried body');
+    assert.ok(distance(victim.rig.wF, holder.rig.pel) < 16, 'both hands stay in contact before release');
+    assert.equal(holder.hp, 100, 'no fall damage before release');
+    advanceUntil(() => holder.state === 'ragdoll', Math.ceil(1 / dt), dt);
+    assert.equal(victim.counterReleased, true);
+    assert.equal(holder.chokeTarget, null);
+    assert.equal(victim.chokedBy, null);
+    const rag = holder.rag, px = rag.p.pel.x;
+    assert.equal(holder.hp, 100);
+    advanceUntil(() => holder.hp < 100, Math.ceil(4 / dt), dt);
+    assert.equal(holder.hp, 92);
+    assert.equal(holder.fallDamage, null);
+    assert.ok(Math.abs(rag.p.pel.x - px) > 5, 'after release, the body moves under independent physics');
+    tick(.6, dt);
+    assert.equal(holder.hp, 92, 'fall damage is applied once');
+  }
 });
 
-test('portrait sizing keeps the entire arena and both fighters visible', () => {
+test('counterthrow fall damage can KO without replacing the airborne ragdoll', () => {
+  const { holder, victim } = heldPair();
+  holder.hp = 6;
+  holder.beginCounter();
+  advanceUntil(() => holder.state === 'ragdoll', 60);
+  const rag = holder.rag;
+  advanceUntil(() => holder.hp <= 0, 240);
+  assert.equal(holder.rag, rag);
+  assert.equal(Game.koCount, 1);
+  assert.equal(victim.chokedBy, null);
+});
+
+test('a third fighter can interrupt a counter before release without leaving anyone pinned', () => {
+  const { holder, victim } = heldPair();
+  const third = fighter(300, 1);
+  disableAI(third);
+  holder.beginCounter();
+  tick(.12);
+  victim.takeHit(third, punch);
+  assert.equal(holder.chokeTarget, null);
+  assert.equal(victim.chokedBy, null);
+  assert.notEqual(holder.state, 'counter_carried');
+  assert.equal(victim.state, 'hit');
+  assert.equal(holder.fallDamage, null);
+  tick(.3);
+  assert.notEqual(holder.state, 'counter_carried');
+});
+
+test('other fighters collide with but do not separate a held pair, including near a wall', () => {
+  for (const dir of [1, -1]) {
+    Game.fighters = [];
+    const { holder, victim } = heldPair({ dir });
+    // Put the restrained fighter at the edge and keep the pair together.
+    victim.x = dir > 0 ? victim.maxX : victim.minX;
+    holder.x = victim.x - dir * 48;
+    const intruder = fighter(holder.x - dir * 12, dir);
+    disableAI(intruder);
+    for (let i = 0; i < 40; i++) {
+      Game.update(1 / 60);
+      assert.ok(Math.abs((victim.x - holder.x) * dir - 48) < .01);
+      assert.ok(holder.x >= holder.minX && holder.x <= holder.maxX);
+      assert.ok(victim.x >= victim.minX && victim.x <= victim.maxX);
+    }
+    assert.ok(Math.abs(intruder.x - holder.x) >= 40, 'third fighter is pushed away, not the attached pair');
+  }
+});
+
+test('removed Jane hypnosis, pistol and grounded leg-grab code stay absent while Jane remains playable', () => {
+  assert.doesNotMatch(source, /hypno|trance|bullet|droppedgun|grab_prep|grab_throw|grabtarget|grabbedby/i);
+  const jane = fighter(450, 1, 'jane');
+  assert.equal(jane.skin, 'jane');
+  assert.equal(jane.hp, 100);
+  jane.startAttack(0);
+  assert.equal(jane.atk.n, 'jab');
+});
+
+test('seeded autonomous fights actually use the new moves without leaving dangling holds', () => {
+  const counts = { boxing: 0, guard: 0, guardHits: 0, stumble: 0, flank: 0, choke: 0, counter: 0, thrown: 0, completed: 0 };
+  const methods = {
+    startBoxing: 'boxing', startGuard: 'guard', startOverextend: 'stumble',
+    startFlank: 'flank', startChoke: 'choke', beginCounter: 'counter', releaseCounter: 'thrown',
+  };
+  const originals = Object.fromEntries(Object.keys(methods).map(name => [name, Fighter.prototype[name]]));
+  const originalHit = Fighter.prototype.takeHit;
+  try {
+    for (const [method, key] of Object.entries(methods)) {
+      Fighter.prototype[method] = function (...args) {
+        const before = this.state;
+        const result = originals[method].apply(this, args);
+        if (result === true || (result === undefined && this.state !== before)) counts[key]++;
+        if (method === 'releaseCounter' && this.counterReleased) counts[key]++;
+        return result;
+      };
+    }
+    Fighter.prototype.takeHit = function (...args) {
+      const guarded = this.state === 'guard';
+      const result = originalHit.apply(this, args);
+      if (guarded && (this.state === 'guard' || this.state === 'guard_recoil')) counts.guardHits++;
+      return result;
+    };
+    for (const seed of [19, 31, 57, 83, 101, 133, 177, 251]) {
+      seedRandom(seed);
+      Game.init();
+      const last = new Map();
+      for (let frame = 0; frame < 120 * 60; frame++) {
+        Game.update(1 / 60);
+        for (const f of Game.fighters) {
+          if (last.get(f.id) === 'choked' && f.state === 'ragdoll' && f.hp > 0) counts.completed++;
+          last.set(f.id, f.state);
+          assert.ok(Number.isFinite(f.x) && Number.isFinite(f.y) && f.hp >= 0);
+          if (f.state === 'choke') {
+            assert.equal(f.chokeTarget?.chokedBy, f);
+            assert.equal(f.chokeTarget?.state, 'choked');
+          }
+          if (f.state === 'choked') {
+            assert.equal(f.chokedBy?.chokeTarget, f);
+            assert.equal(f.chokedBy?.state, 'choke');
+          }
+          if (f.state === 'counter_carried') {
+            assert.equal(f.chokeTarget?.state, 'counter_throw');
+            assert.equal(f.chokeTarget?.chokedBy, f);
+          }
+        }
+        if (frame % 600 === 0) Game.render();
+      }
+    }
+    console.log('autonomous combat events:', counts);
+    for (const [key, count] of Object.entries(counts)) assert.ok(count > 0, `${key} did not occur in unattended fights`);
+  } finally {
+    for (const [name, original] of Object.entries(originals)) Fighter.prototype[name] = original;
+    Fighter.prototype.takeHit = originalHit;
+  }
+});
+
+test('an interrupted boxing combo never fires the queued second punch', () => {
+  for (const lethal of [false, true]) {
+    Game.fighters = []; Game.koCount = 0;
+    const boxer = fighter(400, 1), opponent = fighter(520, -1);
+    disableAI(boxer, opponent);
+    assert.equal(boxer.startBoxing(), true);
+    tick(.2);
+    const stamp = boxer.atkStamp;
+    if (lethal) boxer.hp = 3;
+    boxer.takeHit(opponent, punch);
+    assert.equal(boxer.boxing, false);
+    assert.equal(boxer.state, lethal ? 'ragdoll' : 'hit');
+    tick(1);
+    assert.equal(boxer.atkStamp, stamp, 'interrupted second punch must not fire later');
+    assert.equal(Game.koCount, lethal ? 1 : 0);
+  }
+});
+
+test('an attacker can voluntarily release a choke before its full duration', () => {
+  const { holder, victim } = heldPair();
+  holder.chokeReleaseAt = holder.st + .2;
+  const hp = victim.hp;
+  tick(.3);
+  assert.equal(holder.state, 'idle');
+  assert.equal(holder.chokeTarget, null);
+  assert.equal(victim.chokedBy, null);
+  assert.notEqual(victim.state, 'ragdoll');
+  assert.ok(victim.hp > hp - 1, 'early release should do only light passive damage');
+});
+
+test('simultaneous choke pairs stay independent when a third party interrupts only one', () => {
+  const first = heldPair({ dir: 1 });
+  first.holder.x -= 220; first.victim.x -= 220;
+  first.victim.buildRig(0); first.holder.buildRig(0);
+  const second = heldPair({ dir: -1, reverseOrder: true });
+  tick(.25);
+  assert.equal(first.holder.chokeTarget, first.victim);
+  assert.equal(second.holder.chokeTarget, second.victim);
+  assert.equal(first.victim.chokedBy, first.holder);
+  assert.equal(second.victim.chokedBy, second.holder);
+  const third = fighter(120, 1, 'saul'); disableAI(third);
+  first.holder.takeHit(third, punch);
+  assert.equal(first.holder.chokeTarget, null);
+  assert.equal(first.victim.chokedBy, null);
+  assert.equal(second.holder.chokeTarget, second.victim);
+  assert.equal(second.victim.chokedBy, second.holder);
+  tick(.25);
+  assert.equal(second.holder.state, 'choke');
+  assert.equal(second.victim.state, 'choked');
+});
+
+test('interrupting the carried fighter starts ragdoll at its current airborne position', () => {
+  const { holder, victim } = heldPair();
+  const third = fighter(250, 1, 'saul'); disableAI(third);
+  holder.beginCounter(); tick(.24);
+  const p = { ...holder.rig.pel };
+  holder.takeHit(third, launchPunch);
+  assert.equal(holder.state, 'ragdoll');
+  assert.equal(holder.chokeTarget, null);
+  assert.equal(victim.chokedBy, null);
+  assert.notEqual(victim.state, 'counter_throw');
+  assert.ok(distance(holder.rag.p.pel, p) < 1, 'no teleport to the pre-throw position');
+  assert.equal(holder.fallDamage, null, 'an interrupted counter must not deal delayed fall damage');
+});
+
+test('portrait sizing keeps the full arena visible and vertically letterboxed', () => {
   const oldWidth = innerWidth, oldHeight = innerHeight;
   try {
     globalThis.innerWidth = 390; globalThis.innerHeight = 844;
     Game.resize();
     assert.equal(Game.W, 800);
-    assert.ok(parseFloat(Game.cv.style.width) <= innerWidth + 0.01);
+    assert.ok(parseFloat(Game.cv.style.width) <= innerWidth + .01);
     assert.ok(parseFloat(Game.cv.style.height) < innerHeight);
-    assert.ok(parseFloat(Game.cv.style.top) > 0, 'letterboxed arena is vertically centered');
-    const { a, v } = hypnosisPair();
-    v.x = a.x + 350; v.buildRig(1 / 60);
-    assert.equal(a.startHypnosis(v), true);
-    advanceUntil(() => a.hypPhase === 'aim');
-    const c = Game.camera;
-    const screenX = worldX => (worldX - c.x) * c.zoom + Game.W / 2;
-    assert.ok(screenX(a.x) > 0 && screenX(a.x) < Game.W);
-    assert.ok(screenX(v.x) > 0 && screenX(v.x) < Game.W);
-    assert.ok(Math.abs(Game.screenToWorldX(screenX(v.x)) - v.x) < 1e-8);
-    const texts = Game.textLayer.ctx.stats.texts;
-    texts.length = 0;
+    assert.ok(parseFloat(Game.cv.style.top) > 0);
+    assert.ok(Math.abs(parseFloat(Game.cv.style.top) * 2 + parseFloat(Game.cv.style.height) - innerHeight) < .01);
+    const a = fighter(80, 1), b = fighter(Game.W - 80, -1);
+    assert.ok(a.x >= 70 && b.x <= Game.W - 70);
     Game.render();
-    const phrase = texts.find(t => t.text === v.trancePhrase);
-    const label = texts.find(t => t.text === 'In trance');
-    assert.ok(phrase && label);
-    const fontWorld = Number(phrase.font.match(/([\d.]+)px/)[1]);
-    assert.ok(fontWorld * Game.displayScale * c.zoom >= 10.9, 'phone text stays readable');
-    const left = c.x - Game.W / (2 * c.zoom), right = c.x + Game.W / (2 * c.zoom);
-    const estimatedHalfWidth = (v.trancePhrase.length * 7.25 + 20) * fontWorld / 24;
-    assert.ok(phrase.x - estimatedHalfWidth >= left + 3);
-    assert.ok(phrase.x + estimatedHalfWidth <= right - 3, 'cloud stays inside the camera view');
   } finally {
     globalThis.innerWidth = oldWidth; globalThis.innerHeight = oldHeight;
     Game.resize();
   }
-});
-
-test('removing the target before induction cancels, and removing a caster clears camera slowdown', () => {
-  const { a, v } = hypnosisPair();
-  assert.equal(a.startHypnosis(v), true);
-  Game.fighters = [a];
-  Game.update(1 / 60);
-  assert.equal(a.state, 'idle');
-  assert.equal(v.tranceT, 0);
-  assert.equal(Game.camera.owner, null);
-  assert.equal(Game.camera.slowLeft, 0);
-  assert.equal(Game.droppedGuns.length, 0);
-
-  Game.fighters = [a, v]; a.hypCD = 0;
-  assert.equal(a.startHypnosis(v), true);
-  Game.fighters = [v];
-  Game.update(1 / 60);
-  assert.equal(Game.camera.owner, null);
-  assert.equal(Game.camera.slowLeft, 0);
-});
-
-test('a projectile may miss and hit the arena rather than damaging a removed target', () => {
-  const { a, v } = hypnosisPair();
-  assert.equal(a.startHypnosis(v), true);
-  advanceUntil(() => a.hypPhase === 'raise');
-  Game.fighters = [a];
-  advanceUntil(() => a.hypPhase === 'recoil');
-  assert.ok(Game.bullets.length > 0, 'shot still leaves the gun');
-  advanceUntil(() => Game.bullets.length === 0);
-  assert.equal(v.hp, 100);
-  assert.ok(Game.tracers.length > 0, 'miss leaves a visible trail at the wall');
-});
-
-test('a seeded autonomous match actually induces a trance and fires', () => {
-  seedRandom(3 * 982451653);
-  Game.init();
-  let sawFocus = false, sawTrance = false, sawBullet = false;
-  for (let i = 0; i < 40 * 60; i++) {
-    Game.update(1 / 60);
-    if (Game.fighters.some(f => f.skin === 'jane' && f.hypPhase === 'focus')) sawFocus = true;
-    if (Game.fighters.some(f => f.tranceT > 0)) sawTrance = true;
-    if (Game.bullets.some(p => p.owner.skin === 'jane')) sawBullet = true;
-  }
-  assert.ok(sawFocus, 'Jane should choose the ability on her own');
-  assert.ok(sawTrance, 'the opposing AI should be put into trance');
-  assert.ok(sawBullet, 'the autonomous sequence should reach a real shot');
-});
-
-test('a flying Homelander settles to the floor in trance and remains targetable', () => {
-  const { a, v } = hypnosisPair(1, false, 'homelander');
-  // Start him from his normal hover so the trance must bring him down.
-  for (let i = 0; i < 60; i++) Game.update(1 / 60);
-  assert.ok(v.hoverY > 10);
-  assert.equal(a.startHypnosis(v), true);
-  advanceUntil(() => a.hypPhase === 'aim');
-  for (let i = 0; i < 30; i++) Game.update(1 / 60);
-  assert.equal(v.state, 'trance');
-  assert.ok(v.hoverY < .1, `hover should settle, got ${v.hoverY}`);
-  assert.ok(Math.abs(v.rig.kN.y - (v.gy - 6.5)) < 5 || Math.abs(v.rig.kF.y - (v.gy - 6.5)) < 5);
-  assert.ok(v.canBeHit());
-  advanceUntil(() => v.hp < 100);
-  assert.equal(v.hp, 91);
 });
