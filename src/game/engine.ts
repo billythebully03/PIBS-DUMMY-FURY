@@ -11,6 +11,8 @@ const TIE_N=6, TIE_SEG=9;
 const CAPE_N=7, CAPE_SEG=19;
 const HL_HOVER=19;
 const RUN_SPD=520, RUN_ACC=1250;
+const SLOW_WALK_SPD=84, SLOW_WALK_PH=2.4;
+const CATWALK_SY=104; // screen-y of the suspended ceiling walkway (0 = top of canvas)
 const BOX_GAP=.1, OVEREXTEND_DUR=1.12, FLANK_DUR=.34;
 const CHOKE_OFFSET=48, CHOKE_DPS=2.2, COUNTER_RELEASE=.43, COUNTER_DUR=.86;
 const SHOVE_DUR=.58, SHOVE_IMPACT=.25, SHOVE_REACH=105;
@@ -209,20 +211,6 @@ function posePinArms(R,v){
   const n=v.rig.neck,d=R.dir;
   aimArmWorld(R,'N',n.x+d*2,n.y+3);
   aimArmWorld(R,'F',n.x-d*4,n.y-1);
-  R.cN=R.cF=0;R.bd=null;
-}
-function poseLiftArms(R,v){
-  if(!v||!v.rig)return;
-  // Hands support the upper body just below the armpits on both sides.
-  const p=v.rig.sh,d=R.dir;
-  aimArmWorld(R,'N',p.x+d*5,p.y+9);
-  aimArmWorld(R,'F',p.x-d*5,p.y+7);
-  R.cN=R.cF=0;R.bd=null;
-}
-function poseLiftStruggle(R,holder,t){
-  const p=holder&&holder.rig?holder.rig.wN:R.sh;
-  aimArmWorld(R,'N',p.x+Math.sin(t*12)*5,p.y-6+Math.cos(t*14)*4);
-  aimArmWorld(R,'F',R.sh.x+R.dir*(12+Math.sin(t*10)*5),R.sh.y-10+Math.cos(t*13)*6);
   R.cN=R.cF=0;R.bd=null;
 }
 function cloneRig(R){
@@ -541,7 +529,7 @@ function drawBat(g,f){
   g.restore();
 }
 function stowsBat(f){
-  return f.boxing||(f.bleed&&f.bleed.pressing)||['guard','guard_recoil','shove','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','takedown','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted'].includes(f.state);
+  return f.boxing||(f.bleed&&f.bleed.pressing)||['guard','guard_recoil','shove','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','catwalk','takedown','ground_pin','pinned'].includes(f.state);
 }
 function drawStowedBat(g,f){
   const R=f.rig;if(!R||f.batLost||f.hp<=0)return;
@@ -1492,12 +1480,12 @@ class Fighter{
       overextendFor:null,overextendStamp:0,flankTarget:null,flankFrom:0,
       chokeCD:0,chokeCooldownPending:false,chokeTarget:null,chokedBy:null,chokeDuration:0,chokeCounterAt:Infinity,chokeReleaseAt:Infinity,
       counterBase:null,counterReleased:false,fallDamage:null,
-      grappleCD:0,grappleTarget:null,grappleBy:null,pinBase:null,pinChoke:false,pinChokeAt:0,
-      liftStyle:'carry',liftStamina:0,liftHeight:0,liftMove:0,liftJumpAt:Infinity,
+      grappleCD:0,grappleTarget:null,grappleBy:null,pinBase:null,
       staggerDir:0,staggerDur:0,shoveWillFall:false,
       shoveCD:0,shoveTarget:null,shoveDone:false,
       lampGoal:null,lampRef:null,lampAction:'pullup',lampStamina:0,
       lampGrabGap:52,lampGrabSide:0,lampBreakAt:Infinity,lampDiveAt:Infinity,lampHangStamp:0,lampPullTarget:null,lampPullDone:false,
+      lampClimb:0,catwalk:false,catwalkSide:0,descendT:0,catwalkRestT:0,pinHoldAt:0,slowWalk:false,catwalkDescentAt:Infinity,
       bloodStains:[],bleed:null,collapseFrom:null,blinkT:rnd(2.2,5.5),blink:0,coughT:rnd(1,2.6)
     });
   }
@@ -1511,7 +1499,7 @@ class Fighter{
   }
   speedMul(){return wstat(this.skin).speedMul*(this.hp<30?.85:1)*this.bloodStrength();}
   startAttack(i,boxing=false){
-    if(['takedown','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted','bleed_collapse'].includes(this.state))return false;
+    if(['takedown','ground_pin','pinned','bleed_collapse'].includes(this.state))return false;
     const pressing=this.bleed&&this.bleed.pressing;
     const set=(boxing||pressing)?(this.skin==='homelander'?ATK_HL:ATK):atkSetFor(this.skin);
     const a=set[i];
@@ -1639,13 +1627,67 @@ class Fighter{
     const grip=lamp.grip(),pose=this.targetPose();
     const base=computeRig(pose,0,this.gy,0,this.dir,false);
     this.x=clamp(grip.x+side-base.sh.x,this.minX,this.maxX);
-    this.y=Math.max(.5,base.sh.y-(grip.y+gap));this.vx=0;this.vy=0;
+    this.vx=0;this.vy=0;
+    // Rope climb: pull yourself up toward the suspended ceiling walkway.
+    if(this.lampAction==='climb'){
+      this.lampClimb=clamp(this.st/1.6,0,1);
+      const hangY=Math.max(.5,base.sh.y-(grip.y+gap));
+      this.y=lerp(hangY,Game.catwalkFighterY(),this.lampClimb);
+      if(this.lampClimb>=1){
+        // Pull over the rail onto the walkway.
+        this.lampClimb=1;this.clearLamp();this.state='catwalk';this.st=0;
+        this.catwalk=true;this.catwalkSide=this.dir;this.y=Game.catwalkFighterY();
+        this.catwalkRestT=rnd(1.5,3);this.catwalkDescentAt=rnd(3,6);Snd.thud();
+        if(this.fx)this.fx.landing(this.x,this.gy-this.y,.4);
+        return;
+      }
+      return;
+    }
+    this.y=Math.max(.5,base.sh.y-(grip.y+gap));
     if((this.lampAction==='pullup'||this.lampAction==='dive')&&this.st>=this.lampDiveAt){
       const target=opponent&&opponent.hp>0?opponent:null;
       const dive=target&&Math.abs(target.x-this.x)<300&&
         (this.lampAction==='dive'||Math.random()<.35);
       this.releaseLamp(dive?'dive':'jump',target);
     }
+  }
+  startLampClimb(){
+    if(this.state!=='lamp_hang'||!this.lampRef||this.lampAction==='climb')return false;
+    this.lampAction='climb';this.st=0;this.lampClimb=0;Snd.whoosh();return true;
+  }
+  // Carefully climb back down the lamp rope from the walkway.
+  descendLamp(){
+    if(this.state!=='catwalk')return false;
+    const lamp=Game.lamps.find(l=>!l.detached&&!l.occupant&&Math.abs(l.x-this.x)<120);
+    this.catwalk=false;this.catwalkSide=0;this.catwalkRestT=0;
+    if(!lamp){this.fallFromCatwalk();return false;}
+    this.lampRef=lamp;lamp.occupant=this;this.lampGoal=null;
+    this.state='lamp_hang';this.st=0;this.lampClimb=0;this.lampAction='climb';
+    this.lampStamina=rnd(2.8,3.5);this.lampDiveAt=Infinity;this.lampBreakAt=Infinity;
+    this.lampGrabGap=40;this.lampGrabSide=0;this.vx=0;this.vy=0;
+    // Descend: climbing down is the inverse of the climb, so start low.
+    this.lampClimb=1;Snd.whoosh();return true;
+  }
+  // Falling off the suspended walkway: severity scales with the drop. A hard
+  // impact can break the neck (instant KO); otherwise a ragdoll KO for 4-7s.
+  fallFromCatwalk(){
+    this.catwalk=false;this.catwalkSide=0;this.lampClimb=0;this.clearLamp();
+    this.state='air';this.dive=false;this.y=.5;this.vy=0;
+    const drop=Game.catwalkFighterY();
+    const sev=clamp(drop/380,0,1);
+    const lethal=Math.random()<sev*.5;
+    if(lethal){
+      this.hp=0;this.fallDamage={amount:100,source:null,severe:true,lethal:true};
+      Game.ko(this,null,{noStagger:true,preserveRagdoll:true,launch:false});
+      Snd.thud();return;
+    }
+    const dmg=Math.round(18+sev*22);
+    this.fallDamage={amount:dmg,source:null,severe:sev>.6};
+    this.hp=Math.max(0,this.hp-dmg);
+    this.toRagdoll(this.vx*.3,260);
+    if(this.rag)this.rag.stunScale=1.6;
+    if(this.hp<=0)Game.ko(this,null,{noStagger:true});
+    else Snd.thud();
   }
   startLampPull(v){
     if(this.state!=='idle'||this.hp<=0||this.y>5||!v||!Game.fighters.includes(v)||
@@ -1736,48 +1778,26 @@ class Fighter{
     v.grappleBy=this;v.state='pinned';v.st=0;v.y=0;v.vy=0;v.vx=0;v.hoverY=0;
     this.state='ground_pin';this.st=0;this.vx=0;this.y=0;this.vy=0;this.hoverY=0;
     this.x=clamp(v.x-this.dir*45,this.minX+35,this.maxX-35);
-    this.pinChoke=this.chokeCD<=0&&Math.random()<.65;this.pinChokeAt=rnd(.7,1.15);
+    this.pinHoldAt=rnd(1.1,1.7);
     Snd.thud();if(this.fx)this.fx.landing(this.x,this.gy,.45);return true;
   }
-  startGroundChoke(){
-    const v=this.grappleTarget;
-    if(this.state!=='ground_pin'||this.chokeCD>0||!v||v.grappleBy!==this||v.state!=='pinned')return false;
-    this.state='ground_choke';this.st=0;this.chokeCD=rnd(5,7);this.chokeCooldownPending=true;
-    this.chokeDuration=rnd(2.2,2.9);
-    // The ground hold keeps the old escape/release odds but cannot produce a throw.
-    this.chokeCounterAt=Math.random()<.33?rnd(.55,1.05):Infinity;
-    this.chokeReleaseAt=Math.random()<.12?rnd(.8,1.55):Infinity;
-    return true;
-  }
   startLift(v,style){
-    if(this.state!=='idle'||this.y>5||this.grappleCD>0||!this.canGrapple(v)||
-       Math.abs(v.x-this.x)>78||(this.bleed&&this.bleed.pressing))return false;
-    this.dir=v.x>=this.x?1:-1;this.state='lift_hold';this.st=0;this.vx=0;this.hlBrake=0;
-    this.grappleTarget=v;this.grappleCD=rnd(8,12);
-    this.liftStyle=['carry','press','throw'].includes(style)?style:
-      (Math.random()<.34?'throw':Math.random()<.5?'press':'carry');
-    this.liftStamina=rnd(2.5,3.5);this.liftHeight=0;
-    this.liftMove=Math.random()<.5?this.dir:-this.dir;
-    this.liftJumpAt=this.liftStyle==='throw'?rnd(1.2,1.8):Infinity;
-    v.pinBase=cloneRig(v.rig);v.breakChoke();v.boxing=false;v.lz=null;
-    v.grappleBy=this;v.state='lifted';v.st=0;v.vx=0;v.vy=0;v.y=0;v.hoverY=0;
-    Snd.whoosh();return true;
+    // Lift-to-chest ("за пазуху") grab removed per request; kept as a no-op so any
+    // stray call is harmless and existing call sites do not need guards.
+    return false;
   }
   releaseGrapple(reason='interrupt'){
     const v=this.grappleTarget,linked=!!v&&v.grappleBy===this,old=this.state;
     this.grappleTarget=null;
-    if(old==='ground_choke')this.finishChokeCooldown();
     if(linked)v.grappleBy=null;
-    if(['takedown','ground_pin','ground_choke','lift_hold','lift_jump'].includes(old)){
-      this.state=old==='lift_jump'&&this.y>0?'air':'idle';this.st=0;this.vx=old==='lift_jump'?this.vx*.5:0;this.comboT=9;
+    if(['takedown','ground_pin'].includes(old)){
+      this.state='idle';this.st=0;this.vx=0;this.comboT=9;
     }
-    if(linked&&(v.state==='pinned'||v.state==='lifted')){
-      const pinned=v.state==='pinned',thrown=!pinned&&old==='lift_jump'&&reason==='throw';
+    if(linked&&v.state==='pinned'){
       v.pinBase=null;v.fastGetup=false;
       // Releasing a ground pin never throws: the victim is already lying down.
-      v.toRagdoll(thrown?this.dir*210:0,thrown?460:0,!thrown);
-      if(thrown)v.fallDamage={amount:12,source:this,severe:true};
-      if(pinned&&reason==='complete'&&v.rag){v.rag.stunScale=1.5;v.dizzyAlpha=1;}
+      v.toRagdoll(0,0,true);
+      if(reason==='complete'&&v.rag){v.rag.stunScale=1.5;v.dizzyAlpha=1;}
     }
   }
   breakGrapple(){
@@ -2168,7 +2188,12 @@ class Fighter{
   update(dt,targetOpp,allFighters){
     this.t+=dt;this.st+=dt;const c=this.ctrl;
     const isHL=this.skin==='homelander';
-    if(!targetOpp&&this.hp>0&&this.state==='idle')this.calmT+=dt;else this.calmT=0;
+    if(this.hp>0&&this.state==='idle'){
+      // Relax once no opponent is nearby: either none left, or the nearest one
+      // is far enough away that the fighter can straighten and unwind.
+      const near=targetOpp&&Math.abs(targetOpp.x-this.x)<300&&targetOpp.hp>0;
+      this.calmT=near?0:this.calmT+dt;
+    }else this.calmT=0;
     this.lagHp=Math.max(this.hp,this.lagHp-dt*28);
     this.dashCD=Math.max(0,this.dashCD-dt);
     this.boxCD=Math.max(0,this.boxCD-dt);this.guardCD=Math.max(0,this.guardCD-dt);this.shoveCD=Math.max(0,this.shoveCD-dt);
@@ -2185,7 +2210,7 @@ class Fighter{
     for(const b of this.bloodStains)b.age+=dt;
     this.updateBleeding(dt);
     if(this.lz&&!(this.state==='attack'&&this.atk&&this.atk.laser))this.lz=null;
-    if(this.state!=='ragdoll'&&this.state!=='spawn'&&this.state!=='lamp_hang'&&this.state!=='lifted'&&(this.y>0||this.vy>0)){
+    if(this.state!=='ragdoll'&&this.state!=='spawn'&&this.state!=='lamp_hang'&&this.state!=='catwalk'&&(this.y>0||this.vy>0)){
       this.vy-=2200*dt;this.y+=this.vy*dt;
       if(this.y<=0){const im=-this.vy;this.y=0;this.vy=0;this.onLand(im);}
     }
@@ -2207,7 +2232,7 @@ class Fighter{
       this.faceOpp(targetOpp);
       const mv=c.mx;
       if(c.run&&mv&&!c.hop){this.dir=mv>0?1:-1;this.hlBrake=0;this.state='run';this.st=0;break;}
-      const toward=mv*this.dir,spd=mv?(this.crouchActive?70:(toward>0?235:185)):0;
+      const toward=mv*this.dir,spd=mv?(this.slowWalk?SLOW_WALK_SPD:(this.crouchActive?70:(toward>0?235:185))):0;
       const tgtVx=mv*spd*this.speedMul();
       if(isHL&&this.hlBrake>0){
         this.hlBrake=Math.max(0,this.hlBrake-dt/.34);
@@ -2220,6 +2245,11 @@ class Fighter{
         this.walkPh+=(this.vx*this.dir>=0?1:-1)*Math.abs(this.vx)*dt*.08;
         const sg=Math.sin(this.walkPh)>0?1:-1;
         if(sg!==this.lastSign){this.lastSign=sg;if(Math.abs(this.vx)>120&&this.fx)this.fx.step(this.x-this.dir*10,this.gy,this.dir*(this.vx*this.dir>=0?1:-1));}
+      }else if(!isHL&&this.slowWalk){
+        // Keep the legs striding slowly even when momentarily pressed against a wall.
+        this.walkPh+=this.dir*dt*SLOW_WALK_PH;
+        const sg=Math.sin(this.walkPh)>0?1:-1;
+        if(sg!==this.lastSign){this.lastSign=sg;if(this.fx)this.fx.step(this.x-this.dir*10,this.gy,this.dir);}
       }
       if(c.hop){this.startHop();}
       else if(c.jump){ if(mv&&this.dashCD<=0)this.startDash(toward>0?1:-1); else if(!mv)this.startJump(); }
@@ -2315,6 +2345,27 @@ class Fighter{
       }
       if(this.st>=LAMP_PULL_DUR){this.state='idle';this.st=0;this.lampPullTarget=null;}
       break;}
+     case 'catwalk':{
+      // Standing on the suspended ceiling walkway: walk, rest, or climb down
+      // the rope. Walking off the edge means a long fall.
+      const cwY=Game.catwalkFighterY();
+      this.y=cwY;this.hoverY=0;
+      if(c.mx){
+        this.dir=c.mx>0?1:-1;
+        const tgt=this.dir*SLOW_WALK_SPD*.8*this.speedMul();
+        this.vx+=clamp(tgt-this.vx,-RUN_ACC*dt,RUN_ACC*dt);
+        this.walkPh+=this.dir*dt*SLOW_WALK_PH*1.4;
+        this.x=clamp(this.x+this.vx*dt,this.minX+30,this.maxX-30);
+      }else this.vx*=Math.exp(-dt*10);
+      this.catwalkRestT-=dt;
+      // Carefully descend: drop back down the rope when the player chooses
+      // (via a rest cycle) or the AI decides to come down.
+      if(this.st>=this.catwalkDescentAt){
+        this.descendLamp();break;
+      }
+      // Walked off the walkway edge -> fall.
+      if(this.x<this.minX+30||this.x>this.maxX-30){this.fallFromCatwalk();break;}
+      break;}
      case 'dash':{
       const k=1-this.st/this.dashT*.5;this.vx=this.dashW*(this.dashF?840:620)*k;
       this.dashDust-=dt;if(this.dashDust<=0&&this.fx){this.dashDust=.035;this.fx.dash(this.x,isHL?this.gy-22:this.gy,this.dashW);}
@@ -2388,66 +2439,20 @@ class Fighter{
       this.vx=clamp((v.x-this.x-this.dir*45)*6,-145,145);
       if(this.st>=TAKEDOWN_IMPACT&&!this.establishPin(v))this.releaseGrapple();
       break;}
-     case 'ground_pin':
-     case 'ground_choke':{
+     case 'ground_pin':{
       const v=this.grappleTarget;
       if(this.hp<=0||!v||!allFighters.includes(v)||v.hp<=0||v.grappleBy!==this||v.state!=='pinned'){
         this.releaseGrapple();break;
       }
       this.vx=0;
-      if(this.state==='ground_pin'){
-        if(this.st>=this.pinChokeAt){
-          if(!this.pinChoke||!this.startGroundChoke())this.releaseGrapple();
-        }
-      }else{
-        if(this.st>=this.chokeCounterAt||this.st>=this.chokeReleaseAt){this.releaseGrapple();break;}
-        v.hp=Math.max(0,v.hp-CHOKE_DPS*dt);
-        if(v.hp<=0){Game.ko(v,this,{pw:.55,noStagger:true});break;}
-        if(this.st>=this.chokeDuration){this.releaseGrapple('complete');Snd.thud();}
-      }
+      if(this.st>=this.pinHoldAt){this.releaseGrapple();break;}
       break;}
      case 'pinned':{
       const h=this.grappleBy;
-      if(!h||!allFighters.includes(h)||h.hp<=0||h.grappleTarget!==this||
-         !['ground_pin','ground_choke'].includes(h.state)){
+      if(!h||!allFighters.includes(h)||h.hp<=0||h.grappleTarget!==this||h.state!=='ground_pin'){
         this.breakGrapple();if(this.state==='pinned')this.toRagdoll(0,0,true);break;
       }
       this.dir=-h.dir;this.x=clamp(h.x-h.dir*10,this.minX,this.maxX);this.y=0;this.vx=0;this.vy=0;this.hoverY=0;
-      break;}
-     case 'lift_hold':
-     case 'lift_jump':{
-      const v=this.grappleTarget;
-      if(this.hp<=0||!v||!allFighters.includes(v)||v.hp<=0||v.grappleBy!==this||v.state!=='lifted'){
-        this.releaseGrapple();break;
-      }
-      this.liftStamina-=dt;
-      if(this.state==='lift_hold'){
-        const rise=ease(clamp(this.st/.85,0,1));
-        const press=this.liftStyle==='press'&&this.st>.85?18*(.5-.5*Math.cos((this.st-.85)*4)):0;
-        this.liftHeight=rise*(46+press);
-        const weight=clamp(wstat(this.skin).weight/wstat(v.skin).weight,.55,1.1);
-        this.vx=this.liftMove*42*weight*rise;this.walkPh+=this.vx*this.dir*dt*.1;
-        if((this.x<this.minX+75&&this.vx<0)||(this.x>this.maxX-75&&this.vx>0))this.liftMove*=-1;
-        if(this.st>=this.liftJumpAt){
-          this.state='lift_jump';this.st=0;this.y=.5;this.vy=570;this.vx=this.dir*65;Snd.hop();
-        }else if(this.liftStamina<=0)this.releaseGrapple('escape');
-      }else{
-        this.vx*=Math.exp(-dt*.7);
-        if(this.st>=.24){
-          // Sync the lifted pose before releasing into independent ragdoll physics.
-          v.x=clamp(this.x+this.dir*46,v.minX,v.maxX);v.y=this.y+this.liftHeight;v.buildRig(0);
-          this.releaseGrapple('throw');Snd.whoosh();
-        }
-      }
-      break;}
-     case 'lifted':{
-      const h=this.grappleBy;
-      if(!h||!allFighters.includes(h)||h.hp<=0||h.grappleTarget!==this||
-         !['lift_hold','lift_jump'].includes(h.state)){
-        this.breakGrapple();if(this.state==='lifted')this.toRagdoll(0,0,true);break;
-      }
-      this.dir=-h.dir;this.x=clamp(h.x+h.dir*46,this.minX,this.maxX);
-      this.y=h.y+h.liftHeight;this.vx=0;this.vy=0;this.hoverY=0;
       break;}
      case 'choke':{
       const v=this.chokeTarget;
@@ -2546,11 +2551,8 @@ class Fighter{
     }
     if(this.state!=='ragdoll'){
       this.x+=this.vx*dt;
-      const carrying=this.state==='lift_hold'||this.state==='lift_jump';
-      const min=this.state==='choke'&&this.dir<0?this.minX+CHOKE_OFFSET:
-        carrying&&this.dir<0?this.minX+46:this.minX;
-      const max=this.state==='choke'&&this.dir>0?this.maxX-CHOKE_OFFSET:
-        carrying&&this.dir>0?this.maxX-46:this.maxX;
+      const min=this.state==='choke'&&this.dir<0?this.minX+CHOKE_OFFSET:this.minX;
+      const max=this.state==='choke'&&this.dir>0?this.maxX-CHOKE_OFFSET:this.maxX;
       this.x=clamp(this.x,min,max);
     }
     c.jump=c.punch=false;
@@ -2559,7 +2561,7 @@ class Fighter{
       this.hoverY=0;
     }else if(this.state==='spawn'){
       this.hoverY=this.sp<3?0:HL_HOVER*ease(clamp(1-this.spT/.45,0,1));
-    }else if(['stagger_fall','push_stagger','shove','lamp_jump','lamp_hang','lamp_pull','takedown','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted','bleed_collapse'].includes(this.state)){
+    }else if(['stagger_fall','push_stagger','shove','lamp_jump','lamp_hang','lamp_pull','catwalk','takedown','ground_pin','pinned','bleed_collapse'].includes(this.state)){
       this.hoverY=0;
     }else if(this.state==='getup'){
       if(this.st<1.76){this.hoverY=0;}
@@ -2658,6 +2660,16 @@ class Fighter{
       return p;}
      case 'lamp_pull':{
       const p=Object.assign({},LAMP_PULL);p.tl-=ease(clamp(this.st/LAMP_PULL_DUR,0,1))*14;return p;}
+     case 'catwalk':{
+      // Standing or strolling along the suspended walkway, hands relaxed.
+      const p=Object.assign({},D);
+      const w=clamp(Math.abs(this.vx)/SLOW_WALK_SPD,0,1),ph=this.walkPh;
+      const step=Math.sin(ph);
+      p.f1x=lerp(20,20+step*16,w);p.f2x=lerp(-20,-20-step*16,w);
+      p.f1h=Math.max(0,-step)*14*w;p.f2h=Math.max(0,step)*14*w;
+      p.a1=52+Math.sin(t*1.2)*2;p.a2=52+Math.sin(t*1.2+1)*2;p.e1=106;p.e2=106;
+      p.H+=Math.sin(ph)*2*w;p.tl+=Math.sin(t*1.4)*.4;
+      return p;}
      case 'stagger_fall':
      case 'push_stagger':{
       const u=clamp(this.st/this.staggerDur,0,1),step=Math.sin(this.st*19);
@@ -2671,24 +2683,10 @@ class Fighter{
         f1x:34,f2x:-25,mo:.45,bg:0});
       p.f1x+=Math.sin(this.st*18)*8;p.f2x-=Math.sin(this.st*18)*8;return p;}
      case 'ground_pin':return P({H:25,tl:56,hd:25,px:3,a1:100,e1:0,a2:100,e2:0,f1x:22,f2x:3,mo:.35,bg:0});
-     case 'ground_choke':{
-      const squat=P({H:25,tl:56,hd:25,px:3,a1:100,e1:0,a2:100,e2:0,f1x:22,f2x:3,mo:.35,bg:0});
-      const press=P({H:37,tl:48,hd:20,px:3,a1:100,e1:0,a2:100,e2:0,f1x:26,f2x:5,mo:.55,bg:0});
-      return mix(squat,press,ease(clamp(this.st/.4,0,1)));}
      case 'pinned':{
       const p=P(LY),step=Math.sin(this.st*8);
       p.f1x+=step*5;p.f2x-=step*4;p.f1h=2+Math.max(0,step)*5;p.f2h=2+Math.max(0,-step)*4;
       p.mo=.8;return p;}
-     case 'lift_hold':
-     case 'lift_jump':{
-      const p=P({H:79,tl:-4,hd:-3,px:-4,f1x:24,f2x:-24,mo:.6,bg:0});
-      const step=Math.sin(this.walkPh)*clamp(Math.abs(this.vx)/45,0,1);
-      p.f1x+=step*11;p.f2x-=step*11;p.f1h=Math.max(0,step)*6;p.f2h=Math.max(0,-step)*6;
-      return p;}
-     case 'lifted':{
-      const step=Math.sin(this.st*9),tuck=.5+.5*Math.sin(this.st*3.4);
-      return P({H:80,tl:-8,hd:-7,px:-2,f1x:22+step*13,f1h:12+tuck*25,
-        f2x:-10-step*11,f2h:10+tuck*20,mo:.8,ey:.25,bg:0});}
      case 'guard':{
       const p=Object.assign({},GUARD_POSE),w=clamp(Math.abs(this.vx)/48,0,1),step=Math.sin(this.walkPh)*w;
       p.f1x+=step*12;p.f2x-=step*12;p.f1h=Math.max(0,step)*7;p.f2h=Math.max(0,-step)*7;
@@ -2784,10 +2782,21 @@ class Fighter{
       return p;
     }
     const p=Object.assign({},D),sp=Math.abs(this.vx),w=clamp(sp/140,0,1),b=t*5.6+this.seed;
-    if(this.calmT>2.8&&sp<12){
-      p.a1=54+Math.sin(t*1.2)*2;p.a2=54+Math.sin(t*1.2+1)*2;p.e1=105;p.e2=105;p.tl+=Math.sin(t*1.4)*.5;p.H-=1.5;p.hd+=Math.sin(t*.8)*1.2;
-      p.gx=50;p.gy=22;p.bt=150;
-      return p;
+    const relaxed=this.calmT>2.8;
+    if(relaxed){
+      // Post-fight unwind: straighten the spine, drop both fists, breathe. Every
+      // few seconds cycle into a seated rest, then back to a relaxed stand.
+      const breath=Math.sin(t*1.2),sit=Math.max(0,Math.sin(t*.34));
+      p.a1=52+breath*2;p.a2=52+Math.sin(t*1.2+1)*2;p.e1=106;p.e2=106;p.c1=0;p.c2=0;
+      p.tl=Math.sin(t*1.4)*.5-sit*2;p.H-=1.5+sit*14;p.hd+=Math.sin(t*.8)*1.2-sit*3;
+      p.gx=50;p.gy=22+sit*10;p.bt=150;
+      if(sp<14){
+        // Seated rest: bend the knees, drop the hips, hands resting on the legs.
+        p.f1x=18+sit*4;p.f2x=-18-sit*4;p.f1h=sit*22;p.f2h=sit*22;
+        return p;
+      }
+      // Relaxed stroll: keep the dropped fists, but fall through so the walk
+      // cycle below still animates the legs.
     }
     p.H+=Math.sin(b)*1.7*(1-w);p.tl+=Math.sin(b+1)*1.2*(1-w);p.a1+=Math.sin(b+.6)*3*(1-w);p.a2+=Math.sin(b+1.2)*3*(1-w);
     p.f1x+=Math.sin(t*2.8)*2*(1-w);p.f2x-=Math.sin(t*2.8)*2*(1-w);
@@ -2814,7 +2823,7 @@ class Fighter{
       this.x=clamp(this.rig.pel.x,this.minX,this.maxX);return;
     }
     const tp=this.targetPose();
-    const hard=['getup','spawn','counter_throw','lamp_hang','shove','pinned','lifted'].includes(this.state);
+    const hard=['getup','spawn','counter_throw','lamp_hang','shove','pinned'].includes(this.state);
     const k=hard?1:(this.state==='attack'||this.state==='hit')?1-Math.exp(-dt*45):1-Math.exp(-dt*24);
     this.cur=(this.cur&&!hard)?mix(this.cur,tp,k):Object.assign({},tp);
     const hasBat=this.skin==='negan'&&this.hp>0&&!this.batLost&&!stowsBat(this);
@@ -2826,15 +2835,13 @@ class Fighter{
     if(this.state==='choked')poseStruggleArms(R,this.st);
     if(this.state==='counter_throw')poseCounterGrip(R,this);
     if(this.state==='takedown')poseTakedownArms(R,this.grappleTarget);
-    if(this.state==='ground_pin'||this.state==='ground_choke')posePinArms(R,this.grappleTarget);
-    if(this.state==='lift_hold'||this.state==='lift_jump')poseLiftArms(R,this.grappleTarget);
+    if(this.state==='ground_pin')posePinArms(R,this.grappleTarget);
     if(this.state==='pinned')poseStruggleArms(R,this.st,true);
-    if(this.state==='lifted')poseLiftStruggle(R,this.grappleBy,this.st);
     if(this.bleed&&this.bleed.pressing){
       const p=surfacePoint(R,this.bleed.mark);
       if(p){aimArmWorld(R,this.bleed.arm,p.x,p.y);R['c'+this.bleed.arm]=0;R.bd=null;}
     }
-    if((this.state==='pinned'||this.state==='lifted')&&this.pinBase&&this.st<.35)
+    if(this.state==='pinned'&&this.pinBase&&this.st<.35)
       R=blendRig(this.pinBase,R,ease(clamp(this.st/.35,0,1)));
     if(this.state==='getup'&&this.blend>0&&this.blendFrom)R=blendRig(this.blendFrom,R,ease(1-this.blend/.3));
     this.rig=R;
@@ -2871,6 +2878,7 @@ class AutoCombat{
     this.rolled=false;this.intercept=false;this.afterHop=0;this.reactAction='hop';
     this.spaceCD=rnd(2,4);this.spaceDuration=0;this.grappleCheck=rnd(2,5);
     this.openingSeen=Object.create(null);this.openingTarget=null;
+    this.relaxDir=1;this.relaxPause=0;
   }
   setMode(m){this.mode=m;this.modeT=0;}
   planVault(f,body){
@@ -2902,10 +2910,10 @@ class AutoCombat{
       f.bleed.decision=rnd(2.2,4);
       if(Math.random()<.6)f.startPressure();
     }
-    if(['ragdoll','getup','stagger_fall','push_stagger','spawn','hit','run_hit_stop','pinned','lifted','bleed_collapse'].includes(st)){
+    if(['ragdoll','getup','stagger_fall','push_stagger','spawn','hit','run_hit_stop','pinned','bleed_collapse'].includes(st)){
       this.mode='engage';this.reactT=-1;this.reactAttacker=null;this.openingTarget=null;this.lampTarget=null;
       this.pendingShove=null;this.vaultTarget=null;this.downTarget=null;this.downDecided=false;
-      if(!['ragdoll','stagger_fall','push_stagger','pinned','lifted','bleed_collapse'].includes(st))f.faceOpp(o);
+      if(!['ragdoll','stagger_fall','push_stagger','pinned','bleed_collapse'].includes(st))f.faceOpp(o);
       return;
     }
     // Once airborne keep the running-jump momentum; interruption or landing
@@ -2946,9 +2954,37 @@ class AutoCombat{
       else o=all.filter(e=>e!==f&&e.hp<=0&&!this.handledCorpses.has(e)&&
         Math.abs(e.x-f.x)<350&&safeToVault(e,0)).sort((a,b)=>Math.abs(a.x-f.x)-Math.abs(b.x-f.x))[0]||null;
     }
-    if(!o){this.mode='engage';this.openingTarget=null;this.lampTarget=null;this.downTarget=null;this.downDecided=false;return;}
+    if(!o){
+      this.mode='relax';this.openingTarget=null;this.lampTarget=null;this.downTarget=null;this.downDecided=false;
+      // No opponent nearby: unwind. Occasionally stroll slowly in one direction,
+      // turn around at the arena bounds, and otherwise stand/sit in the relax pose.
+      if(st==='idle'){
+        if(this.modeT>rnd(1.6,3.2)){
+          this.modeT=0;
+          this.relaxDir=Math.random()<.5?1:-1;
+          this.relaxPause=rnd(.6,1.6);
+        }
+        if(this.relaxPause>0){this.relaxPause-=dt;}
+        else{
+          const room=this.relaxDir>0?f.maxX-f.x:f.x-f.minX;
+          if(room>60){c.mx=this.relaxDir;f.dir=this.relaxDir;f.slowWalk=true;}
+          else{c.mx=0;f.slowWalk=false;this.relaxDir*=-1;}
+        }
+      }
+      return;
+    }
+    // Follow a climber up to the ceiling walkway when the way is clear. Checked
+    // before the ground engage logic so an adjacent opponent does not preempt it.
+    if(this.lampCheck<=0&&f.y<=5&&st==='idle'){
+      const leader=all.find(e=>e!==f&&e.hp>0&&(e.catwalk||(e.state==='lamp_hang'&&e.lampAction==='climb')));
+      if(leader&&Math.random()<.5){
+        const lamp=Game.lamps.filter(l=>!l.detached&&!l.occupant&&Math.abs(l.x-f.x)<220)
+          .sort((a,b)=>Math.abs(a.x-f.x)-Math.abs(b.x-f.x))[0];
+        if(lamp){this.lampTarget=lamp;this.lampCheck=rnd(25,45);this.setMode('catwalk_chase');return;}
+      }
+    }
     const dx=o.x-f.x,dist=Math.abs(dx),toward=dx>=0?1:-1;
-    if(['guard','guard_recoil','shove','overextend','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','takedown','ground_pin','ground_choke','lift_hold','lift_jump'].includes(st)){
+    if(['guard','guard_recoil','shove','overextend','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','catwalk','takedown','ground_pin'].includes(st)){
       c.noFace=true;return;
     }
     // Decide once per missed swing, not on every frame. A defender can finish
@@ -3025,21 +3061,31 @@ class AutoCombat{
       if(dist<180)c.mx=-toward;
       return;
     }
-    if(this.mode==='low_approach'||this.mode==='lift_approach'){
-      const low=this.mode==='low_approach';
+    if(this.mode==='low_approach'){
       if(st!=='idle'||oppDown||this.modeT>2.5||dist>190||!f.canGrapple(o)){
         this.setMode('engage');return;
       }
-      c.noFace=true;f.dir=toward;c.crouch=low;
-      if(low){
-        if(dist<=TAKEDOWN_REACH-6&&f.crouchActive&&f.crouchTime>=.07&&f.startTakedown(o)){
-          this.setMode('engage');return;
-        }
-        if(dist>75)c.mx=toward;
-      }else{
-        if(dist<=76&&f.startLift(o)){this.setMode('engage');return;}
-        c.mx=toward;
+      c.noFace=true;f.dir=toward;c.crouch=true;
+      if(dist<=TAKEDOWN_REACH-6&&f.crouchActive&&f.crouchTime>=.07&&f.startTakedown(o)){
+        this.setMode('engage');return;
       }
+      if(dist>75)c.mx=toward;
+      return;
+    }
+    if(this.mode==='catwalk_chase'){
+      // Some opponents follow a climber up: approach a free lamp, jump it, and
+      // pull up the rope to the walkway when nobody is blocking the way.
+      const lamp=this.lampTarget;
+      const leader=all.find(e=>e!==f&&e.hp>0&&(e.catwalk||(e.state==='lamp_hang'&&e.lampAction==='climb')));
+      if(!leader||this.modeT>5){this.lampTarget=null;this.setMode('engage');return;}
+      if(!lamp||!Game.lamps.includes(lamp)||lamp.detached||lamp.occupant||oppDown){
+        this.lampTarget=null;this.setMode('engage');return;
+      }
+      if(st==='lamp_hang'){if(f.startLampClimb())return;this.setMode('engage');return;}
+      if(st!=='idle')return;
+      const d=lamp.x-f.x;
+      if(Math.abs(d)>22){c.mx=d>0?1:-1;return;}
+      if(f.startLampJump(lamp)){this.lampTarget=null;this.setMode('engage');}
       return;
     }
     if(this.mode==='lamp_approach'){
@@ -3141,8 +3187,7 @@ class AutoCombat{
       this.grappleCheck=rnd(3,5.5);
       if(f.grappleCD<=0&&dist<150&&f.y<=5&&!(f.bleed&&f.bleed.pressing)&&f.canGrapple(o)){
         const roll=Math.random();
-        if(roll<.25){this.setMode('low_approach');c.crouch=true;return;}
-        if(roll<.34){this.setMode('lift_approach');return;}
+        if(roll<.34){this.setMode('low_approach');c.crouch=true;return;}
       }
     }
     // Break up stationary exchanges: sometimes step or hop away and keep a
@@ -3273,6 +3318,32 @@ function drawLamp(g,lamp){
   if(!lamp.detached){g.fillStyle='#fff1c5';g.fillRect(-9,18,18,3);}
   g.restore();
 }
+// The suspended ceiling walkway: a gray metal catwalk hung from the ceiling by
+// cables, with the lamp ropes rising into it. Drawn on the pixel lamp layer so
+// it stays crisp; only appears once someone has climbed up to it.
+function drawCatwalk(g,W,gy,revealed,alpha){
+  if(!revealed)return;
+  const cy=CATWALK_SY;
+  g.save();
+  g.globalAlpha=alpha;
+  // support cables from the ceiling down to the walkway ends
+  g.strokeStyle='#2a2a30';g.lineWidth=3;g.lineCap='round';
+  for(const x of [40,W/2-90,W/2+90,W-40]){
+    g.beginPath();g.moveTo(x,-20);g.lineTo(x,cy);g.stroke();
+  }
+  // the metal deck: a thick gray beam with a darker underside and lit top edge
+  g.fillStyle='#1c1c22';g.fillRect(0,cy+7,W,10);
+  g.fillStyle='#3a3a42';g.fillRect(0,cy,W,8);
+  g.fillStyle='#56565f';g.fillRect(0,cy,W,2);
+  g.fillStyle='rgba(180,185,195,.12)';g.fillRect(0,cy+2,W,1);
+  // rivet row along the deck
+  g.fillStyle='#26262c';
+  for(let x=24;x<W;x+=48)g.fillRect(x,cy+3,3,3);
+  // a faint safety rail on the near side
+  g.strokeStyle='rgba(90,90,98,.5)';g.lineWidth=2;
+  g.beginPath();g.moveTo(0,cy-8);g.lineTo(W,cy-8);g.stroke();
+  g.restore();
+}
 /* ============================ BACKGROUND ============================ */
 function makeBG(W,H,gy,S){
   const c=document.createElement('canvas');const px=S/BODY_PIXEL;c.width=Math.ceil(W*px);c.height=Math.ceil(H*px);const x=c.getContext('2d');x.imageSmoothingEnabled=false;x.scale(px,px);
@@ -3401,6 +3472,8 @@ const Game={
   autoSpawn:true,shiftCrouch:false,
   respawnTimer:0,
   koCount:0,
+  catwalkRevealed:false,
+  panActive:false,panDx:0,panDy:0,
   fx:null,
   init(){
     this.cv=document.querySelector('#gameCv');
@@ -3408,6 +3481,7 @@ const Game={
     this.ctx.imageSmoothingEnabled=false;
     this.fighters=[];this.droppedBats=[];this.lamps=[];this.detachedLamps=0;
     this.koCount=0;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;this.respawnTimer=0;this.autoSpawn=true;this.shiftCrouch=false;
+    this.catwalkRevealed=false;this.panActive=false;this.panDx=0;this.panDy=0;
     this.camera={x:this.W/2,y:270,zoom:1,vignette:0};
     skinCursor=0;
     this.fx=new FX();
@@ -3499,10 +3573,29 @@ const Game={
     this.spawnFighter(this.W*.32,1,.08);
     this.spawnFighter(this.W*.68,-1,.32);
   },
+  catwalkFighterY(){return this.gy-CATWALK_SY;},
   updateCamera(dt){
     const c=this.camera;if(!c)return;
     const k=1-Math.exp(-dt*3);
-    c.zoom+=(1-c.zoom)*k;c.x+=(this.W/2-c.x)*k;c.y+=(this.H/2-c.y)*k;
+    c.zoom+=(1-c.zoom)*k;
+    // The highest rope-climber (or anyone on the catwalk) raises the camera
+    // ceiling so the suspended walkway comes into view.
+    let climb=0;
+    for(const f of this.fighters){
+      if(f.hp<=0)continue;
+      const h=f.catwalk?1:f.lampClimb;
+      if(h>climb)climb=h;
+    }
+    if(climb>.05)this.catwalkRevealed=true;
+    const baseY=this.H/2;
+    const riseY=CATWALK_SY+this.H*.22;
+    let ty=lerp(baseY,riseY,clamp(climb,0,1));
+    // Right-click pan: the camera drifts toward the held mouse offset, and
+    // gently returns when the drag ends.
+    if(!this.panActive){this.panDx*=Math.exp(-dt*1.8);this.panDy*=Math.exp(-dt*1.8);}
+    if(this.panActive){ty+=this.panDy;}
+    c.y+=(ty-c.y)*k;
+    c.x+=(this.W/2-c.x)*k+(this.panActive?this.panDx:0)*k;
   },
   screenToWorldX(x){
     const c=this.camera;return c?(x-this.W/2)/c.zoom+c.x:x;
@@ -3543,7 +3636,7 @@ const Game={
     if(a.pw>.6)Snd.splat(a.pw);
   },
   ko(v,att,a){
-    a=a||{};
+    a=a||{};att=att||{dir:1,x:v.x};
     const delayed=!a.bleedOut&&!a.noStagger&&!a.preserveRagdoll&&!a.keepRag&&
       (a.launch||a.pw>=.4)&&v.canStagger(att)&&Math.random()<STAGGER_KO_CHANCE;
     v.breakGrapple();v.breakChoke();v.boxing=false;v.shoveTarget=null;v.hp=0;
@@ -3621,24 +3714,28 @@ const Game={
     for(const lamp of this.lamps)lamp.update(dt,this);
     // Owners/throwers update before the restrained fighter, independent of
     // spawn order, then the holder's hands are aligned to the current neck.
-    const dependent=f=>['choked','counter_carried','pinned','lifted'].includes(f.state);
+    const dependent=f=>['choked','counter_carried','pinned'].includes(f.state);
     const order=[...this.fighters.filter(f=>!dependent(f)),...this.fighters.filter(dependent)];
     for(const f of order){
       const opp=f.hp>0?this.findBestOpponent(f):null;
       if(f.hp>0&&f===keyboardFighter){
-        // Shift is a temporary crouch command for the first living fighter;
-        // releasing it returns the fighter to the normal autonomous AI.
-        const c=f.ctrl;c.mx=0;c.jump=false;c.punch=false;c.run=false;c.hop=false;c.laser=false;c.noFace=false;c.crouch=true;
+        // Shift triggers a slow, leg-animated stroll for the first living fighter
+        // (not a crouch or a mere speed cap); releasing it returns to the AI.
+        const c=f.ctrl;f.slowWalk=true;
+        c.mx=f.dir;c.crouch=false;c.run=false;
+        c.jump=false;c.punch=false;c.hop=false;c.laser=false;c.noFace=false;
       }else if(f.hp>0){
+        f.slowWalk=false;
         f.autopilot.update(dt,f,opp,this.fighters);
       }else{
+        f.slowWalk=false;
         const c=f.ctrl;c.mx=0;c.jump=false;c.punch=false;c.run=false;c.hop=false;c.laser=false;c.noFace=false;c.crouch=false;
       }
       f.update(dt,opp,this.fighters);
     }
     for(const f of this.fighters){
       if(f.state==='choke'&&f.chokeTarget&&f.chokeTarget.rig)f.buildRig(0);
-      if(['takedown','ground_pin','ground_choke','lift_hold','lift_jump'].includes(f.state)&&f.grappleTarget&&f.grappleTarget.rig)f.buildRig(0);
+      if(['takedown','ground_pin'].includes(f.state)&&f.grappleTarget&&f.grappleTarget.rig)f.buildRig(0);
     }
     for(const b of this.droppedBats){
       if(b.settled){b.fade=Math.min(.14,b.fade+dt*.018);continue;}
@@ -3675,8 +3772,8 @@ const Game={
         const dx=B.x-A.x,m=54;
         if(Math.abs(dx)<m){
           const s=dx>=0?1:-1,push=(m-Math.abs(dx))/2;
-          const fixedA=['choke','choked','counter_throw','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted'].includes(A.state);
-          const fixedB=['choke','choked','counter_throw','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted'].includes(B.state);
+          const fixedA=['choke','choked','counter_throw','ground_pin','pinned'].includes(A.state);
+          const fixedB=['choke','choked','counter_throw','ground_pin','pinned'].includes(B.state);
           const ok1=!fixedA&&A.x-s*push>=A.minX&&A.x-s*push<=A.maxX;
           const ok2=!fixedB&&B.x+s*push>=B.minX&&B.x+s*push<=B.maxX;
           if(ok1&&ok2){A.x-=s*push;B.x+=s*push;}
@@ -3736,7 +3833,14 @@ const Game={
     ctx.drawImage(this.bg,0,0,W,H);
     clearPixelLayer(this.lampLayer);
     for(const lamp of this.lamps)drawLamp(this.lampLayer.ctx,lamp);
+    drawCatwalk(this.lampLayer.ctx,W,this.gy,this.catwalkRevealed,1);
     ctx.drawImage(this.lampLayer.canvas,0,0,W,H);
+    // Dimmer, cooler light once the ceiling walkway is in view.
+    if(this.catwalkRevealed){
+      ctx.save();ctx.globalCompositeOperation='multiply';
+      ctx.fillStyle='rgba(70,78,92,.34)';ctx.fillRect(0,0,W,H);
+      ctx.restore();
+    }
     ctx.drawImage(this.dc,0,0,W,H);
     // fading laser scorch marks on the floor / walls
     if(this.fx.marks.length){
@@ -3753,8 +3857,8 @@ const Game={
       ctx.drawImage(this.batLayer.canvas,0,0,W,H);
     }
 
-    const dependent=f=>['choked','counter_carried','lifted'].includes(f.state);
-    // A pinned body is below its kneeling opponent; a lifted body is in front
+    const dependent=f=>['choked','counter_carried'].includes(f.state);
+    // A pinned body is below its kneeling opponent; a choked body is in front
     // of its holder, whose gripping arm is painted once more over the top.
     const ordered=[...this.fighters.filter(f=>f.hp<=0),
       ...this.fighters.filter(f=>f.hp>0&&f.state==='pinned'),
@@ -3793,7 +3897,7 @@ const Game={
       paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,f));
       if(f.bleed&&f.bleed.pressing&&f.bleed.arm==='F')
         paintLayer(this.frontLayer,q=>drawPixelArm(q,f.rig,f,'F',true,SK_[f.skin]||SK_.jane));
-      if((f.state==='ground_pin'||f.state==='ground_choke')&&f.grappleTarget&&f.grappleTarget.rig){
+      if(f.state==='ground_pin'&&f.grappleTarget&&f.grappleTarget.rig){
         const victim=f.grappleTarget;
         paintLayer(this.frontLayer,q=>{
           drawPixelArm(q,victim.rig,victim,'F',true,SK_[victim.skin]||SK_.jane);
@@ -3810,9 +3914,6 @@ const Game={
       }else if(f.state==='counter_carried'&&f.chokeTarget&&f.chokeTarget.rig){
         const thrower=f.chokeTarget;
         paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,thrower),false);
-      }else if(f.state==='lifted'&&f.grappleBy&&f.grappleBy.rig){
-        const holder=f.grappleBy;
-        paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,holder),false);
       }
       ctx.restore();
     }
@@ -3868,8 +3969,33 @@ export function startGame(){
   const onCtx=e=>e.preventDefault();
   const onKeyDown=e=>{if(e.key==='Shift'&&!e.ctrlKey&&!e.altKey&&!e.metaKey)Game.shiftCrouch=true;};
   const onKeyUp=e=>{if(e.key==='Shift')Game.shiftCrouch=false;};
-  const onBlur=()=>{Game.shiftCrouch=false;};
+  const onBlur=()=>{Game.shiftCrouch=false;Game.panActive=false;};
+  // Right-click drag pans the camera across the (possibly raised) ceiling view.
+  let panLastX=0,panLastY=0;
+  const onMouseDown=e=>{
+    if(e.button!==2)return;
+    Game.panActive=true;
+    const rect=cv.getBoundingClientRect();
+    panLastX=(e.clientX-rect.left)/rect.width*Game.W;
+    panLastY=(e.clientY-rect.top)/rect.height*540;
+    e.preventDefault();
+  };
+  const onMouseMove=e=>{
+    if(!Game.panActive)return;
+    const rect=cv.getBoundingClientRect();
+    const sx=(e.clientX-rect.left)/rect.width*Game.W;
+    const sy=(e.clientY-rect.top)/rect.height*540;
+    const cam=Game.camera;
+    const z=cam&&cam.zoom?cam.zoom:1;
+    Game.panDx=clamp(Game.panDx+(sx-panLastX)/z,-Game.W*.4,Game.W*.4);
+    Game.panDy=clamp(Game.panDy+(sy-panLastY)/z,-260,260);
+    panLastX=sx;panLastY=sy;
+  };
+  const onMouseUp=e=>{if(e.button===2)Game.panActive=false;};
   cv.addEventListener('pointerdown',onDown);
+  cv.addEventListener('mousedown',onMouseDown);
+  addEventListener('mousemove',onMouseMove);
+  addEventListener('mouseup',onMouseUp);
   addEventListener('resize',onResize);
   addEventListener('keydown',onKeyDown);addEventListener('keyup',onKeyUp);addEventListener('blur',onBlur);
   document.addEventListener('contextmenu',onCtx);

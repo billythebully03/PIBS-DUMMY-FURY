@@ -1253,6 +1253,73 @@ test('lamp detachment is substantially rarer than grabbing', () => {
   assert.ok(breakRolls > 145 && breakRolls < 255, `expected roughly 2%, got ${breakRolls}/10000`);
 });
 
+test('a hanging fighter can climb the lamp rope onto the hidden ceiling walkway', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    const { f, lamp } = hangingPair();
+    assert.equal(Game.catwalkRevealed, false, 'the walkway is hidden before anyone climbs');
+    assert.equal(f.startLampClimb(), true);
+    assert.equal(f.lampAction, 'climb');
+    advanceUntil(() => f.state === 'catwalk', Math.ceil(2 / dt), dt);
+    assert.equal(f.catwalk, true);
+    assert.equal(Game.catwalkRevealed, true, 'climbing reveals the walkway');
+    assert.equal(f.lampRef, null, 'the rope is released once on the walkway');
+    assert.ok(Math.abs(f.y - Game.catwalkFighterY()) < 2, 'the fighter stands on the walkway');
+    assert.equal(lamp.occupant, null);
+    // Stroll along the walkway; the legs animate and the camera ceiling rises.
+    const x0 = f.x;
+    f.ctrl.mx = 1; f.dir = 1;
+    tick(.4, dt);
+    assert.ok(f.x > x0, 'the fighter walks along the walkway');
+    assert.ok(Math.abs(f.walkPh) > 0, 'legs animate on the walkway');
+    assert.ok(Game.camera.y < 270, 'the camera rises toward the walkway');
+    f.ctrl.mx = 0;
+    // Walking off the edge drops the fighter with fall damage.
+    f.x = f.maxX - 20;
+    const hp = f.hp;
+    f.fallFromCatwalk();
+    assert.notEqual(f.state, 'catwalk');
+    assert.ok(f.hp < hp || f.hp <= 0, 'falling from the walkway deals damage');
+  }
+});
+
+test('a fall from the walkway can be lethal or a short ragdoll KO, and NPCs can climb after', () => {
+  // Lethal severity: force a lethal roll and confirm an instant KO.
+  {
+    const { f } = hangingPair();
+    f.startLampClimb();
+    advanceUntil(() => f.state === 'catwalk', 120);
+    const random = Math.random;
+    try { Math.random = () => 0; f.fallFromCatwalk(); } finally { Math.random = random; }
+    assert.equal(f.hp, 0, 'a severe fall can break the neck');
+    assert.equal(Game.koCount >= 1, true);
+  }
+  // Non-lethal fall: survives and ragdolls for a while.
+  {
+    const { f } = hangingPair();
+    f.startLampClimb();
+    advanceUntil(() => f.state === 'catwalk', 120);
+    const random = Math.random;
+    try { Math.random = () => .99; f.fallFromCatwalk(); } finally { Math.random = random; }
+    assert.ok(f.hp > 0, 'a lighter fall leaves the fighter alive');
+    assert.equal(f.state, 'ragdoll');
+  }
+  // An NPC follows a climber up when the rope is free.
+  {
+    const { f, lamp } = hangingPair();
+    f.startLampClimb();
+    advanceUntil(() => f.state === 'catwalk', 120);
+    const chaser = fighter(lamp.x - 50, 1);
+    // Let the real AI run (do not disable it): the catwalk-chase decision must
+    // fire when a leader is on the walkway and a lamp rope is free.
+    const ai = chaser.autopilot;
+    ai.lampCheck = 0;
+    ai.attackWait = ai.farCD = ai.hopCD = 100;
+    const random = Math.random;
+    try { Math.random = () => 0; ai.update(1 / 60, chaser, f, Game.fighters); } finally { Math.random = random; }
+    assert.equal(ai.mode, 'catwalk_chase', 'an NPC decides to climb after the leader');
+  }
+});
+
 test('the previous get-up timing is restored for ordinary, stunned and fast knockdowns', () => {
   for (const scenario of [
     { t: .89, settle: .36, expected: 'ragdoll' },
@@ -1638,46 +1705,32 @@ function pinnedPair(options = {}) {
   assert.equal(pair.holder.startTakedown(pair.victim), true);
   advanceUntil(() => pair.holder.state === 'ground_pin', Math.ceil(1.2 / dt), dt);
   assert.equal(pair.victim.state, 'pinned');
-  pair.holder.pinChokeAt = 100;
+  pair.holder.pinHoldAt = 100;
   tick(.4, dt);
   return pair;
 }
-function liftedPair({ dir = 1, style = 'carry', skin = 'jane', victimSkin = 'walt', dt = 1 / 60, reverseOrder = false } = {}) {
-  let holder, victim;
-  if (reverseOrder) {
-    victim = fighter(440 + dir * 34, -dir, victimSkin);
-    holder = fighter(440 - dir * 34, dir, skin);
-  } else {
-    holder = fighter(440 - dir * 34, dir, skin);
-    victim = fighter(440 + dir * 34, -dir, victimSkin);
-  }
-  disableAI(holder, victim);
-  assert.equal(holder.startLift(victim, style), true);
-  return { holder, victim };
-}
-
-test('Shift commands the first living fighter to crouch, and Homelander lands before lowering', () => {
+test('Shift makes the first living fighter stroll slowly with an animated walk cycle', () => {
   for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
     Game.fighters = [];
-    const first = fighter(350, 1, 'homelander'), second = fighter(650, -1);
+    const first = fighter(350, 1), second = fighter(650, -1);
     disableAI(second);
-    first.hoverY = 19;
-    const standing = first.rig.pel.y;
+    const startX = first.x, startPh = first.walkPh;
     Game.shiftCrouch = true;
     Game.update(dt);
-    assert.equal(first.ctrl.crouch, true);
-    assert.equal(first.crouchActive, false, 'hovering Homelander does not squat in midair');
-    assert.ok(first.hoverY > .7);
-    advanceUntil(() => first.crouchActive, Math.ceil(.6 / dt), dt);
-    assert.ok(first.hoverY <= .7, 'his hover is at the floor before the crouch begins');
-    tick(.3, dt);
-    assert.ok(first.rig.pel.y > standing + 18, 'the crouch visibly lowers the hips');
-    assert.ok((first.rig.sh.x - first.rig.pel.x) * first.dir > 30, 'the torso leans forward');
+    assert.equal(first.slowWalk, true);
+    assert.equal(first.ctrl.crouch, false, 'Shift is a slow walk, not a crouch');
+    assert.equal(first.ctrl.mx, first.dir, 'the stroll moves in the facing direction');
     assert.equal(second.ctrl.crouch, false, 'only the first living fighter is controlled');
+    tick(.6, dt);
+    // Slow speed: far below a running sprint, but clearly moving.
+    assert.ok(Math.abs(first.vx) > 20 && Math.abs(first.vx) < 120, `slow stroll speed: ${Math.abs(first.vx)}`);
+    assert.ok(first.x > startX, 'the fighter advances while strolling');
+    // Legs keep striding: the walk phase advances (animated legs, not a static hold).
+    assert.ok(Math.abs(first.walkPh - startPh) > .2, 'the walk cycle animates the legs');
+    assert.equal(second.slowWalk, false, 'the other fighter is not strolling');
     Game.shiftCrouch = false;
-    first.autopilot.update = () => { first.ctrl.crouch = false; };
     tick(.2, dt);
-    assert.equal(first.crouchActive, false);
+    assert.equal(first.slowWalk, false, 'releasing Shift returns the fighter to the AI');
   }
 });
 
@@ -1757,7 +1810,7 @@ test('the takedown visibly grips both legs before bringing the opponent down', (
   }
 });
 
-test('a low takedown pins a struggling victim on the back and can choke without any throw', () => {
+test('a low takedown pins a struggling victim on the back and holds without choking or throwing', () => {
   for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) {
     Game.fighters = [];
     const { holder, victim } = pinnedPair({ dir, dt });
@@ -1772,93 +1825,36 @@ test('a low takedown pins a struggling victim on the back and can choke without 
     const pinHeadY = holder.rig.head.y, oldLeg = { ...victim.rig.aN };
     tick(.2, dt);
     assert.ok(distance(oldLeg, victim.rig.aN) > 1, 'the victim lightly moves their legs');
+    assert.ok(Math.abs(holder.rig.head.y - pinHeadY) < 12, 'the holder stays low, there is no choke rise');
     victim.ctrl.punch = true; victim.ctrl.jump = true;
     tick(.1, dt);
     assert.equal(victim.state, 'pinned'); assert.equal(victim.startAttack(0), false);
     assert.equal(holder.startLift(victim), false, 'no underarm throw can start from a pin');
-    assert.equal(holder.startGroundChoke(), true);
-    holder.chokeCounterAt = holder.chokeReleaseAt = Infinity; holder.chokeDuration = 2.4;
-    tick(.5, dt);
-    assert.ok(holder.rig.head.y < pinHeadY - 10, 'holder visibly straightens into the choke');
-    for (const side of ['N', 'F']) assert.ok(distance(holder.rig[`w${side}`], victim.rig.neck) < 10, 'both hands reach the neck');
-    const cooldown = holder.chokeCD;
-    holder.releaseGrapple('throw');
+    holder.pinHoldAt = .4;
+    advanceUntil(() => holder.state === 'idle', Math.ceil(1 / dt), dt);
     assert.equal(holder.grappleTarget, null); assert.equal(victim.grappleBy, null);
-    assert.equal(victim.state, 'ragdoll'); assert.equal(victim.fallDamage, null, 'ground choke cannot become a throw');
-    assert.ok(Math.abs(holder.chokeCD - cooldown * 2) < 1e-7, 'remaining choke cooldown is doubled once');
+    assert.equal(victim.state, 'ragdoll'); assert.equal(victim.fallDamage, null, 'a ground pin never becomes a throw');
   }
 });
 
-test('a completed ground choke has the old damage, duration, escape odds and longer stun', () => {
+test('a ground pin holds for its planned duration and then releases into a ragdoll', () => {
   for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
     Game.fighters = [];
     const { holder, victim } = pinnedPair({ dt });
-    assert.equal(holder.startGroundChoke(), true);
-    assert.ok(holder.chokeDuration >= 2.2 && holder.chokeDuration <= 2.9);
-    holder.chokeCounterAt = holder.chokeReleaseAt = Infinity;
-    holder.chokeDuration = 2.4;
-    advanceUntil(() => victim.state === 'ragdoll', Math.ceil(3.2 / dt), dt);
-    assert.equal(holder.state, 'idle'); assert.equal(victim.rag.stunScale, 1.5);
-    assert.ok(victim.hp > 94 && victim.hp < 96, `choke damage: ${100 - victim.hp}`);
-  }
-  for (const roll of [0, .99]) {
-    Game.fighters = []; const { holder } = pinnedPair();
-    const random = Math.random;
-    try { Math.random = () => roll; holder.startGroundChoke(); } finally { Math.random = random; }
-    assert.equal(Number.isFinite(holder.chokeCounterAt), roll === 0);
-    assert.equal(Number.isFinite(holder.chokeReleaseAt), roll === 0);
-    if (roll === 0) {
-      advanceUntil(() => holder.state === 'idle', 120);
-      assert.notEqual(holder.state, 'counter_carried', 'a ground escape is not a counterthrow');
-    }
+    holder.pinHoldAt = 1.4;
+    tick(.5, dt);
+    assert.equal(holder.state, 'ground_pin', 'the pin holds while within its duration');
+    assert.equal(victim.hp, 100, 'a plain ground pin deals no damage');
+    advanceUntil(() => victim.state === 'ragdoll', Math.ceil(2 / dt), dt);
+    assert.equal(holder.state, 'idle');
+    assert.equal(holder.grappleTarget, null); assert.equal(victim.grappleBy, null);
   }
 });
 
-test('the underarm lift carries a struggling opponent, raises or lowers them, and times out', () => {
-  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) for (const reverseOrder of [false, true]) {
-    Game.fighters = [];
-    const { holder, victim } = liftedPair({ dt, dir, style: 'press', reverseOrder, skin: 'negan', victimSkin: 'homelander' });
-    holder.liftStamina = 3.3;
-    tick(1, dt);
-    assert.equal(victim.state, 'lifted'); assert.ok(victim.y > 35);
-    for (const side of ['N', 'F']) assert.ok(distance(holder.rig[`w${side}`], victim.rig.sh) < 25, 'hands support the armpits');
-    assert.equal(victim.startAttack(0), false);
-    const y1 = victim.y, leg1 = { ...victim.rig.aN }, x1 = holder.x;
-    tick(.4, dt);
-    assert.ok(victim.y > y1 + 5, 'the holder presses the victim higher');
-    assert.ok(distance(leg1, victim.rig.aN) > 3, 'the victim kicks or tucks their legs');
-    assert.ok(Math.abs(holder.x - x1) > 3 && Math.abs(holder.vx) < 55, 'the load is carried slowly');
-    advanceUntil(() => victim.state === 'ragdoll', Math.ceil(3 / dt), dt);
-    assert.equal(victim.grappleBy, null); assert.equal(holder.grappleTarget, null);
-    assert.equal(victim.fallDamage, null, 'a tired release is not the jump throw');
-  }
-});
-
-test('a jumping underarm throw releases into ragdoll and damages on landing, with rare bleeding', () => {
-  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) {
-    Game.fighters = [];
-    const { holder, victim } = liftedPair({ dt, dir, style: 'throw' });
-    holder.liftJumpAt = 1.1; holder.liftStamina = 4;
-    advanceUntil(() => holder.state === 'lift_jump', Math.ceil(2 / dt), dt);
-    advanceUntil(() => victim.state === 'ragdoll', Math.ceil(1 / dt), dt);
-    assert.equal(victim.fallDamage?.amount, 12); assert.equal(victim.hp, 100);
-    const random = Math.random;
-    try {
-      Math.random = () => 0;
-      advanceUntil(() => victim.hp < 100, Math.ceil(4 / dt), dt);
-    } finally { Math.random = random; }
-    assert.equal(victim.hp, 88, 'only the landing causes the one-time impact damage');
-    assert.ok(victim.bleed, 'a rare severe landing can start a wound');
-    assert.equal(victim.fallDamage, null);
-  }
-});
-
-test('a third-party hit, laser, knockout or removal safely breaks either kind of hold', () => {
-  for (const kind of ['pin', 'lift']) for (const cause of ['hit-holder', 'hit-victim', 'laser', 'ko-holder', 'remove-holder', 'remove-victim']) {
+test('a third-party hit, laser, knockout or removal safely breaks the ground hold', () => {
+  for (const cause of ['hit-holder', 'hit-victim', 'laser', 'ko-holder', 'remove-holder', 'remove-victim']) {
     Game.fighters = []; Game.koCount = 0;
-    const pair = kind === 'pin' ? pinnedPair() : liftedPair({ style: 'carry' });
-    const { holder, victim } = pair;
-    if (kind === 'lift') tick(.8);
+    const { holder, victim } = pinnedPair();
     const other = fighter(190, 1, 'homelander'); disableAI(other);
     if (cause === 'hit-holder') holder.takeHit(other, punch);
     if (cause === 'hit-victim') victim.takeHit(other, punch);
@@ -1867,26 +1863,19 @@ test('a third-party hit, laser, knockout or removal safely breaks either kind of
     if (cause === 'remove-holder') Game.fighters = Game.fighters.filter(f => f !== holder);
     if (cause === 'remove-victim') Game.fighters = Game.fighters.filter(f => f !== victim);
     if (cause.startsWith('remove')) Game.update(1 / 60);
-    assert.equal(holder.grappleTarget, null, `${kind}/${cause}: holder link`);
-    assert.equal(victim.grappleBy, null, `${kind}/${cause}: victim link`);
-    assert.notEqual(victim.state, kind === 'pin' ? 'pinned' : 'lifted');
-    assert.equal(victim.fallDamage, null, 'an interruption does not make an underarm throw');
+    assert.equal(holder.grappleTarget, null, `${cause}: holder link`);
+    assert.equal(victim.grappleBy, null, `${cause}: victim link`);
+    assert.notEqual(victim.state, 'pinned');
+    assert.equal(victim.fallDamage, null, 'an interruption does not make a throw');
     if (cause === 'ko-holder') assert.equal(Game.koCount, 1);
   }
 });
 
-test('all five heroes can perform the pin and the lift in either direction with finite poses', () => {
+test('all five heroes can perform the pin in either direction with finite poses', () => {
   for (const skin of ['jane', 'negan', 'homelander', 'walt', 'saul']) for (const dir of [1, -1]) {
     Game.fighters = [];
-    let { holder, victim } = pinnedPair({ skin, victimSkin: skin, dir });
-    holder.startGroundChoke(); holder.chokeCounterAt = holder.chokeReleaseAt = Infinity;
+    const { holder, victim } = pinnedPair({ skin, victimSkin: skin, dir });
     tick(.5);
-    for (const fighter of [holder, victim]) for (const p of Object.values(fighter.rig))
-      if (p && typeof p === 'object' && 'x' in p) assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
-    Game.render(); holder.releaseGrapple();
-    Game.fighters = [];
-    ({ holder, victim } = liftedPair({ skin, victimSkin: skin, dir }));
-    tick(1);
     for (const fighter of [holder, victim]) for (const p of Object.values(fighter.rig))
       if (p && typeof p === 'object' && 'x' in p) assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
     Game.render(); holder.releaseGrapple();
@@ -1978,10 +1967,10 @@ test('blood loss weakens walking and running, ends in a slow collapse, and stops
 });
 
 test('unattended fights naturally use the new defenses and rare grapples without dangling links', () => {
-  const counts = { duck: 0, duckDodge: 0, space: 0, lowApproach: 0, liftApproach: 0, takedown: 0, pin: 0, groundChoke: 0,
-    lift: 0, carry: 0, press: 0, jumpThrow: 0, bleeding: 0, pressure: 0 };
+  const counts = { duck: 0, duckDodge: 0, space: 0, lowApproach: 0, takedown: 0, pin: 0,
+    bleeding: 0, pressure: 0 };
   const dodges = new Set();
-  const names = ['startTakedown', 'establishPin', 'startGroundChoke', 'startLift', 'startBleeding', 'startPressure', 'releaseGrapple', 'tryHit'];
+  const names = ['startTakedown', 'establishPin', 'startBleeding', 'startPressure', 'releaseGrapple', 'tryHit'];
   const originals = Object.fromEntries(names.map(name => [name, Fighter.prototype[name]]));
   try {
     for (const name of names) Fighter.prototype[name] = function (...args) {
@@ -1993,9 +1982,6 @@ test('unattended fights naturally use the new defenses and rare grapples without
       }
       if (name === 'startTakedown' && result) counts.takedown++;
       if (name === 'establishPin' && result) counts.pin++;
-      if (name === 'startGroundChoke' && result) counts.groundChoke++;
-      if (name === 'startLift' && result) { counts.lift++; if (this.liftStyle === 'carry') counts.carry++; if (this.liftStyle === 'press') counts.press++; }
-      if (name === 'releaseGrapple' && oldState === 'lift_jump' && args[0] === 'throw') counts.jumpThrow++;
       if (name === 'startBleeding' && result) counts.bleeding++;
       if (name === 'startPressure' && result) counts.pressure++;
       return result;
@@ -2011,15 +1997,14 @@ test('unattended fights naturally use the new defenses and rare grapples without
             if (mode === 'duck') counts.duck++;
             if (mode === 'space_out') counts.space++;
             if (mode === 'low_approach') counts.lowApproach++;
-            if (mode === 'lift_approach') counts.liftApproach++;
           }
           modes.set(f.id, mode);
           assert.ok(Number.isFinite(f.x) && Number.isFinite(f.y) && Number.isFinite(f.hp));
-          if (f.state === 'pinned' || f.state === 'lifted') {
+          if (f.state === 'pinned') {
             assert.equal(f.grappleBy?.grappleTarget, f, `${f.state} victim has a valid owner`);
             assert.ok(Game.fighters.includes(f.grappleBy));
           }
-          if (['ground_pin', 'ground_choke', 'lift_hold', 'lift_jump'].includes(f.state)) {
+          if (['ground_pin'].includes(f.state)) {
             assert.equal(f.grappleTarget?.grappleBy, f, `${f.state} holder has a valid victim`);
             assert.ok(Game.fighters.includes(f.grappleTarget));
           }
@@ -2027,8 +2012,7 @@ test('unattended fights naturally use the new defenses and rare grapples without
       }
     }
     console.log('new autonomous events:', counts);
-    for (const key of ['duck', 'duckDodge', 'space', 'lowApproach', 'liftApproach', 'takedown', 'pin', 'groundChoke', 'lift', 'carry', 'press', 'jumpThrow', 'bleeding', 'pressure'])
+    for (const key of ['duck', 'duckDodge', 'space', 'lowApproach', 'takedown', 'pin', 'bleeding', 'pressure'])
       assert.ok(counts[key] > 0, `${key} never occurred autonomously`);
-    assert.ok(counts.lift < 100, 'underarm grabs remain relatively rare');
   } finally { for (const name of names) Fighter.prototype[name] = originals[name]; }
 });
