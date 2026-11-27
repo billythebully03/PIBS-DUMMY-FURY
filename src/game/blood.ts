@@ -140,6 +140,25 @@ export class BloodField {
     }
     return null;
   }
+  contactAtFoot(x, ground = this.ground) {
+    // A visible single drop can leave a faint trace, but cannot produce a
+    // splash. Measure deposits around the contact, not the total mass of a
+    // giant connected pool: its distant edge can still be quite dry.
+    const cx = Math.round(x / Q);
+    const top = Math.floor((ground - 3) / Q), bottom = Math.ceil((ground + 24) / Q);
+    let group = null;
+    for (let dx = -2; dx <= 2; dx++) for (let y = top; y <= bottom; y++) {
+      const candidate = this.cells.get(key(cx + dx, y));
+      if (candidate && candidate.mass > 0 && (!group || candidate.mass > group.mass)) group = candidate;
+    }
+    if (!group) return null;
+    const bx = Math.floor(cx / 4), by = Math.floor(Math.round((ground + 9) / Q) / 3);
+    let local = 0;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -2; dy <= 2; dy++)
+      local += (this.sources.get(key(bx + dx, by + dy)) || 0) * (dx ? .5 : 1) * (dy ? .6 : 1);
+    const intensity = clamp(.1 + .9 * Math.sqrt(Math.min(1, local / 18)), .1, 1);
+    return { group, intensity, splashable: this.isPuddle(group) };
+  }
   isInterior(k) {
     const x = column(k), y = row(k);
     return this.cells.has(key(x - 1, y)) && this.cells.has(key(x + 1, y)) &&

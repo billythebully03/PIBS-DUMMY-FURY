@@ -21,10 +21,11 @@ export const BODY_SEGMENTS = [
 ] as const;
 
 // Палитры разрывов одежды по персонажам (подложка под рваной тканью).
-export const RIP: Record<string, { cloth: string; torso: string; arm: string; leg: string | null }> = {
+export const RIP: Record<string, { cloth: string; torso: string; arm: string | null; leg: string | null }> = {
   jane:       { cloth: '#343840', torso: '#DCE5EF', arm: '#DCE5EF', leg: '#B58C73' },
   negan:      { cloth: '#17191D', torso: '#CFCBC2', arm: '#CFCBC2', leg: '#B58C73' },
   homelander: { cloth: '#182943', torso: '#EFEFEF', arm: '#EFEFEF', leg: '#B58C73' },
   walt:       { cloth: '#526B3D', torso: '#E0A67F', arm: '#E0A67F', leg: null },
   saul:       { cloth: '#17191F', torso: '#EF5B9A', arm: '#EF5B9A', leg: '#B58C73' },
+  chester:    { cloth: '#191a1d', torso: '#D89B72', arm: null, leg: '#B58C73' },
 };

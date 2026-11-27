@@ -6,6 +6,8 @@ html,body{margin:0;height:100%;overflow:hidden;background:#05050a;color:#fff;fon
 canvas{display:block}
 #game{position:fixed;inset:0;overflow:hidden;background:#000}
 #gameCv{position:absolute;top:0;left:50%;transform:translateX(-50%);height:100%;cursor:crosshair;image-rendering:pixelated}
+#gameCv.cameraMode{cursor:grab}
+#gameCv.cameraMode:active{cursor:grabbing}
 #topBar{
   position:absolute;left:0;right:0;top:0;
   display:flex;align-items:center;justify-content:space-between;gap:12px;
@@ -80,4 +82,27 @@ canvas{display:block}
 @media (max-width:600px) and (orientation:portrait){
   /* Keep the roster out from underneath the wrapping control bar. */
   #rosterHud{top:auto;bottom:max(12px,env(safe-area-inset-bottom))}
+}
+
+/* Vertical camera controls remain reachable on touch screens as well as desktop. */
+#cameraControls{position:absolute;right:max(10px,env(safe-area-inset-right));top:50%;transform:translateY(-50%);z-index:7;
+  display:flex;flex-direction:column;align-items:center;gap:5px;padding:7px 5px;border:1px solid rgba(255,255,255,.17);
+  border-radius:8px;background:rgba(8,8,13,.75);backdrop-filter:blur(4px)}
+#cameraControls > span{font:600 9px 'Segoe UI',sans-serif;letter-spacing:.07em;color:#c3c2c7}
+.camModeBtn{min-width:48px;min-height:52px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  padding:4px;border:1px solid rgba(255,255,255,.24);border-radius:5px;color:#ddd;background:rgba(35,35,43,.9);cursor:pointer}
+.camModeBtn span{font:700 8px/1.15 'Segoe UI',sans-serif;letter-spacing:.02em;text-align:center}
+.camModeBtn svg{width:17px;height:17px}
+.camModeBtn[aria-pressed="true"]{color:#ffd375;border-color:#ffb300;background:rgba(255,179,0,.2);box-shadow:0 0 9px rgba(255,179,0,.15)}
+.camModeBtn:hover,.camModeBtn:focus-visible{border-color:#ffb300;outline:none}
+.camModeBtn:active{transform:scale(.95)}
+.camBtn{width:34px;height:34px;display:grid;place-items:center;border:1px solid rgba(255,255,255,.18);border-radius:5px;
+  color:#eee;background:rgba(35,35,43,.9);cursor:pointer}
+.camBtn:hover,.camBtn:focus-visible{color:#ffca5d;border-color:#ffb300;outline:none}
+.camBtn:active{transform:scale(.94)}
+.camBtn svg{width:18px;height:18px}
+@media (max-width:600px) and (orientation:portrait){
+  #cameraControls{right:6px;top:50%;gap:3px;padding:5px 3px}
+  #cameraControls > span{font-size:8px}
+  .camBtn{width:32px;height:32px}
 }
