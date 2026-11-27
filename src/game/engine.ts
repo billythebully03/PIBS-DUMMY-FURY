@@ -17,7 +17,6 @@ const RUN_SPD=520, RUN_ACC=1250;
 const BOX_GAP=.1, OVEREXTEND_DUR=1.12, FLANK_DUR=.34;
 const CHOKE_OFFSET=48, CHOKE_DPS=2.2, COUNTER_RELEASE=.43, COUNTER_DUR=.86;
 const SHOVE_DUR=.58, SHOVE_IMPACT=.25, SHOVE_REACH=105;
-const TAKEDOWN_IMPACT=.38, TAKEDOWN_REACH=94;
 const BLEED_DPS=2, BLEED_AFTER_DEATH=3;
 const STAGGER_KNOCKDOWN_CHANCE=.4, STAGGER_KO_CHANCE=.4;
 const LAMP_PULL_DUR=.7;
@@ -164,6 +163,14 @@ function aimArmWorld(R,s,x,y,preferUp=false){
   R['e'+s]={x:R.sh.x+J['e'+s].x*d,y:R.sh.y+J['e'+s].y};
   R['w'+s]={x:R.sh.x+J['w'+s].x*d,y:R.sh.y+J['w'+s].y};
 }
+function guardWobblePose(p,f){
+  const k=clamp(f.guardFlinch/.2,0,1),phase=f.guardShakePhase+f.t*42;
+  if(!k)return p;
+  // The upper body rocks around the planted hips with the same decaying
+  // impulse as the hands, without moving the feet or altering the guard pose.
+  const wobble=Math.sin(phase)*f.guardShakeX*k;
+  return Object.assign({},p,{tl:p.tl+wobble*.55,hd:p.hd+wobble*.35});
+}
 function poseGuardArms(R,f){
   const k=clamp(f.guardFlinch/.2,0,1),phase=f.guardShakePhase+f.t*42;
   // Each impact has its own small, decaying wobble in both extended arms.
@@ -198,34 +205,6 @@ function poseStruggleArms(R,t,prone=false){
   const n=R.neck,d=R.dir;
   aimArmWorld(R,'N',n.x+d*(12+Math.sin(t*15)*4),n.y-4+Math.sin(t*12)*4,prone);
   aimArmWorld(R,'F',n.x-d*(6+Math.sin(t*13+1)*3),n.y-7+Math.cos(t*11)*4,prone);
-  R.cN=R.cF=0;R.bd=null;
-}
-function poseTakedownArms(R,v){
-  if(!v||!v.rig)return;
-  const r=v.rig;
-  const near=pointBetween(r.pel,r.kN,.62),far=pointBetween(r.pel,r.kF,.62);
-  aimArmWorld(R,'N',near.x,near.y);aimArmWorld(R,'F',far.x,far.y);
-  R.cN=R.cF=0;R.bd=null;
-}
-function posePinArms(R,v){
-  if(!v||!v.rig)return;
-  const n=v.rig.neck,d=R.dir;
-  aimArmWorld(R,'N',n.x+d*2,n.y+3);
-  aimArmWorld(R,'F',n.x-d*4,n.y-1);
-  R.cN=R.cF=0;R.bd=null;
-}
-function poseLiftArms(R,v){
-  if(!v||!v.rig)return;
-  // Hands support the upper body just below the armpits on both sides.
-  const p=v.rig.sh,d=R.dir;
-  aimArmWorld(R,'N',p.x+d*5,p.y+9);
-  aimArmWorld(R,'F',p.x-d*5,p.y+7);
-  R.cN=R.cF=0;R.bd=null;
-}
-function poseLiftStruggle(R,holder,t){
-  const p=holder&&holder.rig?holder.rig.wN:R.sh;
-  aimArmWorld(R,'N',p.x+Math.sin(t*12)*5,p.y-6+Math.cos(t*14)*4);
-  aimArmWorld(R,'F',R.sh.x+R.dir*(12+Math.sin(t*10)*5),R.sh.y-10+Math.cos(t*13)*6);
   R.cN=R.cF=0;R.bd=null;
 }
 function cloneRig(R){
@@ -512,9 +491,8 @@ for (const k in DEF) {
     else SK_[k][p] = spr(w, h, f);
   }
 }
-// Compose blood into the original shoe / lower-leg sprites, not the arena.
-// Each sprite supplies its own alpha mask; the result then receives the exact
-// same rotation, facing and animation as the clothing it stains.
+// Composite blood into each original limb sprite, not into world space. The
+// alpha mask and the usual limb transform keep stains on the moving skin.
 const STAINED_SKIN_CACHE=new WeakMap();
 function stainedSkinSprite(sprite,part,level){
   if(!sprite||!level)return sprite;
@@ -530,11 +508,20 @@ function stainedSkinSprite(sprite,part,level){
     if(amount>1){g.fillRect(1,5,4,2);g.fillRect(8,2,3,3);}
     if(amount>2)g.fillRect(4,4,6,3);
     g.globalAlpha=.7;g.fillStyle='#b32a35';g.fillRect(3,3,2,1);
-  }else{
+  }else if(part==='shin'){
     g.fillRect(2,13,2,3);g.fillRect(5,12,1,3);g.fillRect(4,15,2,1);
     if(amount>1){g.fillRect(1,14,2,2);g.fillRect(4,11,2,2);}
     if(amount>2)g.fillRect(2,12,4,4);
     g.globalAlpha=.65;g.fillStyle='#b32a35';g.fillRect(2,13,1,1);
+  }else{
+    // A small irregular patch on both sides of the joint, so it remains
+    // continuous as the knee or elbow bends. Feet use their separate stains.
+    const bottom=part==='knee-thigh'||part==='elbow-upper';
+    const y=bottom?sprite.height-4:1;
+    g.fillRect(2,y,3,2);g.fillRect(4,y+2,2,1);g.fillRect(1,y+1,1,2);
+    if(amount>1){g.fillRect(1,y,2,2);g.fillRect(5,y+1,1,2);}
+    if(amount>2)g.fillRect(2,y+2,3,1);
+    g.globalAlpha=.65;g.fillStyle='#b32a35';g.fillRect(3,y,2,1);
   }
   cache.set(cacheKey,c);return c;
 }
@@ -570,7 +557,7 @@ function drawBat(g,f){
   g.restore();
 }
 function stowsBat(f){
-  return f.boxing||(f.bleed&&f.bleed.pressing)||['guard','guard_recoil','shove','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','takedown','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted'].includes(f.state);
+  return f.boxing||(f.bleed&&f.bleed.pressing)||['guard','guard_recoil','shove','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull'].includes(f.state);
 }
 function drawStowedBat(g,f){
   const R=f.rig;if(!R||f.batLost||f.hp<=0)return;
@@ -668,6 +655,48 @@ function drawSkinLimbWounds(g, list, a, b, width, dir) {
   for (const wound of list) {
     drawWound(g, wound, a.x + dx * wound.t + nx * wound.s * width, a.y + dy * wound.t + ny * wound.s * width);
   }
+}
+function drawRaggedHole(g,x,y,size,angle,cloth,under,phase,time){
+  g.save();g.translate(x,y);g.rotate(angle);
+  const w=size,h=Math.max(6,size*.72),j=Math.sin(phase)*1.2;
+  // The opening has a slightly uneven, stable outline rather than a rectangle.
+  g.fillStyle='#090A0D';g.beginPath();
+  g.moveTo(-w*.52,-h*.14);g.lineTo(-w*.42,-h*.43);g.lineTo(-w*.13,-h*.5+j);
+  g.lineTo(w*.05,-h*.34);g.lineTo(w*.34,-h*.47-j);g.lineTo(w*.5,-h*.16);
+  g.lineTo(w*.4,h*.08);g.lineTo(w*.52,h*.28);g.lineTo(w*.24,h*.5);
+  g.lineTo(-w*.05,h*.35);g.lineTo(-w*.32,h*.48-j);g.lineTo(-w*.5,h*.2);
+  g.closePath();g.fill();
+  g.fillStyle=under;g.beginPath();
+  g.moveTo(-w*.35,-h*.12);g.lineTo(-w*.26,-h*.3);g.lineTo(-w*.07,-h*.36);
+  g.lineTo(w*.08,-h*.22);g.lineTo(w*.29,-h*.3);g.lineTo(w*.32,-h*.05);
+  g.lineTo(w*.25,h*.09);g.lineTo(w*.34,h*.23);g.lineTo(w*.17,h*.32);
+  g.lineTo(-w*.04,h*.22);g.lineTo(-w*.23,h*.32);g.lineTo(-w*.34,h*.12);
+  g.closePath();g.fill();
+  g.fillStyle='rgba(0,0,0,.28)';g.fillRect(-w*.22,-h*.29,w*.4,1.5);
+  g.fillStyle=cloth;g.fillRect(-w*.48,-h*.42,w*.22,2);
+  g.fillRect(w*.22,h*.22,2,3+Math.sin(time*8+phase));
+  g.restore();
+}
+function drawLimbRips(g,R,f,part,a,b,halfWidth){
+  const rips=f.wounds.rips;
+  let found=false;for(const rip of rips)if(rip.part===part){found=true;break;}
+  if(!found)return;
+  const dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy)||1;
+  const nx=R.dir*dy/len,ny=-R.dir*dx/len;
+  // Clip each opening to the limb, and paint it with that limb rather than
+  // over a different arm/leg later in the fighter's layer stack.
+  g.save();g.beginPath();
+  g.moveTo(a.x+nx*halfWidth,a.y+ny*halfWidth);g.lineTo(b.x+nx*halfWidth,b.y+ny*halfWidth);
+  g.lineTo(b.x-nx*halfWidth,b.y-ny*halfWidth);g.lineTo(a.x-nx*halfWidth,a.y-ny*halfWidth);
+  g.closePath();g.clip();
+  for(const rip of rips){
+    if(rip.part!==part)continue;
+    const offset=clamp(rip.offset??rip.side*4,-halfWidth*.65,halfWidth*.65);
+    const x=a.x+dx*rip.t+nx*offset,y=a.y+dy*rip.t+ny*offset;
+    const angle=Math.atan2(dy,dx)-Math.PI/2+rip.angle*R.dir;
+    drawRaggedHole(g,x,y,rip.size,angle,rip.cloth,rip.under,rip.phase,f.t);
+  }
+  g.restore();
 }
 function drawPixelBand(g, a, b, t, halfWidth, thickness, color, edge) {
   if (!a || !b) return;
@@ -778,32 +807,12 @@ function drawSkinOutfitDetails(g, R, f, mode='all') {
       drawPixelBand(g,knee,ankle,.22,7,1,'#E1B94D','#4A1017');
     }
   }
-  const drawRaggedHole=(x,y,size,angle,cloth,under,phase)=>{
-    g.save();g.translate(x,y);g.rotate(angle);
-    const q=2, w=size, h=Math.max(6,size*.72);
-    g.fillStyle='#090A0D';g.fillRect(-w/2-1,-h/2-1,w+2,h+2);
-    g.fillStyle=under;g.fillRect(-w/2+q,-h/2+q,Math.max(2,w-2*q),Math.max(2,h-2*q));
-    g.fillStyle='rgba(0,0,0,.35)';g.fillRect(-w/2+q,-h/2+q,Math.max(2,w-2*q),2);
-    g.fillStyle=cloth;
-    g.fillRect(-w/2-3,-h/2-2,Math.max(3,w*.36),3);
-    g.fillRect(w*.16,-h/2-3,Math.max(3,w*.34),3);
-    g.fillRect(-w/2-3,h/2-1,Math.max(3,w*.28),3);
-    g.fillRect(w/2-1,-h/2+2,3,Math.max(3,h*.4));
-    const flap=Math.sin(f.t*8+phase)*2.2;
-    g.fillStyle=cloth;g.fillRect(w*.16,h/2-1,3,6+flap);
-    g.fillStyle='rgba(0,0,0,.45)';g.fillRect(w*.16+2,h/2+2,1,Math.max(2,4+flap));
-    g.restore();
-  };
-  for(const rip of (f.wounds.rips||[])){
-    if(rip.part==='torso' && mode!=='arms') { const wx=n.x+dir*uy*rip.x+ux*scale*rip.y, wy=n.y-dir*ux*rip.x+uy*scale*rip.y; drawRaggedHole(wx,wy,rip.size,rip.angle,rip.cloth,rip.under,rip.phase); }
-    else if(rip.part!=='torso'){
-      const map={uN:[R.sh,R.eN],uF:[R.sh,R.eF],fN:[R.eN,R.wN],fF:[R.eF,R.wF],tN:[R.pel,R.kN],tF:[R.pel,R.kF],sN:[R.kN,R.aN],sF:[R.kF,R.aF]};
-      const pair=map[rip.part];
-      if(pair && (mode==='arms' ? rip.part[0]==='u'||rip.part[0]==='f' : true)){
-        const pt=pointBetween(pair[0],pair[1],rip.t); const dx=pair[1].x-pair[0].x,dy=pair[1].y-pair[0].y;
-        drawRaggedHole(pt.x+(-dy/Math.hypot(dx,dy))*rip.side*5,pt.y+(dx/Math.hypot(dx,dy))*rip.side*5,rip.size,rip.angle,rip.cloth,rip.under,rip.phase);
-      }
-    }
+  if(mode!=='arms') for(const rip of f.wounds.rips){
+    if(rip.part!=='torso')continue;
+    const point=rip.laser?surfacePoint(R,{seg:'torso',t:rip.t,s:rip.offset}):
+      {x:n.x+dir*uy*rip.x+ux*scale*rip.y,y:n.y-dir*ux*rip.x+uy*scale*rip.y};
+    const angle=Math.atan2(uy,ux)-Math.PI/2+rip.angle*dir;
+    drawRaggedHole(g,point.x,point.y,rip.size,angle,rip.cloth,rip.under,rip.phase,f.t);
   }
   const tear=(a,b,list,width,color)=>{
     if(!list||!list.length)return;
@@ -962,21 +971,28 @@ function drawSaulTie(g, R, f) {
 function drawPixelArm(g, R, f, side, far, S) {
   const prefix = far ? 'F' : 'N';
   const elbow = R['e' + prefix], wrist = R['w' + prefix];
-  const upper = far ? S.uArmB : S.uArmF;
-  const lower = far ? S.lArmB : S.lArmF;
+  const stain=f.jointBlood?.['e'+prefix]||0;
+  const upper = stainedSkinSprite(far ? S.uArmB : S.uArmF,'elbow-upper',stain);
+  const lower = stainedSkinSprite(far ? S.lArmB : S.lArmF,'elbow-lower',stain);
   drawSkinSegment(g, upper, R.sh, elbow, far ? 18 : 19, 4, 4, R.dir === 1);
   drawSkinSegment(g, lower, elbow, wrist, 18, 3, 5, R.dir === 1);
   drawSkinLimbWounds(g, f.wounds['u' + prefix], R.sh, elbow, 8, R.dir);
   drawSkinLimbWounds(g, f.wounds['f' + prefix], elbow, wrist, 8, R.dir);
+  drawLimbRips(g,R,f,'u'+prefix,R.sh,elbow,far?9:9.5);
+  drawLimbRips(g,R,f,'f'+prefix,elbow,wrist,9);
 }
 function drawPixelLeg(g, R, f, far, S) {
   const prefix = far ? 'F' : 'N';
   const knee = R['k' + prefix], ankle = R['a' + prefix], foot = R[far ? 'fdF' : 'fdN'];
-  const stain=f.footBlood?.[prefix]||0;
-  drawSkinSegment(g, far ? S.thighB : S.thighF, R.pel, knee, far ? 20 : 21, 5, 5, R.dir === 1);
-  drawSkinSegment(g, stainedSkinSprite(far ? S.shinB : S.shinF,'shin',stain), knee, ankle, 18, 4, 4, R.dir === 1);
+  const stain=f.footBlood?.[prefix]||0,joint=f.jointBlood?.['k'+prefix]||0;
+  const thigh=stainedSkinSprite(far ? S.thighB : S.thighF,'knee-thigh',joint);
+  const shin=stainedSkinSprite(stainedSkinSprite(far ? S.shinB : S.shinF,'shin',stain),'knee-shin',joint);
+  drawSkinSegment(g, thigh, R.pel, knee, far ? 20 : 21, 5, 5, R.dir === 1);
+  drawSkinSegment(g, shin, knee, ankle, 18, 4, 4, R.dir === 1);
   drawSkinLimbWounds(g, f.wounds['t' + prefix], R.pel, knee, 10, R.dir);
   drawSkinLimbWounds(g, f.wounds['s' + prefix], knee, ankle, 8, R.dir);
+  drawLimbRips(g,R,f,'t'+prefix,R.pel,knee,far?10:10.5);
+  drawLimbRips(g,R,f,'s'+prefix,knee,ankle,9);
   drawSkinBoot(g, stainedSkinSprite(far ? S.bootB : S.bootF,'boot',stain), ankle, foot, R.dir, 29, 18);
 }
 // Orange laser scorch marks anchored to skin segments and masked strictly onto skin pixels ('source-atop').
@@ -1122,9 +1138,39 @@ const RIP={
   walt:      {cloth:'#526B3D', torso:'#E0A67F', arm:'#E0A67F', leg:null},
   saul:      {cloth:'#17191F', torso:'#EF5B9A', arm:'#EF5B9A', leg:'#B58C73'}
 };
-function injure(f,zone,pw){
+function addLaserRip(f,mark){
+  if(!mark||mark.seg==='head'||!BURN_MAP[mark.seg])return false;
+  const part=mark.seg,leg=/^[ts][NF]$/.test(part),arm=/^[uf][NF]$/.test(part);
+  // The end of a forearm sprite is the hand, not a sleeve.
+  if(arm&&part[0]==='f'&&mark.t>.62)return false;
+  const pal=RIP[f.skin]||RIP.jane;
+  let cloth=pal.cloth,under=part==='torso'?pal.torso:leg?pal.leg:pal.arm;
+  if(leg){
+    if(f.skin==='walt'){
+      // Walt has bare legs: only his shorts or socks are actually cloth.
+      if(part[0]==='t'&&mark.t<.23)cloth='#E9E7DF';
+      else if(part[0]==='s'&&mark.t>.6)cloth='#8E9196';
+      else return false;
+      under=SF;
+    }else{
+      const trousers={jane:'#50555E',negan:'#323438',homelander:'#263B59',saul:'#22242B'};
+      cloth=trousers[f.skin]||pal.cloth;
+      if(f.skin==='homelander'&&part[0]==='s'&&mark.t>.35)cloth='#B81D26';
+    }
+  }
+  const rips=f.wounds.rips;
+  if(rips.length>=8||rips.filter(r=>r.part===part).length>=2||
+     rips.some(r=>r.laser&&r.part===part&&Math.abs(r.t-mark.t)<.18&&Math.abs(r.offset-mark.s)<7)||
+     Math.random()>=.34)return false;
+  const width=BURN_MAP[part][3];
+  rips.push({laser:true,part,t:mark.t,offset:clamp(mark.s,-width*.65,width*.65),
+    size:part==='torso'?rnd(12,17):rnd(9,13),angle:rnd(-.35,.35),cloth,under,phase:rnd(TAU)});
+  return true;
+}
+function injure(f,zone,pw,laserMark=null){
   const rr=Math.random;
-  if(zone!=='head'){
+  // Laser cuts are created separately on the actual impact segment.
+  if(zone!=='head'&&!laserMark){
     f.wounds.clothHits=(f.wounds.clothHits||0)+1;
     if((rr()<.19+pw*.08 || (f.wounds.clothHits>=5 && !f.wounds.rips.length)) && f.wounds.rips.length<3){
       const pal=RIP[f.skin]||RIP.jane;
@@ -1150,14 +1196,16 @@ function injure(f,zone,pw){
     addW(f,'torso',{k:'bruise',x:rnd(0,9),y:rnd(12,42),r:rnd(3.5,5.5),v:.45+pw*.3});
     if(pw>.45&&rr()<.35)addW(f,'torso',{k:'scratch',x:rnd(-2,9),y:rnd(13,40),r:rnd(2.5,4.5),v:.55});
   }else{
-    const s=rr()<.5?'N':'F';
-    addW(f,'s'+s,{k:'bruise',t:rnd(.2,.7),s:rnd(-.4,.4),r:rnd(2.8,4.6),v:.5+pw*.2});
+    const part=laserMark&&f.wounds[laserMark.seg]?laserMark.seg:'s'+(rr()<.5?'N':'F');
+    const width=BURN_MAP[part]?.[3]||8;
+    addW(f,part,{k:'bruise',t:laserMark?.t??rnd(.2,.7),
+      s:laserMark?clamp(laserMark.s/width,-.7,.7):rnd(-.4,.4),r:rnd(2.8,4.6),v:.5+pw*.2});
   }
 }
 /* ============================ FX / PIXEL BLOOD ============================ */
 class FX{
   constructor(){
-    this.sm=[];this.bl=[];this.sp=[];this.fl=[];this.rg=[];this.marks=[];this.decal=null;this.floorY=468;
+    this.sm=[];this.bl=[];this.sp=[];this.laserSparks=[];this.fl=[];this.rg=[];this.marks=[];this.decal=null;this.floorY=468;
     this.bloodField=new BloodField(960,this.floorY);
   }
   smoke(x,y,vx,vy,r,gr,life,a,spr){
@@ -1218,6 +1266,21 @@ class FX{
   }
   clearBlood(){this.bl=[];this.bloodField.clear();}
   spark(x,y,n,col){for(let i=0;i<n;i++){const a=rnd(TAU),s=rnd(80,380);this.sp.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:rnd(.15,.35),col:col||'255,210,90'});}}
+  laserSpark(x,y,n,surf='body'){
+    // Cosmetic randomness is independent of combat. Floor and wall sparks
+    // travel away from the surface and fade in flight without leaving marks.
+    const field=this.bloodField,colors=['255,72,62','255,120,75','255,190,140'];
+    for(let i=0;i<n;i++){
+      let a=field.range(0,TAU);
+      if(surf==='floor')a=field.range(-2.65,-.49);
+      else if(surf==='wall'&&y<=12)a=field.range(.35,Math.PI-.35);
+      else if(surf==='wall')a=(x<field.width/2?0:Math.PI)+field.range(-1.2,1.2);
+      const speed=field.range(75,185),life=field.range(.18,.4),radius=field.range(2.3,4.4);
+      this.laserSparks.push({x,y,vx:Math.cos(a)*speed,vy:Math.sin(a)*speed,life,max:life,
+        radius,aspect:field.range(.75,1.15),col:colors[Math.floor(field.random()*colors.length)]});
+    }
+    if(this.laserSparks.length>120)this.laserSparks.splice(0,this.laserSparks.length-120);
+  }
   impact(x,y,dir,pw){this.fl.push({x,y,life:.16,max:.16,r:24+pw*30});this.spark(x,y,6+pw*8|0);}
   // Laser scorch on a floor/wall: orange blocks that cool down and fade.
   burnSurface(x,y,surf){
@@ -1265,6 +1328,8 @@ class FX{
     this.bl=this.bl.filter(b=>!b.dead&&b.life>0);
     for(const s of this.sp){s.x+=s.vx*dt;s.y+=s.vy*dt;s.vy+=500*dt;s.life-=dt;}
     this.sp=this.sp.filter(s=>s.life>0);
+    for(const s of this.laserSparks){s.x+=s.vx*dt;s.y+=s.vy*dt;s.vy+=220*dt;s.life-=dt;}
+    this.laserSparks=this.laserSparks.filter(s=>s.life>0);
     for(const f of this.fl)f.life-=dt;this.fl=this.fl.filter(f=>f.life>0);
     for(const r of this.rg){r.life-=dt;r.r+=r.w*dt/r.max;}this.rg=this.rg.filter(r=>r.life>0);
     for(const m of this.marks)m.life-=dt;this.marks=this.marks.filter(m=>m.life>0);
@@ -1316,6 +1381,13 @@ class FX{
       ctx.fillStyle='#FFF0C5';ctx.fillRect(Math.round(f.x/q)*q,Math.round(f.y/q)*q,q,q);ctx.globalAlpha=1;
     }
     for(const s of this.sp){ctx.fillStyle=`rgba(${s.col},${clamp(s.life*5,0,1)})`;ctx.fillRect(Math.round(s.x/q)*q,Math.round(s.y/q)*q,q,q);}
+  }
+  drawLaserSparks(ctx){
+    for(const s of this.laserSparks){
+      const k=clamp(s.life/s.max,0,1),radius=s.radius*(.55+.45*k);
+      ctx.fillStyle=`rgba(${s.col},${k})`;ctx.beginPath();
+      ctx.ellipse(s.x,s.y,radius,radius*s.aspect,0,0,TAU);ctx.fill();
+    }
   }
 }
 /* ============================ RAGDOLL ============================ */
@@ -1495,18 +1567,16 @@ class Fighter{
       overextendFor:null,overextendStamp:0,flankTarget:null,flankFrom:0,
       chokeCD:0,chokeCooldownPending:false,chokeTarget:null,chokedBy:null,chokeDuration:0,chokeCounterAt:Infinity,chokeReleaseAt:Infinity,
       counterBase:null,counterReleased:false,fallDamage:null,
-      grappleCD:0,grappleTarget:null,grappleBy:null,pinBase:null,pinChoke:false,pinChokeAt:0,
-      liftStyle:'carry',liftStamina:0,liftHeight:0,liftMove:0,liftJumpAt:Infinity,
       staggerDir:0,staggerDur:0,shoveWillFall:false,
       shoveCD:0,shoveTarget:null,shoveDone:false,
       lampGoal:null,lampRef:null,lampAction:'pullup',lampStamina:0,
       lampGrabGap:52,lampGrabSide:0,lampBreakAt:Infinity,lampDiveAt:Infinity,lampHangStamp:0,lampPullTarget:null,lampPullDone:false,
-      bloodStains:[],footBlood:{N:0,F:0},bloodFootfall:null,footSplashCooldown:0,
+      bloodStains:[],footBlood:{N:0,F:0},jointBlood:{kN:0,kF:0,eN:0,eF:0},bloodFootfall:null,footSplashCooldown:0,
       bleed:null,collapseFrom:null,blinkT:rnd(2.2,5.5),blink:0,coughT:rnd(1,2.6)
     });
   }
   spawn(delay){this.state='spawn';this.sp=0;this.spT=delay||.05;this.visible=false;this.y=this.spawnY;this.vy=0;this.vx=0;this.st=0;this.cur=null;this.hoverY=0;}
-  canBeHit(){return this.hp>0&&this.state!=='ragdoll'&&this.state!=='pinned'&&this.state!=='getup'&&this.state!=='spawn'&&this.state!=='win'&&this.invT<=0;}
+  canBeHit(){return this.hp>0&&this.state!=='ragdoll'&&this.state!=='getup'&&this.state!=='spawn'&&this.state!=='win'&&this.invT<=0;}
   faceOpp(o){if(this.ctrl.noFace)return;if(this.skin==='homelander'&&this.hlBrake>.42)return;if(o&&this.y<2&&Math.abs(o.x-this.x)>10)this.dir=o.x>this.x?1:-1;}
   bloodStrength(){
     if(!this.bleed)return 1;
@@ -1515,7 +1585,7 @@ class Fighter{
   }
   speedMul(){return wstat(this.skin).speedMul*(this.hp<30?.85:1)*this.bloodStrength();}
   startAttack(i,boxing=false){
-    if(['takedown','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted','bleed_collapse'].includes(this.state))return false;
+    if(this.state==='bleed_collapse')return false;
     const pressing=this.bleed&&this.bleed.pressing;
     const set=(boxing||pressing)?(this.skin==='homelander'?ATK_HL:ATK):atkSetFor(this.skin);
     const a=set[i];
@@ -1557,9 +1627,7 @@ class Fighter{
       if(this.fx&&this.rig)this.fx.puff(this.rig.sh.x,this.rig.sh.y,3,.5);
       Snd.thud();return true;
     }
-    const wasHeld=!!this.grappleBy;
-    this.breakGrapple();this.breakChoke();this.boxing=false;this.lampPullTarget=null;this.shoveTarget=null;
-    if(wasHeld&&this.state==='ragdoll'&&this.rag){this.rag.launch(att.dir*100,80);Snd.thud();return true;}
+    this.breakChoke();this.boxing=false;this.lampPullTarget=null;this.shoveTarget=null;
     this.bodyJump=false;this.dive=false;this.kickExt=0;
     this.staggerDir=att.dir;this.dir=-this.staggerDir;
     this.staggerDur=rnd(.75,1.1);this.shoveWillFall=Math.random()<.42;
@@ -1721,77 +1789,6 @@ class Fighter{
     if(this.fx)this.fx.puff(this.rig.sh.x,this.rig.sh.y,4,.8);
     Snd.whoosh();
   }
-  canGrapple(v){
-    return !!(v&&v!==this&&this.hp>0&&v.hp>0&&Game.fighters.includes(this)&&Game.fighters.includes(v)&&
-      v.canBeHit()&&v.y<=5&&!v.grappleBy&&!v.grappleTarget&&!v.chokedBy&&!v.chokeTarget&&
-      ['idle','attack','guard','overextend','run_hit_stop'].includes(v.state));
-  }
-  startTakedown(v){
-    if(this.state!=='idle'||!this.crouchActive||this.crouchTime<.07||this.grappleCD>0||
-       !this.canGrapple(v)||Math.abs(v.x-this.x)>TAKEDOWN_REACH||
-       (this.bleed&&this.bleed.pressing))return false;
-    this.dir=v.x>=this.x?1:-1;this.state='takedown';this.st=0;this.vx=0;
-    this.grappleTarget=v;this.grappleCD=rnd(6,9);this.hlBrake=0;Snd.whoosh();return true;
-  }
-  establishPin(v){
-    if(this.state!=='takedown'||this.grappleTarget!==v||!this.canGrapple(v)||
-       Math.abs(v.x-this.x)>TAKEDOWN_REACH)return false;
-    v.pinBase=cloneRig(v.rig);v.breakChoke();v.boxing=false;v.lz=null;
-    v.grappleBy=this;v.state='pinned';v.st=0;v.y=0;v.vy=0;v.vx=0;v.hoverY=0;
-    this.state='ground_pin';this.st=0;this.vx=0;this.y=0;this.vy=0;this.hoverY=0;
-    this.x=clamp(v.x-this.dir*45,this.minX+35,this.maxX-35);
-    this.pinChoke=this.chokeCD<=0&&Math.random()<.65;this.pinChokeAt=rnd(.7,1.15);
-    Snd.thud();if(this.fx)this.fx.landing(this.x,this.gy,.45);return true;
-  }
-  startGroundChoke(){
-    const v=this.grappleTarget;
-    if(this.state!=='ground_pin'||this.chokeCD>0||!v||v.grappleBy!==this||v.state!=='pinned')return false;
-    this.state='ground_choke';this.st=0;this.chokeCD=rnd(5,7);this.chokeCooldownPending=true;
-    this.chokeDuration=rnd(2.2,2.9);
-    // The ground hold keeps the old escape/release odds but cannot produce a throw.
-    this.chokeCounterAt=Math.random()<.33?rnd(.55,1.05):Infinity;
-    this.chokeReleaseAt=Math.random()<.12?rnd(.8,1.55):Infinity;
-    return true;
-  }
-  startLift(v,style){
-    if(this.state!=='idle'||this.y>5||this.grappleCD>0||!this.canGrapple(v)||
-       Math.abs(v.x-this.x)>78||(this.bleed&&this.bleed.pressing))return false;
-    this.dir=v.x>=this.x?1:-1;this.state='lift_hold';this.st=0;this.vx=0;this.hlBrake=0;
-    this.grappleTarget=v;this.grappleCD=rnd(8,12);
-    this.liftStyle=['carry','press','throw'].includes(style)?style:
-      (Math.random()<.34?'throw':Math.random()<.5?'press':'carry');
-    this.liftStamina=rnd(2.5,3.5);this.liftHeight=0;
-    this.liftMove=Math.random()<.5?this.dir:-this.dir;
-    this.liftJumpAt=this.liftStyle==='throw'?rnd(1.2,1.8):Infinity;
-    v.pinBase=cloneRig(v.rig);v.breakChoke();v.boxing=false;v.lz=null;
-    v.grappleBy=this;v.state='lifted';v.st=0;v.vx=0;v.vy=0;v.y=0;v.hoverY=0;
-    Snd.whoosh();return true;
-  }
-  releaseGrapple(reason='interrupt'){
-    const v=this.grappleTarget,linked=!!v&&v.grappleBy===this,old=this.state;
-    this.grappleTarget=null;
-    if(old==='ground_choke')this.finishChokeCooldown();
-    if(linked)v.grappleBy=null;
-    if(['takedown','ground_pin','ground_choke','lift_hold','lift_jump'].includes(old)){
-      this.state=old==='lift_jump'&&this.y>0?'air':'idle';this.st=0;this.vx=old==='lift_jump'?this.vx*.5:0;this.comboT=9;
-    }
-    if(linked&&(v.state==='pinned'||v.state==='lifted')){
-      const pinned=v.state==='pinned',thrown=!pinned&&old==='lift_jump'&&reason==='throw';
-      v.pinBase=null;v.fastGetup=false;
-      // Releasing a ground pin never throws: the victim is already lying down.
-      v.toRagdoll(thrown?this.dir*210:0,thrown?460:0,!thrown);
-      if(thrown)v.fallDamage={amount:12,source:this,severe:true};
-      if(pinned&&reason==='complete'&&v.rag){v.rag.stunScale=1.5;v.dizzyAlpha=1;}
-    }
-  }
-  breakGrapple(){
-    if(this.grappleTarget)this.releaseGrapple();
-    if(this.grappleBy){
-      const h=this.grappleBy;
-      if(h.grappleTarget===this)h.releaseGrapple();
-      else{this.grappleBy=null;this.pinBase=null;this.toRagdoll(0,0,true);}
-    }
-  }
   startJump(){this.vy=770;this.y=.5;this.state='air';this.st=0;this.hlBrake=0;this.fx&&this.fx.landing(this.x,this.gy,.5);}
   startBodyJump(){
     if(this.state!=='run'||this.hp<=0||this.y>5||Math.abs(this.vx)<260)return false;
@@ -1879,6 +1876,19 @@ class Fighter{
       this.footSplashCooldown=.22;
     }
   }
+  resolveBloodJointContacts(dt){
+    const field=this.fx?.bloodField,R=this.rig;
+    if(!field||!field.groups.size||!R||!this.visible||(this.state==='spawn'&&this.sp<2))return;
+    for(const joint of ['kN','kF','eN','eF']){
+      if(this.jointBlood[joint]>=3)continue;
+      const p=R[joint];
+      // Use the actual joint's collision radius and horizontal position, not
+      // the fighter's center or an airborne joint projected onto the floor.
+      if(p&&p.y+JR[joint]>=this.gy-1.5&&field.puddleAtFoot(p.x,this.gy)){
+        this.jointBlood[joint]=Math.min(3,Math.max(1,this.jointBlood[joint]+dt*1.5));
+      }
+    }
+  }
   onLand(impact){
     const pvx=this.vx;
     this.landT=.12;this.vx*=.35;
@@ -1929,7 +1939,7 @@ class Fighter{
     const wasRunning=this.state==='run'&&!wasAirborne;
     const wasStaggering=this.state==='push_stagger'||this.state==='stagger_fall';
     this.lampPullTarget=null;this.shoveTarget=null;this.bodyJump=false;
-    this.breakGrapple();this.breakChoke();this.boxing=false;
+    this.breakChoke();this.boxing=false;
     this.hp=Math.max(0,this.hp-a.dmg);
     const impact=point&&typeof point.x==='number'?point:null;
     const px=impact?impact.x:this.x-att.dir*10;
@@ -1971,7 +1981,7 @@ class Fighter{
   handDamage(a,vic){}
   toRagdoll(vx,vy,gentle=false){
     this.clearLamp();this.lampPullTarget=null;this.shoveTarget=null;
-    this.breakGrapple();this.breakChoke();this.boxing=false;
+    this.breakChoke();this.boxing=false;
     if(!this.rig)return;
     this.rag=new Ragdoll(this.rig,this);if(!gentle)this.rag.launch(vx,vy);
     this.state='ragdoll';this.st=0;this.y=0;this.vx=0;this.vy=0;this.invT=0;this.dive=false;this.bodyJump=false;this.lz=null;
@@ -2005,9 +2015,10 @@ class Fighter{
   /* ---------------- Homelander's eye laser ---------------- */
   laserEye(){const h=this.rig.head;return {x:h.x+this.dir*9,y:h.y-5};}
   addBurn(x,y){
-    const mark=locateSurface(this.rig,x,y);if(!mark)return;
+    const mark=locateSurface(this.rig,x,y);if(!mark)return null;
     this.burns.push(Object.assign(mark,{life:3.4,max:3.4,sz:Math.random()}));
     if(this.burns.length>20)this.burns.shift();
+    return mark;
   }
   addBloodStain(x,y){
     const mark=locateSurface(this.rig,x,y);if(!mark)return;
@@ -2054,16 +2065,19 @@ class Fighter{
     }
   }
   takeLaser(att,pt,first){
-    this.addBurn(pt.x,pt.y);
-    if(this.hp<=0||this.state==='spawn'||this.invT>0)return;
+    const mark=this.addBurn(pt.x,pt.y);
+    if(this.state==='spawn'||this.invT>0)return;
+    addLaserRip(this,mark);
+    if(this.hp<=0)return;
     this.lampPullTarget=null;this.shoveTarget=null;
-    this.breakGrapple();this.breakChoke();this.boxing=false;
+    this.breakChoke();this.boxing=false;
     this.hp=Math.max(0,this.hp-(first?3.5:1.6));
-    if(this.fx){this.fx.spark(pt.x,pt.y,2,'255,150,40');if(first)this.fx.blood(pt.x,pt.y,att.dir,6,.5);}
+    if(this.fx&&first)this.fx.blood(pt.x,pt.y,att.dir,6,.5);
     if(this.hp<=0){Game.ko(this,att,{lvx:300,lvy:380,pw:.9,noStagger:true});return;}
     if(first){
       Snd.hit(.8);Game.shake=Math.max(Game.shake,5);
-      injure(this,'torso',.6);
+      const zone=!mark||mark.seg==='torso'?'torso':mark.seg==='head'?'head':'limb';
+      injure(this,zone,.6,mark);
       if(this.state!=='ragdoll'&&this.state!=='getup')this.toRagdoll(att.dir*300,400);
     }else if(this.state==='ragdoll'&&this.rag){
       this.rag.wake();for(const k of RK){this.rag.p[k].px-=att.dir*.35;}
@@ -2075,7 +2089,10 @@ class Fighter{
     const eye=this.laserEye();
     if(st<a.chargeT){
       if(!this.lzSnd){this.lzSnd=true;Snd.laserCharge();}
-      if(this.fx&&Math.random()<.6)this.fx.spark(eye.x+rnd(-16,16),eye.y+rnd(-16,16),1,'255,90,40');
+      if(this.fx&&this.fx.bloodField.random()<.6){
+        const field=this.fx.bloodField;
+        this.fx.laserSpark(eye.x+field.range(-12,12),eye.y+field.range(-12,12),1,'eye');
+      }
       return;
     }
     if(st>a.fireEnd){this.lz=null;return;}
@@ -2085,10 +2102,10 @@ class Fighter{
       desired=clamp(Math.atan2(ch.y-eye.y,Math.max(8,(ch.x-eye.x)*this.dir)),-1,1.2);
     }
     if(!this.lz){
-      this.lz={rel:desired,tick:0,hits:new Set(),sx:eye.x,sy:eye.y,ex:eye.x,ey:eye.y,surf:'none',f:null,on:true};
+      this.lz={rel:desired,tick:0,age:0,hits:new Set(),sx:eye.x,sy:eye.y,ex:eye.x,ey:eye.y,surf:'none',f:null,on:true};
       Snd.laser();Game.shake=Math.max(Game.shake,3);
     }
-    const lz=this.lz;
+    const lz=this.lz;lz.age+=dt;
     const m=2.1*dt;lz.rel+=clamp(desired-lz.rel,-m,m);
     const ux=Math.cos(lz.rel)*this.dir,uy=Math.sin(lz.rel);
     const res=Game.castRay(eye.x,eye.y,ux,uy,this);
@@ -2097,10 +2114,10 @@ class Fighter{
     if(lz.tick<=0){
       lz.tick=.07;
       if(res.f){const first=!lz.hits.has(res.f.id);lz.hits.add(res.f.id);res.f.takeLaser(this,res,first);}
-      else if(res.surf!=='none'){this.fx.burnSurface(res.x,res.y,res.surf);}
-      if(this.fx){
-        this.fx.spark(res.x,res.y,2,'255,160,50');
-        if(Math.random()<.3)this.fx.smoke(res.x,res.y,rnd(-30,30),-rnd(10,50),rnd(3,6),rnd(8,14),rnd(.3,.6),.4,1);
+      else if(this.fx&&res.surf!=='none')this.fx.burnSurface(res.x,res.y,res.surf);
+      if(this.fx&&res.surf!=='none'){
+        const n=3+Math.floor(this.fx.bloodField.random()*3);
+        this.fx.laserSpark(res.x,res.y,n,res.surf);
       }
     }
   }
@@ -2210,7 +2227,7 @@ class Fighter{
     this.lagHp=Math.max(this.hp,this.lagHp-dt*28);
     this.dashCD=Math.max(0,this.dashCD-dt);
     this.boxCD=Math.max(0,this.boxCD-dt);this.guardCD=Math.max(0,this.guardCD-dt);this.shoveCD=Math.max(0,this.shoveCD-dt);
-    this.chokeCD=Math.max(0,this.chokeCD-dt);this.grappleCD=Math.max(0,this.grappleCD-dt);
+    this.chokeCD=Math.max(0,this.chokeCD-dt);
     this.guardFlinch=Math.max(0,this.guardFlinch-dt);
     this.footSplashCooldown=Math.max(0,this.footSplashCooldown-dt);
     // Homelander first settles out of his hover; the lowered pose and its
@@ -2224,7 +2241,7 @@ class Fighter{
     for(const b of this.bloodStains)b.age+=dt;
     this.updateBleeding(dt);
     if(this.lz&&!(this.state==='attack'&&this.atk&&this.atk.laser))this.lz=null;
-    if(this.state!=='ragdoll'&&this.state!=='spawn'&&this.state!=='lamp_hang'&&this.state!=='lifted'&&(this.y>0||this.vy>0)){
+    if(this.state!=='ragdoll'&&this.state!=='spawn'&&this.state!=='lamp_hang'&&(this.y>0||this.vy>0)){
       this.vy-=2200*dt;this.y+=this.vy*dt;
       if(this.y<=0){const im=-this.vy;this.y=0;this.vy=0;this.onLand(im);}
     }
@@ -2428,75 +2445,6 @@ class Fighter{
       this.dir=this.st>=FLANK_DUR*.9?v.dir:(v.x>=this.x?1:-1);
       if(this.st>=FLANK_DUR&&!this.startChoke(v)){this.flankTarget=null;this.state='idle';this.st=0;}
       break;}
-     case 'takedown':{
-      const v=this.grappleTarget;
-      if(!v||!allFighters.includes(v)||!this.canGrapple(v)||Math.abs(v.x-this.x)>TAKEDOWN_REACH+25){
-        this.releaseGrapple();break;
-      }
-      this.vx=clamp((v.x-this.x-this.dir*45)*6,-145,145);
-      if(this.st>=TAKEDOWN_IMPACT&&!this.establishPin(v))this.releaseGrapple();
-      break;}
-     case 'ground_pin':
-     case 'ground_choke':{
-      const v=this.grappleTarget;
-      if(this.hp<=0||!v||!allFighters.includes(v)||v.hp<=0||v.grappleBy!==this||v.state!=='pinned'){
-        this.releaseGrapple();break;
-      }
-      this.vx=0;
-      if(this.state==='ground_pin'){
-        if(this.st>=this.pinChokeAt){
-          if(!this.pinChoke||!this.startGroundChoke())this.releaseGrapple();
-        }
-      }else{
-        if(this.st>=this.chokeCounterAt||this.st>=this.chokeReleaseAt){this.releaseGrapple();break;}
-        v.hp=Math.max(0,v.hp-CHOKE_DPS*dt);
-        if(v.hp<=0){Game.ko(v,this,{pw:.55,noStagger:true});break;}
-        if(this.st>=this.chokeDuration){this.releaseGrapple('complete');Snd.thud();}
-      }
-      break;}
-     case 'pinned':{
-      const h=this.grappleBy;
-      if(!h||!allFighters.includes(h)||h.hp<=0||h.grappleTarget!==this||
-         !['ground_pin','ground_choke'].includes(h.state)){
-        this.breakGrapple();if(this.state==='pinned')this.toRagdoll(0,0,true);break;
-      }
-      this.dir=-h.dir;this.x=clamp(h.x-h.dir*10,this.minX,this.maxX);this.y=0;this.vx=0;this.vy=0;this.hoverY=0;
-      break;}
-     case 'lift_hold':
-     case 'lift_jump':{
-      const v=this.grappleTarget;
-      if(this.hp<=0||!v||!allFighters.includes(v)||v.hp<=0||v.grappleBy!==this||v.state!=='lifted'){
-        this.releaseGrapple();break;
-      }
-      this.liftStamina-=dt;
-      if(this.state==='lift_hold'){
-        const rise=ease(clamp(this.st/.85,0,1));
-        const press=this.liftStyle==='press'&&this.st>.85?18*(.5-.5*Math.cos((this.st-.85)*4)):0;
-        this.liftHeight=rise*(46+press);
-        const weight=clamp(wstat(this.skin).weight/wstat(v.skin).weight,.55,1.1);
-        this.vx=this.liftMove*42*weight*rise;this.walkPh+=this.vx*this.dir*dt*.1;
-        if((this.x<this.minX+75&&this.vx<0)||(this.x>this.maxX-75&&this.vx>0))this.liftMove*=-1;
-        if(this.st>=this.liftJumpAt){
-          this.state='lift_jump';this.st=0;this.y=.5;this.vy=570;this.vx=this.dir*65;Snd.hop();
-        }else if(this.liftStamina<=0)this.releaseGrapple('escape');
-      }else{
-        this.vx*=Math.exp(-dt*.7);
-        if(this.st>=.24){
-          // Sync the lifted pose before releasing into independent ragdoll physics.
-          v.x=clamp(this.x+this.dir*46,v.minX,v.maxX);v.y=this.y+this.liftHeight;v.buildRig(0);
-          this.releaseGrapple('throw');Snd.whoosh();
-        }
-      }
-      break;}
-     case 'lifted':{
-      const h=this.grappleBy;
-      if(!h||!allFighters.includes(h)||h.hp<=0||h.grappleTarget!==this||
-         !['lift_hold','lift_jump'].includes(h.state)){
-        this.breakGrapple();if(this.state==='lifted')this.toRagdoll(0,0,true);break;
-      }
-      this.dir=-h.dir;this.x=clamp(h.x+h.dir*46,this.minX,this.maxX);
-      this.y=h.y+h.liftHeight;this.vx=0;this.vy=0;this.hoverY=0;
-      break;}
      case 'choke':{
       const v=this.chokeTarget;
       if(this.hp<=0||!v||!allFighters.includes(v)||v.hp<=0||v.chokedBy!==this||v.state!=='choked'){
@@ -2594,11 +2542,8 @@ class Fighter{
     }
     if(this.state!=='ragdoll'){
       this.x+=this.vx*dt;
-      const carrying=this.state==='lift_hold'||this.state==='lift_jump';
-      const min=this.state==='choke'&&this.dir<0?this.minX+CHOKE_OFFSET:
-        carrying&&this.dir<0?this.minX+46:this.minX;
-      const max=this.state==='choke'&&this.dir>0?this.maxX-CHOKE_OFFSET:
-        carrying&&this.dir>0?this.maxX-46:this.maxX;
+      const min=this.state==='choke'&&this.dir<0?this.minX+CHOKE_OFFSET:this.minX;
+      const max=this.state==='choke'&&this.dir>0?this.maxX-CHOKE_OFFSET:this.maxX;
       this.x=clamp(this.x,min,max);
     }
     c.jump=c.punch=false;
@@ -2607,7 +2552,7 @@ class Fighter{
       this.hoverY=0;
     }else if(this.state==='spawn'){
       this.hoverY=this.sp<3?0:HL_HOVER*ease(clamp(1-this.spT/.45,0,1));
-    }else if(['stagger_fall','push_stagger','shove','lamp_jump','lamp_hang','lamp_pull','takedown','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted','bleed_collapse'].includes(this.state)){
+    }else if(['stagger_fall','push_stagger','shove','lamp_jump','lamp_hang','lamp_pull','bleed_collapse'].includes(this.state)){
       this.hoverY=0;
     }else if(this.state==='getup'){
       if(this.st<1.76){this.hoverY=0;}
@@ -2633,6 +2578,7 @@ class Fighter{
     if(this.dizzyAlpha>0)this.dizzyPh+=dt*4.4;
     this.buildRig(dt);
     this.resolveBloodFootfall(dt);
+    this.resolveBloodJointContacts(dt);
     this.updateTie(dt);
     this.updateCape(dt);
     if(this.hp<=0&&this.state==='ragdoll'&&this.rag&&this.rag.frozen){this.corpseFade=Math.min(.14,this.corpseFade+dt*.018);}
@@ -2715,29 +2661,6 @@ class Fighter{
         a1:68+step*8,e1:55,c1:0,a2:54-step*8,e2:62,c2:0,
         f1x:22+step*21,f1h:Math.max(0,step)*15,f2x:-22-step*18,f2h:Math.max(0,-step)*13,mo:.8,bg:0});}
      case 'shove':return sampleKF(SHOVE_KF,this.st);
-     case 'takedown':{
-      const p=P({H:47,tl:58,hd:22,px:10,a1:75,e1:35,c1:0,a2:72,e2:38,c2:0,
-        f1x:34,f2x:-25,mo:.45,bg:0});
-      p.f1x+=Math.sin(this.st*18)*8;p.f2x-=Math.sin(this.st*18)*8;return p;}
-     case 'ground_pin':return P({H:25,tl:56,hd:25,px:3,a1:100,e1:0,a2:100,e2:0,f1x:22,f2x:3,mo:.35,bg:0});
-     case 'ground_choke':{
-      const squat=P({H:25,tl:56,hd:25,px:3,a1:100,e1:0,a2:100,e2:0,f1x:22,f2x:3,mo:.35,bg:0});
-      const press=P({H:37,tl:48,hd:20,px:3,a1:100,e1:0,a2:100,e2:0,f1x:26,f2x:5,mo:.55,bg:0});
-      return mix(squat,press,ease(clamp(this.st/.4,0,1)));}
-     case 'pinned':{
-      const p=P(LY),step=Math.sin(this.st*8);
-      p.f1x+=step*5;p.f2x-=step*4;p.f1h=2+Math.max(0,step)*5;p.f2h=2+Math.max(0,-step)*4;
-      p.mo=.8;return p;}
-     case 'lift_hold':
-     case 'lift_jump':{
-      const p=P({H:79,tl:-4,hd:-3,px:-4,f1x:24,f2x:-24,mo:.6,bg:0});
-      const step=Math.sin(this.walkPh)*clamp(Math.abs(this.vx)/45,0,1);
-      p.f1x+=step*11;p.f2x-=step*11;p.f1h=Math.max(0,step)*6;p.f2h=Math.max(0,-step)*6;
-      return p;}
-     case 'lifted':{
-      const step=Math.sin(this.st*9),tuck=.5+.5*Math.sin(this.st*3.4);
-      return P({H:80,tl:-8,hd:-7,px:-2,f1x:22+step*13,f1h:12+tuck*25,
-        f2x:-10-step*11,f2h:10+tuck*20,mo:.8,ey:.25,bg:0});}
      case 'guard':{
       const p=Object.assign({},GUARD_POSE),w=clamp(Math.abs(this.vx)/48,0,1),step=Math.sin(this.walkPh)*w;
       p.f1x+=step*12;p.f2x-=step*12;p.f1h=Math.max(0,step)*7;p.f2h=Math.max(0,-step)*7;
@@ -2863,28 +2786,23 @@ class Fighter{
       this.x=clamp(this.rig.pel.x,this.minX,this.maxX);return;
     }
     const tp=this.targetPose();
-    const hard=['getup','spawn','counter_throw','lamp_hang','shove','pinned','lifted'].includes(this.state);
+    const hard=['getup','spawn','counter_throw','lamp_hang','shove'].includes(this.state);
     const k=hard?1:(this.state==='attack'||this.state==='hit')?1-Math.exp(-dt*45):1-Math.exp(-dt*24);
     this.cur=(this.cur&&!hard)?mix(this.cur,tp,k):Object.assign({},tp);
     const hasBat=this.skin==='negan'&&this.hp>0&&!this.batLost&&!stowsBat(this);
-    let R=computeRig(this.cur,this.x,this.gy,this.y+(this.hoverY||0),this.dir,hasBat);
-    if(this.state==='guard'||this.state==='guard_recoil')poseGuardArms(R,this);
+    const guarding=this.state==='guard'||this.state==='guard_recoil';
+    const pose=guarding?guardWobblePose(this.cur,this):this.cur;
+    let R=computeRig(pose,this.x,this.gy,this.y+(this.hoverY||0),this.dir,hasBat);
+    if(guarding)poseGuardArms(R,this);
     if(this.state==='lamp_jump'||this.state==='lamp_hang')poseLampArms(R,this);
     if(this.state==='lamp_pull')poseLampPullArms(R,this.lampPullTarget);
     if(this.state==='choke')poseNeckHold(R,this.chokeTarget);
     if(this.state==='choked')poseStruggleArms(R,this.st);
     if(this.state==='counter_throw')poseCounterGrip(R,this);
-    if(this.state==='takedown')poseTakedownArms(R,this.grappleTarget);
-    if(this.state==='ground_pin'||this.state==='ground_choke')posePinArms(R,this.grappleTarget);
-    if(this.state==='lift_hold'||this.state==='lift_jump')poseLiftArms(R,this.grappleTarget);
-    if(this.state==='pinned')poseStruggleArms(R,this.st,true);
-    if(this.state==='lifted')poseLiftStruggle(R,this.grappleBy,this.st);
     if(this.bleed&&this.bleed.pressing){
       const p=surfacePoint(R,this.bleed.mark);
       if(p){aimArmWorld(R,this.bleed.arm,p.x,p.y);R['c'+this.bleed.arm]=0;R.bd=null;}
     }
-    if((this.state==='pinned'||this.state==='lifted')&&this.pinBase&&this.st<.35)
-      R=blendRig(this.pinBase,R,ease(clamp(this.st/.35,0,1)));
     if(this.state==='getup'&&this.blend>0&&this.blendFrom)R=blendRig(this.blendFrom,R,ease(1-this.blend/.3));
     this.rig=R;
   }
@@ -2918,7 +2836,7 @@ class AutoCombat{
     this.shoveSeen=-1;this.pendingShove=null;this.pendingShoveT=0;
     this.lampCheck=rnd(5,12);this.lampTarget=null;this.hangSeen=null;this.hangStamp=-1;this.hangResponse=null;
     this.rolled=false;this.intercept=false;this.afterHop=0;this.reactAction='hop';
-    this.spaceCD=rnd(2,4);this.spaceDuration=0;this.grappleCheck=rnd(2,5);
+    this.spaceCD=rnd(2,4);this.spaceDuration=0;
     this.openingSeen=Object.create(null);this.openingTarget=null;
   }
   setMode(m){this.mode=m;this.modeT=0;}
@@ -2943,7 +2861,7 @@ class AutoCombat{
   update(dt,f,o,all){
     const c=f.ctrl;
     c.mx=0;c.jump=false;c.punch=false;c.run=false;c.laser=false;c.hop=false;c.noFace=false;c.crouch=false;
-    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.lampCheck-=dt;this.spaceCD-=dt;this.grappleCheck-=dt;this.modeT+=dt;
+    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.lampCheck-=dt;this.spaceCD-=dt;this.modeT+=dt;
     this.pendingShoveT=Math.max(0,this.pendingShoveT-dt);
     if(f.hp<=0){this.mode='engage';this.openingTarget=null;this.lampTarget=null;return;}
     const st=f.state;
@@ -2951,10 +2869,10 @@ class AutoCombat{
       f.bleed.decision=rnd(2.2,4);
       if(Math.random()<.6)f.startPressure();
     }
-    if(['ragdoll','getup','stagger_fall','push_stagger','spawn','hit','run_hit_stop','pinned','lifted','bleed_collapse'].includes(st)){
+    if(['ragdoll','getup','stagger_fall','push_stagger','spawn','hit','run_hit_stop','bleed_collapse'].includes(st)){
       this.mode='engage';this.reactT=-1;this.reactAttacker=null;this.openingTarget=null;this.lampTarget=null;
       this.pendingShove=null;this.vaultTarget=null;this.downTarget=null;this.downDecided=false;
-      if(!['ragdoll','stagger_fall','push_stagger','pinned','lifted','bleed_collapse'].includes(st))f.faceOpp(o);
+      if(!['ragdoll','stagger_fall','push_stagger','bleed_collapse'].includes(st))f.faceOpp(o);
       return;
     }
     // Once airborne keep the running-jump momentum; interruption or landing
@@ -2997,7 +2915,7 @@ class AutoCombat{
     }
     if(!o){this.mode='engage';this.openingTarget=null;this.lampTarget=null;this.downTarget=null;this.downDecided=false;return;}
     const dx=o.x-f.x,dist=Math.abs(dx),toward=dx>=0?1:-1;
-    if(['guard','guard_recoil','shove','overextend','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','takedown','ground_pin','ground_choke','lift_hold','lift_jump'].includes(st)){
+    if(['guard','guard_recoil','shove','overextend','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull'].includes(st)){
       c.noFace=true;return;
     }
     // Decide once per missed swing, not on every frame. A defender can finish
@@ -3062,7 +2980,7 @@ class AutoCombat{
       }
     }
 
-    const oppDown=o.state==='ragdoll'||o.state==='pinned'||o.state==='getup'||o.state==='spawn';
+    const oppDown=o.state==='ragdoll'||o.state==='getup'||o.state==='spawn';
     if(this.mode==='duck'){
       if(st!=='idle'||oppDown||this.modeT>=this.spaceDuration){this.setMode('engage');return;}
       c.noFace=true;c.crouch=true;f.dir=toward;
@@ -3072,23 +2990,6 @@ class AutoCombat{
       if(st!=='idle'||oppDown||this.modeT>=this.spaceDuration||dist>230){this.setMode('engage');return;}
       c.noFace=true;f.dir=toward;
       if(dist<180)c.mx=-toward;
-      return;
-    }
-    if(this.mode==='low_approach'||this.mode==='lift_approach'){
-      const low=this.mode==='low_approach';
-      if(st!=='idle'||oppDown||this.modeT>2.5||dist>190||!f.canGrapple(o)){
-        this.setMode('engage');return;
-      }
-      c.noFace=true;f.dir=toward;c.crouch=low;
-      if(low){
-        if(dist<=TAKEDOWN_REACH-6&&f.crouchActive&&f.crouchTime>=.07&&f.startTakedown(o)){
-          this.setMode('engage');return;
-        }
-        if(dist>75)c.mx=toward;
-      }else{
-        if(dist<=76&&f.startLift(o)){this.setMode('engage');return;}
-        c.mx=toward;
-      }
       return;
     }
     if(this.mode==='lamp_approach'){
@@ -3186,14 +3087,6 @@ class AutoCombat{
       return;
     }
     this.downDecided=false;this.downTarget=null;
-    if(this.grappleCheck<=0){
-      this.grappleCheck=rnd(3,5.5);
-      if(f.grappleCD<=0&&dist<150&&f.y<=5&&!(f.bleed&&f.bleed.pressing)&&f.canGrapple(o)){
-        const roll=Math.random();
-        if(roll<.25){this.setMode('low_approach');c.crouch=true;return;}
-        if(roll<.34){this.setMode('lift_approach');return;}
-      }
-    }
     // Break up stationary exchanges: sometimes step or hop away and keep a
     // little space, without changing any attack or guard cooldowns.
     if(this.spaceCD<=0&&dist<165&&o.y<10&&o.state!=='attack'&&Math.random()<dt*.5){
@@ -3331,7 +3224,7 @@ function makeBG(W,H,gy,S){
   for(let i=0;i<300;i++){x.fillStyle=`rgba(${rnd(60,130)|0},${rnd(25,50)|0},${rnd(25,45)|0},${rnd(.03,.1)})`;x.fillRect(rnd(W),rnd(gy-60),rnd(10,60),rnd(6,22));}
   x.save();x.font="900 56px 'Russo One',Impact,sans-serif";x.textAlign='center';x.shadowColor='#ff2a44';x.shadowBlur=28;x.strokeStyle='#ff4a5e';x.lineWidth=3;x.strokeText('DUMMY FURY',W/2,110);x.fillStyle='rgba(255,120,130,.25)';x.fillText('DUMMY FURY',W/2,110);x.restore();
   // Keep the chain-link, railing and floor on a transparent foreground so
-  // animated spectators and their signs remain behind the enclosure.
+  // animated spectators remain behind the enclosure.
   const front=document.createElement('canvas');front.width=c.width;front.height=c.height;
   x=front.getContext('2d');x.imageSmoothingEnabled=false;x.scale(px,px);
   x.strokeStyle='rgba(180,190,210,.06)';x.lineWidth=1;
@@ -3361,28 +3254,29 @@ function clearPixelLayer(layer){
   c.imageSmoothingEnabled=false;
   c.setTransform(layer.scale,0,0,layer.scale,0,0);
 }
-// Laser beam (drawn on the 3px FX layer): glow, hot body and white core, plus an impact flare.
+// A saturated red beam with a hot pale-red core and a small rounded impact.
 function drawBeam(g,lz){
-  const fl=.85+Math.random()*.3,sn=v=>Math.round(v/3)*3;
-  g.save();g.lineCap='butt';
+  const fl=.97+.12*Math.sin((lz.age||0)*55);
+  g.save();g.lineCap='round';
   const line=()=>{g.beginPath();g.moveTo(lz.sx,lz.sy);g.lineTo(lz.ex,lz.ey);g.stroke();};
-  g.strokeStyle='rgba(255,70,25,.30)';g.lineWidth=15*fl;line();
-  g.strokeStyle='rgba(255,130,40,.82)';g.lineWidth=7*fl;line();
-  g.strokeStyle='#fff0c0';g.lineWidth=3;line();
-  const x=sn(lz.ex),y=sn(lz.ey),s=lz.surf==='floor'?1:0;
-  g.fillStyle='rgba(255,90,25,.55)';g.fillRect(x-12*fl,y-(s?6:12)*fl,24*fl,(s?12:24)*fl);
-  g.fillStyle='rgba(255,170,50,.9)';g.fillRect(x-6,y-(s?3:6),12,s?6:12);
-  g.fillStyle='#fff6d0';g.fillRect(x-3,y-3,6,6);
+  g.strokeStyle='rgba(255,12,42,.32)';g.lineWidth=15*fl;line();
+  g.strokeStyle='#ff263e';g.lineWidth=7*fl;line();
+  g.strokeStyle='#ffe0e2';g.lineWidth=3;line();
+  if(lz.surf!=='none'){
+    const flat=lz.surf==='floor'?.55:1;
+    const dot=(rx,ry,color)=>{g.fillStyle=color;g.beginPath();g.ellipse(lz.ex,lz.ey,rx,ry,0,0,TAU);g.fill();};
+    dot(10*fl,10*fl*flat,'rgba(255,30,45,.55)');
+    dot(5,5*flat,'rgba(255,95,90,.9)');dot(2.7,2.7,'#fff1eb');
+  }
   g.restore();
 }
 function drawEyeGlow(g,f){
   const a=f.atk;if(!a||!a.laser||!f.rig)return;
-  const e=f.laserEye();
-  const k=f.st<a.chargeT?f.st/a.chargeT:1;
-  const s=Math.round((3+k*9)/3)*3;
-  g.fillStyle=`rgba(255,60,25,${.25+k*.35})`;g.fillRect(e.x-s,e.y-s,s*2,s*2);
-  g.fillStyle=`rgba(255,120,40,${.5+k*.4})`;g.fillRect(e.x-s/2-1.5,e.y-s/2-1.5,s+3,s+3);
-  g.fillStyle='#fff3c8';g.fillRect(Math.round(e.x/3)*3-3,Math.round(e.y/3)*3-3,6,6);
+  const e=f.laserEye(),k=f.st<a.chargeT?f.st/a.chargeT:1,s=3+k*9;
+  const dot=(r,color)=>{g.fillStyle=color;g.beginPath();g.ellipse(e.x,e.y,r,r*.88,0,0,TAU);g.fill();};
+  dot(s,`rgba(255,20,45,${.25+k*.35})`);
+  dot(s*.55,`rgba(255,75,85,${.5+k*.4})`);
+  dot(2.7,'#ffe7e5');
 }
 /*
   Pixel-art yellow dizzy stars orbiting above a knocked-out (unconscious) fighter's head.
@@ -3503,6 +3397,9 @@ const Game={
     this.batLayer=makeLayer(bodyScale);
     this.frontLayer=makeLayer(bodyScale);
     this.fxLayer=makeLayer(bodyScale);
+    // Tiny round laser particles need full resolution; the rest of the game
+    // and the beam itself retain their deliberately pixelated layers.
+    this.laserLayer=makeLayer(this.S);
     this.markLayer=makeLayer(bodyScale);
     this.bloodLayer=makeLayer(bodyScale);this.puddleMaskLayer=makeLayer(bodyScale);
     this.reflectionLayer=makeLayer(bodyScale);this.bloodVersion=-1;
@@ -3565,7 +3462,7 @@ const Game={
     this.fx.clearBlood();
     for(const f of this.fighters){
       if(f.hp>0)f.wounds=newWounds();
-      f.bloodStains=[];f.footBlood={N:0,F:0};f.bloodFootfall=null;
+      f.bloodStains=[];f.footBlood={N:0,F:0};f.jointBlood={kN:0,kF:0,eN:0,eF:0};f.bloodFootfall=null;
     }
   },
   // Ray against the arena: stops at the first fighter body, the floor, a wall post or the ceiling.
@@ -3595,7 +3492,7 @@ const Game={
     a=a||{};
     const delayed=!a.bleedOut&&!a.noStagger&&!a.preserveRagdoll&&!a.keepRag&&
       (a.launch||a.pw>=.4)&&v.canStagger(att)&&Math.random()<STAGGER_KO_CHANCE;
-    v.breakGrapple();v.breakChoke();v.boxing=false;v.shoveTarget=null;v.hp=0;
+    v.breakChoke();v.boxing=false;v.shoveTarget=null;v.hp=0;
     if(v.skin==='negan'&&!v.batLost){
       const R=v.rig;
       const bx=R&&R.bd?R.wN.x+R.bd.x*24:v.x+v.dir*26;
@@ -3642,7 +3539,7 @@ const Game={
     for(const o of this.fighters){
       if(o===f||o.hp<=0)continue;
       const dist=Math.abs(o.x-f.x);
-      const downPenalty=(o.state==='ragdoll'||o.state==='pinned'||o.state==='getup'||o.state==='spawn')?280:0;
+      const downPenalty=(o.state==='ragdoll'||o.state==='getup'||o.state==='spawn')?280:0;
       const sc=dist+downPenalty;
       if(sc<bestScore){bestScore=sc;best=o;}
     }
@@ -3671,7 +3568,7 @@ const Game={
     for(const lamp of this.lamps)lamp.update(dt,this);
     // Owners/throwers update before the restrained fighter, independent of
     // spawn order, then the holder's hands are aligned to the current neck.
-    const dependent=f=>['choked','counter_carried','pinned','lifted'].includes(f.state);
+    const dependent=f=>['choked','counter_carried'].includes(f.state);
     const order=[...this.fighters.filter(f=>!dependent(f)),...this.fighters.filter(dependent)];
     for(const f of order){
       const opp=f.hp>0?this.findBestOpponent(f):null;
@@ -3688,7 +3585,6 @@ const Game={
     }
     for(const f of this.fighters){
       if(f.state==='choke'&&f.chokeTarget&&f.chokeTarget.rig)f.buildRig(0);
-      if(['takedown','ground_pin','ground_choke','lift_hold','lift_jump'].includes(f.state)&&f.grappleTarget&&f.grappleTarget.rig)f.buildRig(0);
     }
     for(const b of this.droppedBats){
       if(b.settled){b.fade=Math.min(.14,b.fade+dt*.018);continue;}
@@ -3721,12 +3617,12 @@ const Game={
       for(let j=i+1;j<alive.length;j++){
         const B=alive[j];
         if(B.hp<=0||B.y>=60||['ragdoll','spawn','run','counter_carried'].includes(B.state))continue;
-        if(A.chokeTarget===B||B.chokeTarget===A||A.flankTarget===B||B.flankTarget===A||A.lampPullTarget===B||B.lampPullTarget===A||A.grappleTarget===B||B.grappleTarget===A)continue;
+        if(A.chokeTarget===B||B.chokeTarget===A||A.flankTarget===B||B.flankTarget===A||A.lampPullTarget===B||B.lampPullTarget===A)continue;
         const dx=B.x-A.x,m=54;
         if(Math.abs(dx)<m){
           const s=dx>=0?1:-1,push=(m-Math.abs(dx))/2;
-          const fixedA=['choke','choked','counter_throw','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted'].includes(A.state);
-          const fixedB=['choke','choked','counter_throw','ground_pin','ground_choke','pinned','lift_hold','lift_jump','lifted'].includes(B.state);
+          const fixedA=['choke','choked','counter_throw'].includes(A.state);
+          const fixedB=['choke','choked','counter_throw'].includes(B.state);
           const ok1=!fixedA&&A.x-s*push>=A.minX&&A.x-s*push<=A.maxX;
           const ok2=!fixedB&&B.x+s*push>=B.minX&&B.x+s*push<=B.maxX;
           if(ok1&&ok2){A.x-=s*push;B.x+=s*push;}
@@ -3736,7 +3632,7 @@ const Game={
       }
     }
     this.fx.update(dt);
-    if(this.audience)this.audience.update(rdt,this.fighters);
+    if(this.audience)this.audience.update(rdt);
     this.updateCamera(rdt);
     this.updateHud();
   },
@@ -3820,12 +3716,9 @@ const Game={
       ctx.drawImage(this.batLayer.canvas,0,0,W,H);
     }
 
-    const dependent=f=>['choked','counter_carried','lifted'].includes(f.state);
-    // A pinned body is below its kneeling opponent; a lifted body is in front
-    // of its holder, whose gripping arm is painted once more over the top.
+    const dependent=f=>['choked','counter_carried'].includes(f.state);
     const ordered=[...this.fighters.filter(f=>f.hp<=0),
-      ...this.fighters.filter(f=>f.hp>0&&f.state==='pinned'),
-      ...this.fighters.filter(f=>f.hp>0&&f.state!=='pinned'&&!dependent(f)),
+      ...this.fighters.filter(f=>f.hp>0&&!dependent(f)),
       ...this.fighters.filter(f=>f.hp>0&&dependent(f))];
     for(const f of ordered){
       if(!f.rig||(f.state==='spawn'&&f.sp===0))continue;
@@ -3860,15 +3753,6 @@ const Game={
       paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,f));
       if(f.bleed&&f.bleed.pressing&&f.bleed.arm==='F')
         paintLayer(this.frontLayer,q=>drawPixelArm(q,f.rig,f,'F',true,SK_[f.skin]||SK_.jane));
-      if((f.state==='ground_pin'||f.state==='ground_choke')&&f.grappleTarget&&f.grappleTarget.rig){
-        const victim=f.grappleTarget;
-        paintLayer(this.frontLayer,q=>{
-          drawPixelArm(q,victim.rig,victim,'F',true,SK_[victim.skin]||SK_.jane);
-          drawFighterFrontArm(q,victim);
-        },false);
-      }
-      const tackler=this.fighters.find(h=>h.state==='takedown'&&h.grappleTarget===f&&h.rig);
-      if(tackler)paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,tackler),false);
       // The near arm wraps in front of the opponent's neck rather than being
       // hidden behind the opponent's sprite.
       if(f.state==='choked'&&f.chokedBy&&f.chokedBy.rig){
@@ -3877,9 +3761,6 @@ const Game={
       }else if(f.state==='counter_carried'&&f.chokeTarget&&f.chokeTarget.rig){
         const thrower=f.chokeTarget;
         paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,thrower),false);
-      }else if(f.state==='lifted'&&f.grappleBy&&f.grappleBy.rig){
-        const holder=f.grappleBy;
-        paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,holder),false);
       }
       ctx.restore();
     }
@@ -3896,6 +3777,10 @@ const Game={
     }
     this.fx.draw(this.fxLayer.ctx);
     ctx.drawImage(this.fxLayer.canvas,0,0,W,H);
+    if(this.fx.laserSparks.length){
+      clearPixelLayer(this.laserLayer);this.fx.drawLaserSparks(this.laserLayer.ctx);
+      ctx.drawImage(this.laserLayer.canvas,0,0,W,H);
+    }
 
     ctx.save();ctx.globalCompositeOperation='lighter';
     for(const lamp of this.lamps){
