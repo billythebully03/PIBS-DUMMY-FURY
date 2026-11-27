@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { UserPlus, Swords, RefreshCw, Skull, DropletOff, Volume2, VolumeX } from "lucide-react";
 import { startGame } from "./game/engine";
+import SpawnMenu, { type SkinKey } from "./GUI/SpawnMenu";
 
 type GameApi = ReturnType<typeof startGame>;
 
@@ -22,9 +23,18 @@ export default function App() {
       <canvas id="gameCv" />
       <div id="topBar">
         <div className="ctrlGroup">
-          <button className="sbtn primary" title="Заспавнить одного бойца в случайной точке" onClick={() => api.current?.spawnOne()}>
-            <UserPlus />Спавн бойца
-          </button>
+          <div className="spawnWrap">
+            <button
+              className="sbtn primary"
+              title="Заспавнить одного бойца в случайной точке"
+              onClick={() => api.current?.spawnOne()}
+            >
+              <UserPlus />Спавн бойца
+            </button>
+            <SpawnMenu
+              onPick={(skin: SkinKey) => api.current?.spawnSkin(skin)}
+            />
+          </div>
           <button className="sbtn" title="Заспавнить двух бойцов напротив друг друга" onClick={() => api.current?.spawnPair()}>
             <Swords />Спавн пары
           </button>
