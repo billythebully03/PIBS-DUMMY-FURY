@@ -1,26 +1,30 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, afterEach, beforeEach, test } from 'node:test';
-import { transformWithEsbuild } from 'vite';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 
 // Exercise the actual game engine without requiring a browser or exposing its
 // internal classes in the production bundle. Canvas methods are instrumented so
 // rendering exceptions and important draw calls remain observable.
 function makeCanvas(width = 960, height = 540) {
   const canvas = { width, height, style: {} };
-  const stats = { drawImage: 0, fillRect: 0, stroke: 0, arc: 0, colors: new Set(), texts: [] };
+  const stats = { drawImage: 0, fillRect: 0, rect: 0, fill: 0, stroke: 0, arc: 0, clip: 0, colors: new Set(), composites: new Set(), texts: [] };
   let fillStyle = '#000';
   let strokeStyle = '#000';
+  let composite = 'source-over';
   const ctx = {
     canvas, stats,
     get fillStyle() { return fillStyle; },
     set fillStyle(value) { fillStyle = value; stats.colors.add(value); },
     get strokeStyle() { return strokeStyle; },
     set strokeStyle(value) { strokeStyle = value; stats.colors.add(value); },
+    get globalCompositeOperation() { return composite; },
+    set globalCompositeOperation(value) { composite = value; stats.composites.add(value); },
     save() {}, restore() {}, setTransform() {}, transform() {}, translate() {},
-    rotate() {}, scale() {}, clearRect() {}, beginPath() {}, closePath() {},
+    rotate() {}, scale() {}, clearRect() {}, beginPath() {}, closePath() {}, rect() { stats.rect++; }, clip() { stats.clip++; },
     moveTo() {}, lineTo() {}, quadraticCurveTo() {}, bezierCurveTo() {},
-    ellipse() {}, fill() {}, fillText(text, x, y) { stats.texts.push({ text, x, y, color: fillStyle, font: this.font }); },
+    ellipse() {}, fill() { stats.fill++; }, fillText(text, x, y) { stats.texts.push({ text, x, y, color: fillStyle, font: this.font }); },
     strokeText() {}, setLineDash() {},
     fillRect() { stats.fillRect++; }, strokeRect() { stats.stroke++; },
     stroke() { stats.stroke++; }, arc() { stats.arc++; },
@@ -50,10 +54,16 @@ globalThis.document = {
 };
 
 const source = await readFile(new URL('../src/game/engine.ts', import.meta.url), 'utf8');
-const { code } = await transformWithEsbuild(`${source}\nexport { Game, Fighter, surfacePoint };`, 'engine.ts', {
-  loader: 'ts', format: 'esm', target: 'es2020',
+// Bundle the small audience/blood modules with the real engine while keeping
+// the test-only exports out of the production entry point.
+const { outputFiles } = await build({
+  stdin: {
+    contents: `${source}\nexport { Game, Fighter, surfacePoint, stainedSkinSprite, SK_, Audience, BloodField };`,
+    resolveDir: fileURLToPath(new URL('../src/game/', import.meta.url)), sourcefile: 'engine.ts', loader: 'ts',
+  },
+  bundle: true, write: false, platform: 'browser', format: 'esm', target: 'es2020',
 });
-const { Game, Fighter, surfacePoint } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const { Game, Fighter, surfacePoint, stainedSkinSprite, SK_, Audience, BloodField } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`);
 const originalRandom = Math.random;
 const originalWarn = console.warn;
 let warnings = [];
@@ -1916,9 +1926,10 @@ test('only rare very strong impacts cause an attached, dark pixel wound that dri
   assert.ok(victim.bleed.flowTime >= .9 && victim.hp < 99, 'uncovered bleeding costs moderate health');
   Game.render();
   assert.ok(Game.bodyLayer.ctx.stats.colors.has('#690c1a'), 'dark pixels are drawn on the body layer');
-  const floorColors = Game.dctx.stats.colors;
   tick(.7);
-  assert.ok(floorColors.has('#5e0916'), 'small drops land and remain on the floor');
+  assert.ok(Game.fx.bloodField.cells.size > 0, 'small drops land and remain on the floor');
+  Game.render();
+  assert.ok(Game.bloodLayer.ctx.stats.colors.has('#5e0916'), 'floor drops are rendered as dark pixels');
   Game.clearBlood();
   assert.ok(victim.bleed, 'washing away stains does not silently heal an active wound');
 });
@@ -2031,4 +2042,253 @@ test('unattended fights naturally use the new defenses and rare grapples without
       assert.ok(counts[key] > 0, `${key} never occurred autonomously`);
     assert.ok(counts.lift < 100, 'underarm grabs remain relatively rare');
   } finally { for (const name of names) Fighter.prototype[name] = originals[name]; }
+});
+
+test('audience breathes, occasionally walks, and signs support real roster members without using combat randomness', () => {
+  const labels = {
+    jane: ['P.J', 'PATRICK', 'JANE'], negan: ['NEGAN', 'NEG', 'N.G'],
+    homelander: ['HOME', 'H.L', 'HOMIE'], walt: ['W.W', 'WALTER', 'WALT'],
+    saul: ['SAUL', 'S.G', 'GOODMAN'],
+  };
+  const saved = Math.random;
+  try {
+    Math.random = () => { throw new Error('cosmetic audience must not use combat RNG'); };
+    for (const [skin, variants] of Object.entries(labels)) {
+      const seen = new Set();
+      for (let seed = 1; seed <= 40; seed++) {
+        const audience = new Audience(960, 468, seed * 137);
+        const roster = [{ id: 4, skin, hp: 100 }, { id: 8, skin: 'jane', hp: 0 }];
+        assert.equal(audience.createSign(roster), true);
+        const sign = audience.signs[0];
+        assert.equal(sign.fighterId, 4); assert.equal(sign.skin, skin);
+        assert.ok(variants.includes(sign.label)); seen.add(sign.label);
+        assert.ok(sign.people.length >= 3 && sign.people.length <= 5);
+        assert.ok(sign.people.every(p => p.row === 1));
+      }
+      assert.ok(seen.size >= 2, `${skin} should have varied short labels`);
+    }
+    const audience = new Audience(960, 468, 99);
+    assert.equal(audience.createSign([]), false, 'no invented fighter names');
+    const before = audience.people.map(p => p.x);
+    assert.equal(audience.startWalker(), true);
+    audience.update(.7, []);
+    assert.ok(audience.people.some((p, i) => p.x !== before[i]), 'a few spectators change position');
+    const g = makeCanvas().getContext('2d'), rects = [];
+    g.fillRect = (...values) => rects.push(values);
+    audience.draw(g); const first = JSON.stringify(rects);
+    rects.length = 0; audience.time += 1.1; audience.draw(g);
+    assert.notEqual(JSON.stringify(rects), first, 'subtle breathing changes the pixel silhouettes');
+    const x = audience.people[3].x;
+    audience.resize(800, 468);
+    assert.ok(Math.abs(audience.people[3].x - x * 800 / 960) < .01);
+    const timed = new Audience(960, 468, 1234), roster = [{ id: 10, skin: 'jane', hp: 100 }];
+    let peakSigns = 0, sawWalker = false;
+    for (let i = 0; i < 700; i++) {
+      timed.update(.1, roster);
+      peakSigns = Math.max(peakSigns, timed.signs.length);
+      sawWalker ||= timed.people.some(p => p.walkLeft > 0);
+    }
+    assert.ok(peakSigns > 0 && peakSigns <= 2, 'signs appear occasionally without filling the stands');
+    assert.ok(sawWalker, 'ordinary updates occasionally start a walker');
+    timed.signs.forEach(sign => { sign.duration = sign.age + 5; });
+    timed.update(.1, []); timed.update(.7, []);
+    assert.equal(timed.signs.length, 0, 'removed contestants do not leave stale signs');
+  } finally { Math.random = saved; }
+});
+
+test('the crowd celebrates only an actual KO, shakes existing signs, then settles including bleed-out KOs', () => {
+  const a = fighter(350, 1, 'jane'), b = fighter(560, -1, 'walt'); disableAI(a, b);
+  const crowd = Game.audience;
+  assert.equal(crowd.createSign([a, b]), true);
+  const sign = crowd.signs[0]; sign.age = 1; sign.duration = 20;
+  const still = crowd.signPose(sign);
+  assert.ok(Math.abs(still.angle) < 1e-10);
+  b.toRagdoll(0, 0);
+  tick(.2);
+  assert.equal(crowd.cheerCount, 0, 'a recoverable knockdown does not make the crowd cheer');
+  Game.ko(b, a, { preserveRagdoll: true, pw: .7 });
+  assert.equal(crowd.cheerCount, 1); assert.ok(crowd.cheerLeft > 2);
+  tick(.1);
+  const shaking = crowd.signPose(sign);
+  assert.ok(Math.abs(shaking.angle) > .00001 || Math.abs(shaking.x - still.x) > .01);
+  tick(3);
+  assert.equal(crowd.cheerLeft, 0); assert.ok(Math.abs(crowd.signPose(sign).angle) < 1e-10);
+  const c = fighter(700, -1, 'saul'); disableAI(c);
+  Game.ko(c, a, { bleedOut: true });
+  assert.equal(crowd.cheerCount, 2, 'blood-loss KO also triggers a single celebration');
+});
+
+test('isolated drops grow and fuse into one connected, uniformly filled pool with a shared boundary', () => {
+  const field = new BloodField(960, 468, 1234);
+  const first = field.add(300, 480, 'drip');
+  field.add(360, 480, 'drip');
+  assert.equal(field.groups.size, 2); assert.equal(first.cells.size, 2);
+  assert.equal(field.puddleAtFoot(300, 468), null, 'one drop is not a splashable puddle');
+  const initial = field.cells.size;
+  for (let i = 1; i <= 9; i++) field.add(300 + i * 6, 480 + (i % 2 ? 3 : 0), 'drip');
+  assert.equal(field.groups.size, 1, 'nearby deposits must join both clusters');
+  const pool = [...field.groups][0];
+  assert.ok(pool.cells.size > initial + 30); assert.ok(field.isPuddle(pool));
+  assert.equal(field.puddleAtFoot(325, 468), pool);
+  // Every occupied pixel belongs to one four-connected component; no two
+  // overlapping stamp borders or disconnected pieces hide in this pool.
+  const todo = [pool.cells.values().next().value], visited = new Set(todo);
+  while (todo.length) {
+    const k = todo.pop();
+    for (const n of [k - 1024, k + 1024, k - 1, k + 1])
+      if (pool.cells.has(n) && !visited.has(n)) { visited.add(n); todo.push(n); }
+  }
+  assert.equal(visited.size, pool.cells.size);
+  const g = makeCanvas().getContext('2d'); field.drawBase(g);
+  assert.deepEqual([...g.stats.colors].sort(), ['#5e0916', '#790e1b'].sort(), 'only boundary and near-solid fill colors');
+  field.add(700, 490, 'drip');
+  assert.equal(field.groups.size, 2, 'distant droplets stay separate');
+});
+
+test('puddle reflections are clipped to substantial pools and follow moving fighters and lamps', () => {
+  const field = Game.fx.bloodField, f = fighter(450, 1, 'jane'); disableAI(f);
+  field.add(450, Game.gy + 10, 'drip');
+  const mask = makeCanvas(), maskContext = mask.getContext('2d');
+  field.drawReflectionMask(maskContext);
+  assert.equal(maskContext.stats.rect, 0, 'isolated drops do not get a reflected scene');
+  for (let i = 0; i < 12; i++) field.add(450 + Math.sin(i) * 3, Game.gy + 10, 'seep');
+  assert.ok(field.hasPuddles()); field.drawReflectionMask(maskContext);
+  assert.ok(maskContext.stats.rect > 0);
+  const g = makeCanvas().getContext('2d');
+  const paths = []; g.moveTo = (x, y) => paths.push([x, y]); g.lineTo = (x, y) => paths.push([x, y]);
+  field.drawReflections(g, [f], Game.lamps, .5, mask);
+  assert.ok(g.stats.composites.has('destination-in')); assert.ok(g.stats.stroke > 0);
+  assert.ok(g.stats.colors.has('rgba(241,183,160,.16)'));
+  assert.ok(g.stats.colors.has('rgba(255,218,170,.18)'));
+  const before = JSON.stringify(paths); paths.length = 0;
+  f.x += 35; f.buildRig(1 / 60);
+  field.drawReflections(g, [f], Game.lamps, .7, mask);
+  assert.notEqual(JSON.stringify(paths), before, 'the reflected pose moves with the fighter');
+  Game.render(); const baseDraws = Game.bloodLayer.ctx.stats.rect;
+  Game.render(); assert.equal(Game.bloodLayer.ctx.stats.rect, baseDraws, 'unchanged blood base is cached');
+  field.add(700, Game.gy + 10, 'drip'); Game.render();
+  assert.ok(Game.bloodLayer.ctx.stats.rect > baseDraws, 'new blood invalidates the cache');
+});
+
+test('real sprinting footfalls splash significant puddles in either direction at 30, 60 and 120 FPS', () => {
+  const fx = Game.fx, originalSplash = fx.splash.bind(fx); let splashes = 0;
+  fx.splash = (...args) => { splashes++; originalSplash(...args); };
+  try {
+    for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) {
+      Game.fighters = []; fx.clearBlood(); splashes = 0;
+      const start = dir === 1 ? 230 : Game.W - 230;
+      const f = fighter(start, dir, 'jane'); disableAI(f);
+      const center = start + dir * 100;
+      for (let i = 0; i < 25; i++) fx.bloodField.add(center + Math.sin(i * 2) * 5, Game.gy + 9 + Math.cos(i) * 3, 'seep');
+      f.state = 'run'; f.ctrl.mx = dir; f.ctrl.run = true; f.vx = dir * 430; f.walkPh = 0; f.lastSign = -1;
+      const contacts = [], resolve = f.resolveBloodFootfall.bind(f);
+      f.resolveBloodFootfall = (elapsed) => {
+        const foot = f.bloodFootfall?.foot;
+        if (foot) {
+          const ankle = f.rig['a' + foot], fd = f.rig['fd' + foot];
+          contacts.push({ x: ankle.x + fd.x * 7, y: ankle.y, body: f.x, foot });
+        }
+        resolve(elapsed);
+      };
+      for (let i = 0; i < Math.ceil(1.1 / dt) && !splashes; i++) Game.update(dt);
+      assert.ok(splashes > 0, `${dt}s direction ${dir} should hit the pool; contacts ${JSON.stringify(contacts)}`);
+      assert.ok(f.footBlood.N || f.footBlood.F);
+      assert.ok(fx.bl.some(p => p.splash), 'small airborne splash particles are emitted');
+    }
+  } finally { fx.splash = originalSplash; }
+});
+
+test('small drops, soft steps and hovering do not splash or stain; a strong landing does', () => {
+  const f = fighter(420, 1, 'jane'); disableAI(f);
+  const field = Game.fx.bloodField, x = f.rig.aN.x + f.rig.fdN.x * 7;
+  let calls = 0; const splash = Game.fx.splash.bind(Game.fx);
+  Game.fx.splash = (...args) => { calls++; splash(...args); };
+  try {
+    field.add(x, Game.gy + 9, 'drip');
+    f.queueBloodFootfall('N', 1); f.resolveBloodFootfall();
+    assert.equal(calls, 0); assert.deepEqual(f.footBlood, { N: 0, F: 0 });
+    for (let i = 0; i < 16; i++) field.add(x + Math.sin(i) * 3, Game.gy + 9, 'seep');
+    f.onLand(300); f.update(1 / 60, null, [f]);
+    assert.equal(calls, 0, 'soft landing');
+    f.y = 40; f.queueBloodFootfall('N', 1); f.resolveBloodFootfall(); f.y = 0;
+    f.hoverY = 19; f.queueBloodFootfall('N', 1); f.resolveBloodFootfall(); f.hoverY = 0;
+    assert.equal(calls, 0, 'airborne and hovering feet are not in the puddle');
+    f.onLand(700); f.update(1 / 60, null, [f]);
+    assert.ok(calls > 0); assert.ok(f.footBlood.N > 0);
+  } finally { Game.fx.splash = splash; }
+});
+
+test('puddle blood is masked into each skin shoe and lower leg, follows pose and clears without healing bleeding', () => {
+  for (const skin of ['jane', 'negan', 'homelander', 'walt', 'saul']) for (const dir of [1, -1]) {
+    Game.fighters = []; Game.fx.clearBlood();
+    const f = fighter(480, dir, skin); disableAI(f);
+    if (skin === 'homelander') { f.hoverY = 0; f.ctrl.crouch = true; f.update(1 / 60, null, [f]); }
+    const x = f.rig.aN.x + f.rig.fdN.x * 7;
+    for (let i = 0; i < 18; i++) Game.fx.bloodField.add(x + Math.sin(i) * 3, Game.gy + 9, 'seep');
+    f.onLand(700); f.update(1 / 60, null, [f]);
+    assert.ok(f.footBlood.N > 0, `${skin} ${dir} stains the actual contacting leg`);
+    const shoe = stainedSkinSprite(SK_[skin].bootF, 'boot', f.footBlood.N);
+    const trouser = stainedSkinSprite(SK_[skin].shinF, 'shin', f.footBlood.N);
+    assert.notEqual(shoe, SK_[skin].bootF); assert.notEqual(trouser, SK_[skin].shinF);
+    assert.ok(shoe.getContext('2d').stats.composites.has('source-atop'));
+    assert.ok(trouser.getContext('2d').stats.composites.has('source-atop'));
+    assert.ok(shoe.getContext('2d').stats.colors.has('#8c1724'));
+    const seen = [], body = Game.bodyLayer.ctx, oldDraw = body.drawImage;
+    body.drawImage = (...args) => { seen.push(args[0]); oldDraw(...args); };
+    f.x += dir * 100; f.dir = -dir; f.buildRig(1 / 60); Game.render();
+    assert.ok(seen.includes(shoe) && seen.includes(trouser), 'both stained sprites travel and flip with the fighter');
+    seen.length = 0; f.toRagdoll(0, 0); f.update(1 / 60, null, [f]); Game.render();
+    assert.ok(seen.includes(shoe) && seen.includes(trouser), 'stains also follow the ragdoll');
+    body.drawImage = oldDraw;
+    f.bleed = { mark: { layer: 'head', seg: 'head', lx: 0, ly: 0 }, stopped: true };
+    Game.clearBlood();
+    assert.deepEqual(f.footBlood, { N: 0, F: 0 });
+    assert.equal(Game.fx.bloodField.cells.size, 0); assert.equal(Game.fx.bl.length, 0);
+    assert.ok(f.bleed, 'washing blood does not heal the wound');
+  }
+});
+
+test('blood and animated audience persist through responsive resizing and render behind the fence', () => {
+  const f = fighter(400, 1, 'jane'); disableAI(f);
+  const field = Game.fx.bloodField;
+  for (let i = 0; i < 10; i++) field.add(400 + Math.sin(i) * 3, Game.gy + 8, 'seep');
+  const cells = field.cells.size, audience = Game.audience;
+  assert.equal(audience.createSign([f]), true); audience.signs[0].age = 1;
+  const width = globalThis.innerWidth, height = globalThis.innerHeight;
+  try {
+    globalThis.innerWidth = 390; globalThis.innerHeight = 844; Game.resize(); Game.render();
+    assert.equal(Game.audience, audience); assert.equal(field.cells.size, cells);
+    assert.ok(field.puddleAtFoot(400, Game.gy));
+    assert.ok(Game.audienceLayer.ctx.stats.fillRect > 0);
+    assert.ok(Game.bloodLayer.ctx.stats.rect > 0);
+    assert.ok(Game.puddleMaskLayer.ctx.stats.rect > 0);
+    assert.ok(Game.reflectionLayer.ctx.stats.composites.has('destination-in'));
+    assert.ok(Game.bg.back && Game.bg.front, 'crowd is between wall and chain-link foreground');
+  } finally { globalThis.innerWidth = width; globalThis.innerHeight = height; Game.resize(); }
+});
+
+test('cosmetic splash droplets cannot create blood or make a large pool flood outward', () => {
+  const field = new BloodField(960, 468, 27);
+  for (let i = 0; i < 80; i++) field.add(300 + Math.sin(i) * 3, 480, 'seep');
+  const pool = [...field.groups][0], mass = pool.mass, drops = pool.drops, before = field.cells.size;
+  for (let i = 0; i < 200; i++) field.add(300 + Math.sin(i) * 3, 480, 'splash');
+  assert.equal(pool.mass, mass); assert.equal(pool.drops, drops);
+  assert.ok(field.cells.size <= before + 6, 'repeated splashes are not a new blood source');
+  const right = Math.max(...[...pool.cells].map(k => Math.floor(k / 1024))) * 3;
+  const oldSize = field.cells.size;
+  field.add(right + 6, 480, 'hit', 3);
+  assert.ok(field.cells.size - oldSize < 35, 'a single distant fleck does not inherit the whole pool volume');
+});
+
+test('a grounded Homelander can splash on a hard landing before his hover resumes at different frame rates', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.fighters = []; Game.fx.clearBlood();
+    const f = fighter(460, 1, 'homelander'); disableAI(f); f.hoverY = 0; f.buildRig(dt);
+    // In his hover stance the far foot hangs lower than the near foot.
+    const x = f.rig.aF.x + f.rig.fdF.x * 7;
+    for (let i = 0; i < 20; i++) Game.fx.bloodField.add(x + Math.sin(i) * 3, Game.gy + 9, 'seep');
+    f.onLand(700); f.update(dt, null, [f]);
+    assert.ok(f.footBlood.F > 0, `landing at ${dt}s must use the real ground contact`);
+    assert.ok(Game.fx.bl.some(p => p.splash));
+  }
 });
