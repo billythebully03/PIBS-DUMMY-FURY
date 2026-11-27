@@ -14,8 +14,6 @@ export interface CharacterStats {
   ragMass: number; // масса в регдолле (влияет на импульс)
 }
 
-const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
-
 // Базовые характеристики персонажей. Вес/рост/хп задаются здесь,
 // движок обращается к WeightPhysic за множителями.
 export const CHARACTER_STATS: Record<SkinKey, CharacterStats> = {
