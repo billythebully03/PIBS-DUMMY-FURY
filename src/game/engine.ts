@@ -1,4 +1,7 @@
 // @ts-nocheck
+import { Audience } from './audience';
+import { BloodField } from './blood';
+
 /* ============================ UTILS ============================ */
 const TAU=Math.PI*2, rad=d=>d*Math.PI/180;
 const BODY_PIXEL=3, HEAD_PIXEL=1.5;
@@ -509,6 +512,32 @@ for (const k in DEF) {
     else SK_[k][p] = spr(w, h, f);
   }
 }
+// Compose blood into the original shoe / lower-leg sprites, not the arena.
+// Each sprite supplies its own alpha mask; the result then receives the exact
+// same rotation, facing and animation as the clothing it stains.
+const STAINED_SKIN_CACHE=new WeakMap();
+function stainedSkinSprite(sprite,part,level){
+  if(!sprite||!level)return sprite;
+  const amount=clamp(Math.ceil(level),1,3),cacheKey=part+amount;
+  let cache=STAINED_SKIN_CACHE.get(sprite);
+  if(!cache){cache=new Map();STAINED_SKIN_CACHE.set(sprite,cache);}
+  if(cache.has(cacheKey))return cache.get(cacheKey);
+  const c=mk();c.width=sprite.width;c.height=sprite.height;
+  const g=c.getContext('2d');g.drawImage(sprite,0,0);
+  g.globalCompositeOperation='source-atop';g.globalAlpha=.84;g.fillStyle='#8c1724';
+  if(part==='boot'){
+    g.fillRect(2,3,3,2);g.fillRect(6,4,3,2);g.fillRect(10,3,2,2);
+    if(amount>1){g.fillRect(1,5,4,2);g.fillRect(8,2,3,3);}
+    if(amount>2)g.fillRect(4,4,6,3);
+    g.globalAlpha=.7;g.fillStyle='#b32a35';g.fillRect(3,3,2,1);
+  }else{
+    g.fillRect(2,13,2,3);g.fillRect(5,12,1,3);g.fillRect(4,15,2,1);
+    if(amount>1){g.fillRect(1,14,2,2);g.fillRect(4,11,2,2);}
+    if(amount>2)g.fillRect(2,12,4,4);
+    g.globalAlpha=.65;g.fillStyle='#b32a35';g.fillRect(2,13,1,1);
+  }
+  cache.set(cacheKey,c);return c;
+}
 /* Lucille: a baseball bat wrapped in barbed wire (26x9 sprite, 3px per cell, handle on the left). */
 const BAT_SPR=(()=>{
   const W=26,H=9,C=4,c=mk();c.width=W;c.height=H;const g=c.getContext('2d');
@@ -943,11 +972,12 @@ function drawPixelArm(g, R, f, side, far, S) {
 function drawPixelLeg(g, R, f, far, S) {
   const prefix = far ? 'F' : 'N';
   const knee = R['k' + prefix], ankle = R['a' + prefix], foot = R[far ? 'fdF' : 'fdN'];
+  const stain=f.footBlood?.[prefix]||0;
   drawSkinSegment(g, far ? S.thighB : S.thighF, R.pel, knee, far ? 20 : 21, 5, 5, R.dir === 1);
-  drawSkinSegment(g, far ? S.shinB : S.shinF, knee, ankle, 18, 4, 4, R.dir === 1);
+  drawSkinSegment(g, stainedSkinSprite(far ? S.shinB : S.shinF,'shin',stain), knee, ankle, 18, 4, 4, R.dir === 1);
   drawSkinLimbWounds(g, f.wounds['t' + prefix], R.pel, knee, 10, R.dir);
   drawSkinLimbWounds(g, f.wounds['s' + prefix], knee, ankle, 8, R.dir);
-  drawSkinBoot(g, far ? S.bootB : S.bootF, ankle, foot, R.dir, 29, 18);
+  drawSkinBoot(g, stainedSkinSprite(far ? S.bootB : S.bootF,'boot',stain), ankle, foot, R.dir, 29, 18);
 }
 // Orange laser scorch marks anchored to skin segments and masked strictly onto skin pixels ('source-atop').
 const BURN_SEGS=[
@@ -1126,7 +1156,10 @@ function injure(f,zone,pw){
 }
 /* ============================ FX / PIXEL BLOOD ============================ */
 class FX{
-  constructor(){this.sm=[];this.bl=[];this.sp=[];this.fl=[];this.rg=[];this.marks=[];this.decal=null;this.floorY=468;}
+  constructor(){
+    this.sm=[];this.bl=[];this.sp=[];this.fl=[];this.rg=[];this.marks=[];this.decal=null;this.floorY=468;
+    this.bloodField=new BloodField(960,this.floorY);
+  }
   smoke(x,y,vx,vy,r,gr,life,a,spr){
     if(this.sm.length>110)this.sm.shift();
     const n=3+((Math.random()*4)|0), cells=[];
@@ -1160,7 +1193,7 @@ class FX{
         vx:(dir*rnd(55,255)+rnd(-125,125))*1.18,
         vy:rnd(-190,72)*1.12,
         r:mist?2:fleck?2:rnd(2,4),
-        fy:this.floorY+rnd(-8,30),
+        fy:this.floorY+rnd(2,27),
         life:2.5,
         fleck,shape
       });
@@ -1168,15 +1201,22 @@ class FX{
   }
   drip(x,y){
     // Small, slow drops instead of the existing explosive hit spray.
-    this.bl.push({x,y,vx:rnd(-6,6),vy:rnd(8,25),r:1.5,fy:this.floorY+2,
+    this.bl.push({x,y,vx:rnd(-6,6),vy:rnd(8,25),r:1.5,fy:this.floorY+this.bloodField.range(3,15),
       life:2,shape:'drop',fleck:false,drip:true});
   }
-  stampDrip(x,y){
-    const d=this.decal;if(!d)return;
-    const q=3,sx=Math.round(x/q)*q,sy=Math.round(y/q)*q;
-    d.save();d.fillStyle='#5e0916';d.fillRect(sx,sy,q*2,q);
-    d.fillStyle='#8d1624';d.fillRect(sx+q,sy,q,q);d.restore();
+  stampDrip(x,y){this.bloodField.add(x,y,'drip');}
+  splash(x,y,dir,power){
+    // A strong step produces just a few tiny droplets, not another hit spray.
+    // Cosmetic randomness stays independent of the combat random stream.
+    const field=this.bloodField,n=3+(power>.85?2:1);
+    for(let i=0;i<n;i++)this.bl.push({
+      x:x+field.range(-4,4),y:y-2,
+      vx:(i%2?1:-1)*field.range(25,75)+dir*field.range(0,18),
+      vy:-field.range(55,150),r:1.5,fy:this.floorY+field.range(2,20),
+      life:1.2,shape:'drop',fleck:false,drip:true,splash:true
+    });
   }
+  clearBlood(){this.bl=[];this.bloodField.clear();}
   spark(x,y,n,col){for(let i=0;i<n;i++){const a=rnd(TAU),s=rnd(80,380);this.sp.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:rnd(.15,.35),col:col||'255,210,90'});}}
   impact(x,y,dir,pw){this.fl.push({x,y,life:.16,max:.16,r:24+pw*30});this.spark(x,y,6+pw*8|0);}
   // Laser scorch on a floor/wall: orange blocks that cool down and fade.
@@ -1197,46 +1237,8 @@ class FX{
     }
     ctx.globalAlpha=1;
   }
-  stamp(x,y,r,vx){
-    const d=this.decal;if(!d)return;
-    const q=3, snap=v=>Math.round(v/q)*q;
-    const sx=snap(x), sy=snap(y);
-    const stretch=clamp(1+Math.abs(vx||0)/300,1,2.4);
-    const wide=Math.max(6,snap((r*2.2+5)*stretch));
-    d.save();
-    d.fillStyle='rgba(48,0,5,.88)';
-    d.fillRect(sx-wide/2,sy-3,wide,6);
-    d.fillStyle='rgba(104,4,14,.88)';
-    d.fillRect(sx-wide*.32,sy-6,wide*.64,9);
-    d.fillStyle='rgba(154,10,24,.88)';
-    d.fillRect(sx-wide*.2,sy-3,wide*.42,3);
-    for(let i=0;i<4;i++){
-      const bx=snap(sx+rnd(-wide*.8,wide*.8)), by=snap(sy+rnd(-9,6));
-      d.fillStyle=i%2?'rgba(92,3,12,.82)':'rgba(142,8,20,.82)';
-      d.fillRect(bx,by,q*(i%3===0?2:1),q);
-    }
-    d.restore();
-  }
-  pool(x,y,r){
-    const d=this.decal;if(!d)return;
-    const q=3, snap=v=>Math.round(v/q)*q, sx=snap(x), sy=snap(y);
-    const wide=Math.max(18,snap(r*5.6)), rows=Math.max(2,Math.ceil(r/3));
-    d.save();
-    d.fillStyle='rgba(47,0,5,.88)';
-    d.fillRect(sx-wide/2,sy-3,wide,6);
-    d.fillRect(sx-wide*.34,sy-6,wide*.68,9);
-    d.fillStyle='rgba(103,3,13,.9)';
-    d.fillRect(sx-wide*.27,sy-3,wide*.54,6);
-    d.fillStyle='rgba(155,8,23,.8)';
-    d.fillRect(sx-wide*.14,sy-3,wide*.25,3);
-    for(let i=0;i<rows+2;i++){
-      const side=i%2?-1:1, bx=snap(sx+side*rnd(wide*.25,wide*.62));
-      const by=snap(sy+rnd(-6,6));
-      d.fillStyle=i%3?'rgba(91,2,11,.82)':'rgba(167,11,28,.78)';
-      d.fillRect(bx,by,q*(i%2+1),q);
-    }
-    d.restore();
-  }
+  stamp(x,y,r,vx){this.bloodField.add(x,y,'hit',r);}
+  pool(x,y,r){this.bloodField.add(x,y,'seep',r);}
   crack(x,y,dir){
     const d=this.decal;if(!d)return;
     d.strokeStyle='rgba(0,0,0,.65)';d.lineWidth=1.3;
@@ -1255,7 +1257,8 @@ class FX{
     for(const b of this.bl){
       b.vy+=1600*dt;b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;
       if(b.y>=b.fy){
-        if(b.drip)this.stampDrip(b.x,b.fy);else this.stamp(b.x,b.fy,b.r,b.vx);
+        if(b.splash)this.bloodField.add(b.x,b.fy,'splash');
+        else if(b.drip)this.stampDrip(b.x,b.fy);else this.stamp(b.x,b.fy,b.r,b.vx);
         b.dead=true;
       }
     }
@@ -1498,7 +1501,8 @@ class Fighter{
       shoveCD:0,shoveTarget:null,shoveDone:false,
       lampGoal:null,lampRef:null,lampAction:'pullup',lampStamina:0,
       lampGrabGap:52,lampGrabSide:0,lampBreakAt:Infinity,lampDiveAt:Infinity,lampHangStamp:0,lampPullTarget:null,lampPullDone:false,
-      bloodStains:[],bleed:null,collapseFrom:null,blinkT:rnd(2.2,5.5),blink:0,coughT:rnd(1,2.6)
+      bloodStains:[],footBlood:{N:0,F:0},bloodFootfall:null,footSplashCooldown:0,
+      bleed:null,collapseFrom:null,blinkT:rnd(2.2,5.5),blink:0,coughT:rnd(1,2.6)
     });
   }
   spawn(delay){this.state='spawn';this.sp=0;this.spT=delay||.05;this.visible=false;this.y=this.spawnY;this.vy=0;this.vx=0;this.st=0;this.cur=null;this.hoverY=0;}
@@ -1842,9 +1846,43 @@ class Fighter{
     this.fx&&this.fx.puff(this.x+this.dir*20,this.gy-20,3,1.2);
     this.toRagdoll(this.vx*.85,260);
   }
+  queueBloodFootfall(foot,power,landed=false){
+    if(!this.fx||power<.65)return;
+    const old=this.bloodFootfall;
+    if(!old||(landed&&!old.landed)||(!old.landed&&power>old.power))
+      this.bloodFootfall={foot,feet:foot?[foot]:['N','F'],power,landed,remaining:.14};
+  }
+  resolveBloodFootfall(dt=0){
+    const contact=this.bloodFootfall;
+    if(!contact)return;
+    if(!this.fx||!this.rig||this.hp<=0||this.y>2||(!contact.landed&&this.hoverY>5)||this.state==='ragdoll'){
+      this.bloodFootfall=null;return;
+    }
+    const hits=[],waiting=[];
+    for(const foot of contact.feet){
+      const ankle=this.rig['a'+foot],dir=this.rig['fd'+foot];
+      if(!ankle||!dir)continue;
+      // The blended rig can reach the ground a few frames after the gait
+      // phase crosses zero, especially at high frame rates. Wait briefly for
+      // the actual shoe instead of splashing under an airborne foot.
+      if(ankle.y<this.gy-22){waiting.push(foot);continue;}
+      const x=ankle.x+dir.x*7;
+      if(!this.fx.bloodField.puddleAtFoot(x,this.gy))continue;
+      this.footBlood[foot]=Math.min(3,this.footBlood[foot]+1);
+      hits.push(x);
+    }
+    contact.remaining-=dt;
+    if(waiting.length&&contact.remaining>0)contact.feet=waiting;
+    else this.bloodFootfall=null;
+    if(hits.length&&this.footSplashCooldown<=0){
+      this.fx.splash(hits.reduce((a,b)=>a+b,0)/hits.length,this.gy+3,this.dir,contact.power);
+      this.footSplashCooldown=.22;
+    }
+  }
   onLand(impact){
     const pvx=this.vx;
     this.landT=.12;this.vx*=.35;
+    if(impact>=450&&this.fx)this.queueBloodFootfall(null,clamp(impact/900,.65,1),true);
     if(impact>250&&this.fx)this.fx.landing(this.x,this.gy,clamp(impact/1100,.25,.8));
     if(impact>500)Snd.thud();
     if(this.dive){ // missed: tumbles along with the leftover momentum
@@ -2174,6 +2212,7 @@ class Fighter{
     this.boxCD=Math.max(0,this.boxCD-dt);this.guardCD=Math.max(0,this.guardCD-dt);this.shoveCD=Math.max(0,this.shoveCD-dt);
     this.chokeCD=Math.max(0,this.chokeCD-dt);this.grappleCD=Math.max(0,this.grappleCD-dt);
     this.guardFlinch=Math.max(0,this.guardFlinch-dt);
+    this.footSplashCooldown=Math.max(0,this.footSplashCooldown-dt);
     // Homelander first settles out of his hover; the lowered pose and its
     // dodge window only begin once his feet have actually reached the floor.
     const wantsCrouch=this.state==='idle'&&c.crouch&&this.y<=1;
@@ -2197,6 +2236,7 @@ class Fighter{
         this.vy-=2600*dt;this.y+=this.vy*dt;
         if(this.fx&&Math.random()<.5&&this.rig)this.fx.spark(this.rig.pel.x+rnd(-20,20),this.rig.pel.y+rnd(-60,60),1,'120,200,255');
         if(this.y<=0){this.y=0;this.vy=0;this.sp=2;this.spT=.55;this.st=0;
+          this.queueBloodFootfall(null,1,true);
           if(this.fx){this.fx.landing(this.x,this.gy,1.2);for(let i=0;i<4;i++)this.fx.smoke(this.x+rnd(-20,20),this.gy-rnd(0,20),rnd(-60,60),-rnd(20,90),rnd(12,22),rnd(20,40),rnd(.8,1.4),.5,1);this.fx.crack(this.x,this.gy+8,1);}
           Snd.stomp();}
       }
@@ -2219,7 +2259,11 @@ class Fighter{
       if(!isHL&&Math.abs(this.vx)>8){
         this.walkPh+=(this.vx*this.dir>=0?1:-1)*Math.abs(this.vx)*dt*.08;
         const sg=Math.sin(this.walkPh)>0?1:-1;
-        if(sg!==this.lastSign){this.lastSign=sg;if(Math.abs(this.vx)>120&&this.fx)this.fx.step(this.x-this.dir*10,this.gy,this.dir*(this.vx*this.dir>=0?1:-1));}
+        if(sg!==this.lastSign){
+          this.lastSign=sg;
+          if(Math.abs(this.vx)>120&&this.fx)this.fx.step(this.x-this.dir*10,this.gy,this.dir*(this.vx*this.dir>=0?1:-1));
+          if(Math.abs(this.vx)>=220&&this.y<=2)this.queueBloodFootfall(sg>0?'N':'F',.68);
+        }
       }
       if(c.hop){this.startHop();}
       else if(c.jump){ if(mv&&this.dashCD<=0)this.startDash(toward>0?1:-1); else if(!mv)this.startJump(); }
@@ -2253,7 +2297,11 @@ class Fighter{
       }else{
         this.walkPh+=(9+rs*13)*dt;
         const sg=Math.sin(this.walkPh)>0?1:-1;
-        if(sg!==this.lastSign){this.lastSign=sg;if(rs>.25&&this.fx)this.fx.step(this.x-this.dir*10,this.gy,this.dir);}
+        if(sg!==this.lastSign){
+          this.lastSign=sg;
+          if(rs>.25&&this.fx)this.fx.step(this.x-this.dir*10,this.gy,this.dir);
+          if(rs>=.58&&this.y<=2)this.queueBloodFootfall(sg>0?'N':'F',clamp(rs,.65,1));
+        }
       }
       if(c.jump){this.startDive();break;}
       for(const o of allFighters){
@@ -2584,6 +2632,7 @@ class Fighter{
     }
     if(this.dizzyAlpha>0)this.dizzyPh+=dt*4.4;
     this.buildRig(dt);
+    this.resolveBloodFootfall(dt);
     this.updateTie(dt);
     this.updateCape(dt);
     if(this.hp<=0&&this.state==='ragdoll'&&this.rag&&this.rag.frozen){this.corpseFade=Math.min(.14,this.corpseFade+dt*.018);}
@@ -3275,22 +3324,16 @@ function drawLamp(g,lamp){
 }
 /* ============================ BACKGROUND ============================ */
 function makeBG(W,H,gy,S){
-  const c=document.createElement('canvas');const px=S/BODY_PIXEL;c.width=Math.ceil(W*px);c.height=Math.ceil(H*px);const x=c.getContext('2d');x.imageSmoothingEnabled=false;x.scale(px,px);
+  const c=document.createElement('canvas');const px=S/BODY_PIXEL;c.width=Math.ceil(W*px);c.height=Math.ceil(H*px);let x=c.getContext('2d');x.imageSmoothingEnabled=false;x.scale(px,px);
   let g=x.createLinearGradient(0,0,0,H);g.addColorStop(0,'#0b0910');g.addColorStop(.6,'#221620');g.addColorStop(1,'#150f14');x.fillStyle=g;x.fillRect(0,0,W,H);
   x.strokeStyle='rgba(0,0,0,.35)';x.lineWidth=1;
   for(let y=0,r=0;y<gy-60;y+=22,r++){const off=(r%2)*30;for(let xx=-off;xx<W;xx+=60)x.strokeRect(xx,y,60,22);}
   for(let i=0;i<300;i++){x.fillStyle=`rgba(${rnd(60,130)|0},${rnd(25,50)|0},${rnd(25,45)|0},${rnd(.03,.1)})`;x.fillRect(rnd(W),rnd(gy-60),rnd(10,60),rnd(6,22));}
   x.save();x.font="900 56px 'Russo One',Impact,sans-serif";x.textAlign='center';x.shadowColor='#ff2a44';x.shadowBlur=28;x.strokeStyle='#ff4a5e';x.lineWidth=3;x.strokeText('DUMMY FURY',W/2,110);x.fillStyle='rgba(255,120,130,.25)';x.fillText('DUMMY FURY',W/2,110);x.restore();
-  for(let row=0;row<2;row++){
-    const by=gy-118+row*14;
-    for(let xx=-10;xx<W+20;xx+=24+rnd(8)){
-      const hh=rnd(0,8),shade=row?'#0b0809':'#150f14';
-      x.fillStyle=shade;x.beginPath();x.ellipse(xx,by+34-hh*.3,17,24,0,Math.PI,0);x.fill();x.fillRect(xx-17,by+34-hh*.3,34,40);
-      x.beginPath();x.arc(xx,by+6-hh,9,0,TAU);x.fill();
-      x.fillStyle='rgba(255,170,120,.07)';x.beginPath();x.arc(xx-2,by+4-hh,8,Math.PI,Math.PI*1.7);x.fill();
-      if(Math.random()<.12){x.strokeStyle=shade;x.lineWidth=5;x.lineCap='round';x.beginPath();x.moveTo(xx+10,by+24);x.lineTo(xx+16,by-14-hh);x.stroke();}
-    }
-  }
+  // Keep the chain-link, railing and floor on a transparent foreground so
+  // animated spectators and their signs remain behind the enclosure.
+  const front=document.createElement('canvas');front.width=c.width;front.height=c.height;
+  x=front.getContext('2d');x.imageSmoothingEnabled=false;x.scale(px,px);
   x.strokeStyle='rgba(180,190,210,.06)';x.lineWidth=1;
   for(let i=-H;i<W+H;i+=22){x.beginPath();x.moveTo(i,20);x.lineTo(i+H,20+H);x.stroke();x.beginPath();x.moveTo(i+H,20);x.lineTo(i,20+H);x.stroke();}
   x.fillStyle='#17151b';x.fillRect(0,gy-62,W,8);x.fillStyle='rgba(255,255,255,.12)';x.fillRect(0,gy-62,W,1.5);
@@ -3303,7 +3346,7 @@ function makeBG(W,H,gy,S){
   for(let i=1;i<6;i++){const y=ft+(H-ft)*Math.pow(i/6,1.6);x.beginPath();x.moveTo(0,y);x.lineTo(W,y);x.stroke();}
   x.strokeStyle='rgba(255,200,60,.22)';x.lineWidth=3;x.beginPath();x.ellipse(W/2,gy+24,Math.min(W*.4,360),52,0,0,TAU);x.stroke();
   for(let i=0;i<500;i++){x.fillStyle=`rgba(255,255,255,${rnd(.01,.04)})`;x.fillRect(rnd(W),rnd(ft,H),rnd(1,3),1);}
-  return c;
+  return {back:c,front};
 }
 function makeVignette(W,H,S){
   const c=document.createElement('canvas');c.width=Math.round(W*S);c.height=Math.round(H*S);const x=c.getContext('2d');
@@ -3397,7 +3440,7 @@ const Game={
   W:960,H:540,gy:468,S:1,cv:null,
   shake:0,hs:0,ts:1,tsT:0,
   fighters:[],lamps:[],detachedLamps:0,
-  droppedBats:[],camera:null,
+  droppedBats:[],camera:null,audience:null,
   autoSpawn:true,shiftCrouch:false,
   respawnTimer:0,
   koCount:0,
@@ -3408,12 +3451,13 @@ const Game={
     this.ctx.imageSmoothingEnabled=false;
     this.fighters=[];this.droppedBats=[];this.lamps=[];this.detachedLamps=0;
     this.koCount=0;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;this.respawnTimer=0;this.autoSpawn=true;this.shiftCrouch=false;
-    this.camera={x:this.W/2,y:270,zoom:1,vignette:0};
+    this.camera={x:this.W/2,y:270,zoom:1,vignette:0};this.audience=null;
     skinCursor=0;
     this.fx=new FX();
     this.dc=document.createElement('canvas');
     this.dctx=this.dc.getContext('2d');
     this.resize();
+    this.audience=new Audience(this.W,this.gy);
     this.lamps=makeLamps(this.W);
     this.camera.x=this.W/2;
     this.fx.decal=this.dctx;
@@ -3435,6 +3479,8 @@ const Game={
       this.camera.y=clamp(this.camera.y,halfH,540-halfH);
     }
     for(const lamp of this.lamps)lamp.resize(this.W);
+    if(this.audience)this.audience.resize(this.W,this.gy);
+    if(this.fx){this.fx.floorY=this.gy;this.fx.bloodField.resize(this.W,this.gy);}
     this.buildBG();
     for(const f of this.fighters){f.minX=70;f.maxX=this.W-70;}
   },
@@ -3450,6 +3496,7 @@ const Game={
       const g=c.getContext('2d');g.imageSmoothingEnabled=false;g.setTransform(scale,0,0,scale,0,0);
       return {canvas:c,ctx:g,scale};
     };
+    this.audienceLayer=makeLayer(bodyScale);
     this.lampLayer=makeLayer(bodyScale);
     this.bodyLayer=makeLayer(bodyScale);
     this.headLayer=makeLayer(headScale);
@@ -3457,6 +3504,8 @@ const Game={
     this.frontLayer=makeLayer(bodyScale);
     this.fxLayer=makeLayer(bodyScale);
     this.markLayer=makeLayer(bodyScale);
+    this.bloodLayer=makeLayer(bodyScale);this.puddleMaskLayer=makeLayer(bodyScale);
+    this.reflectionLayer=makeLayer(bodyScale);this.bloodVersion=-1;
     this.dc.width=Math.ceil(this.W*bodyScale);this.dc.height=Math.ceil(540*bodyScale);
     this.dctx=this.dc.getContext('2d');this.dctx.imageSmoothingEnabled=false;
     if(keep){this.dctx.setTransform(1,0,0,1,0,0);this.dctx.drawImage(old,0,0,this.dc.width,this.dc.height);}
@@ -3513,11 +3562,11 @@ const Game={
     this.syncHudCards();
   },
   clearBlood(){
-    this.dctx.save();
-    this.dctx.setTransform(1,0,0,1,0,0);
-    this.dctx.clearRect(0,0,this.dc.width,this.dc.height);
-    this.dctx.restore();
-    for(const f of this.fighters)if(f.hp>0){f.wounds=newWounds();f.bloodStains=[];}
+    this.fx.clearBlood();
+    for(const f of this.fighters){
+      if(f.hp>0)f.wounds=newWounds();
+      f.bloodStains=[];f.footBlood={N:0,F:0};f.bloodFootfall=null;
+    }
   },
   // Ray against the arena: stops at the first fighter body, the floor, a wall post or the ceiling.
   castRay(x,y,ux,uy,self){
@@ -3564,6 +3613,7 @@ const Game={
       });
     }
     this.koCount++;
+    if(this.audience)this.audience.cheer();
     if(a.bleedOut){
       // Blood loss ends in an exhausted, gradual collapse, not the impact KO
       // explosion, hit-stop or a fresh launch of an already prone body.
@@ -3686,6 +3736,7 @@ const Game={
       }
     }
     this.fx.update(dt);
+    if(this.audience)this.audience.update(rdt,this.fighters);
     this.updateCamera(rdt);
     this.updateHud();
   },
@@ -3733,11 +3784,27 @@ const Game={
     ctx.translate(shakeX,shakeY);
     const camera=this.camera;
     if(camera){ctx.translate(W/2,H/2);ctx.scale(camera.zoom,camera.zoom);ctx.translate(-camera.x,-camera.y);}
-    ctx.drawImage(this.bg,0,0,W,H);
+    ctx.drawImage(this.bg.back,0,0,W,H);
+    clearPixelLayer(this.audienceLayer);
+    if(this.audience)this.audience.draw(this.audienceLayer.ctx);
+    ctx.drawImage(this.audienceLayer.canvas,0,0,W,H);
+    ctx.drawImage(this.bg.front,0,0,W,H);
     clearPixelLayer(this.lampLayer);
     for(const lamp of this.lamps)drawLamp(this.lampLayer.ctx,lamp);
     ctx.drawImage(this.lampLayer.canvas,0,0,W,H);
     ctx.drawImage(this.dc,0,0,W,H);
+    const blood=this.fx.bloodField;
+    if(this.bloodVersion!==blood.version){
+      clearPixelLayer(this.bloodLayer);blood.drawBase(this.bloodLayer.ctx);
+      clearPixelLayer(this.puddleMaskLayer);blood.drawReflectionMask(this.puddleMaskLayer.ctx);
+      this.bloodVersion=blood.version;
+    }
+    ctx.drawImage(this.bloodLayer.canvas,0,0,W,H);
+    if(blood.hasPuddles()){
+      clearPixelLayer(this.reflectionLayer);
+      blood.drawReflections(this.reflectionLayer.ctx,this.fighters,this.lamps,this.audience?.time||0,this.puddleMaskLayer.canvas);
+      ctx.drawImage(this.reflectionLayer.canvas,0,0,W,H);
+    }
     // fading laser scorch marks on the floor / walls
     if(this.fx.marks.length){
       clearPixelLayer(this.markLayer);
