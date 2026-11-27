@@ -11,6 +11,7 @@ const TIE_N=6, TIE_SEG=9;
 const CAPE_N=7, CAPE_SEG=19;
 const HL_HOVER=19;
 const RUN_SPD=520, RUN_ACC=1250;
+const GRAB_PREP_DUR=1.35, GRAB_THROW_DUR=.84;
 /* ============================ AUDIO ============================ */
 const Snd={ac:null,on:true,nb:null,
 init(){ if(this.ac){ if(this.ac.state==='suspended')this.ac.resume(); return;}
@@ -53,9 +54,10 @@ function legIK(J,s,fx,fh){
   if(L>maxL){dx*=maxL/L;dy*=maxL/L;L=maxL;}
   if(L<minL){ if(L<.001){dx=1;dy=0;L=1} dx*=minL/L;dy*=minL/L;L=minL; }
   const cosA=(THIGH*THIGH+L*L-SHIN*SHIN)/(2*THIGH*L), A=Math.acos(clamp(cosA,-1,1)), base=Math.atan2(dy,dx);
-  let best=null,bs=-1e9;
-  for(const sg of [1,-1]){const ang=base+sg*A,kx=J.pel.x+Math.cos(ang)*THIGH,ky=J.pel.y+Math.sin(ang)*THIGH,sc=kx-ky*.5; if(sc>bs){bs=sc;best={x:kx,y:ky}}}
-  J['k'+s]=best; J['a'+s]={x:J.pel.x+dx,y:J.pel.y+dy};
+  // Anatomical human knee bend: knee always points toward the front of the leg, shin bends slightly backward.
+  const ang=base-A;
+  J['k'+s]={x:J.pel.x+Math.cos(ang)*THIGH,y:J.pel.y+Math.sin(ang)*THIGH};
+  J['a'+s]={x:J.pel.x+dx,y:J.pel.y+dy};
 }
 function armFK(J,s,a,e){
   a=rad(a);const b=a+rad(e);
@@ -134,6 +136,17 @@ function blendRig(A,B,t){
   R.cN=lerp(A.cN,B.cN,t);R.cF=lerp(A.cF,B.cF,t);R.mo=lerp(A.mo,B.mo,t);R.ey=lerp(A.ey,B.ey,t);
   return R;
 }
+function pinHandsWorld(R,tx,ty){
+  const d=R.dir,J={sh:{x:0,y:0}};
+  const lx=(tx-R.sh.x)*d,ly=ty-R.sh.y;
+  armIK(J,'N',{x:lx,y:ly});
+  armIK(J,'F',{x:lx+4,y:ly+2});
+  R.eN={x:R.sh.x+J.eN.x*d,y:R.sh.y+J.eN.y};
+  R.wN={x:R.sh.x+J.wN.x*d,y:R.sh.y+J.wN.y};
+  R.eF={x:R.sh.x+J.eF.x*d,y:R.sh.y+J.eF.y};
+  R.wF={x:R.sh.x+J.wF.x*d,y:R.sh.y+J.wF.y};
+  R.cN=1;R.cF=1;R.bd=null;
+}
 /* poses */
 const AIRL={f1x:24,f1h:30,f2x:-12,f2h:22};
 const T_POSE=P({H:92,tl:0,hd:0,a1:90,e1:0,c1:0,a2:-90,e2:0,c2:0,f1x:3,f2x:-3,bg:0});
@@ -180,6 +193,16 @@ const GETUP_HL=KF([
 [2.3,HL_IDLE]
 ]);
 const GETUP_DUR=2.3;
+const GRAB_PREP_POSE=P({H:72,tl:34,hd:22,px:6,a1:26,e1:24,c1:0,a2:32,e2:26,c2:0,f1x:28,f2x:-20,mo:.2,bg:0});
+const GRAB_THROW_KF=KF([
+  [0,{H:66,tl:46,hd:24,px:8,a1:32,e1:18,c1:1,a2:26,e2:22,c2:1,f1x:32,f2x:-22,mo:.4,bg:0}],
+  [.18,{H:80,tl:16,hd:4,px:4,a1:96,e1:16,c1:1,a2:90,e2:20,c2:1,f1x:28,f2x:-22,mo:.6,bg:0}],
+  [.36,{H:89,tl:-14,hd:-16,px:-3,a1:168,e1:10,c1:1,a2:162,e2:14,c2:1,f1x:22,f2x:-24,mo:.75,bg:0}],
+  [.38,{H:89,tl:14,hd:-10,px:3,a1:168,e1:10,c1:1,a2:162,e2:14,c2:1,f1x:24,f2x:-22,mo:.8,bg:0}],
+  [.58,{H:65,tl:52,hd:24,px:12,a1:36,e1:14,c1:1,a2:30,e2:18,c2:1,f1x:38,f2x:-24,mo:.95,bg:0}],
+  [.74,{H:79,tl:20,hd:8,px:4,a1:42,e1:72,c1:1,a2:28,e2:88,c2:1,f1x:28,f2x:-22,mo:.35,gx:50,gy:20,bt:152,bg:.45}],
+  [.84,{}]
+]);
 const JAB_S={tl:22,px:9,H:80,a1:88,e1:-4,a2:35,e2:135,f1x:40,hd:12,mo:.4};
 const CRS_S={tl:30,px:17,H:78,a2:92,e2:-6,a1:34,e1:132,f1x:44,f2x:-12,f2h:3,fa2:35,hd:14,mo:.5};
 const KNE_S={tl:26,px:8,hd:20,a1:62,e1:42,c1:0,a2:58,e2:48,c2:0,f1x:34,f1h:48,fa1:55,f2x:-16,mo:.6};
@@ -1110,8 +1133,10 @@ const SEGS=[['neck','pel',10.5],['pel','kN',8.8],['pel','kF',8.8],['kN','aN',6.2
 const PTS=[['head',12],['eN',4.6],['wN',5],['eF',4.6],['wF',5],['kN',6.2],['aN',5.8],['kF',6.2],['aF',5.8]];
 const NEIGH={head:['neck'],eN:['neck','wN'],wN:['eN'],eF:['neck','wF'],wF:['eF'],kN:['pel','aN'],aN:['kN'],kF:['pel','aF'],aF:['kF']};
 const HSTEP=1/120;
+let NEXT_RAG_ID=1;
 class Ragdoll{
   constructor(R,f){
+    this.id=NEXT_RAG_ID++;this.pin=null;
     this.f=f;this.dir=f.dir;this.t=0;this.acc=0;this.settle=0;this.imp=0;this.p={};
     for(const k of RK)this.p[k]={x:R[k].x,y:R[k].y,px:R[k].x,py:R[k].y,r:RAD_R[k]};
   }
@@ -1125,14 +1150,28 @@ class Ragdoll{
     this.t+=dt;this.imp-=dt;this.acc+=dt;let n=0;
     while(this.acc>=HSTEP&&n<6){this.step();this.acc-=HSTEP;n++;}
     if(n>=6)this.acc=0;
+    // At high frame rates there may be no physics substep this frame, but the
+    // held ankle still has to follow the grabber's freshly updated hands.
+    if(this.pin){const p=this.p[this.pin.key];p.x=this.pin.x;p.y=this.pin.y;p.px=p.x;p.py=p.y;}
     let sp=0;for(const k of RK){const p=this.p[k];sp+=Math.abs(p.x-p.px)+Math.abs(p.y-p.py);}
-    sp/=RK.length;if(sp<.42)this.settle+=dt;else this.settle=0;
+    sp/=RK.length;if(sp<.42&&!this.pin)this.settle+=dt;else this.settle=0;
     if(this.f.hp<=0&&((this.settle>1.25&&this.t>1.5)||this.t>6)){this.frozen=true;for(const k of RK){const p=this.p[k];p.px=p.x;p.py=p.y;}}
   }
   step(){
-    const P=this.p,f=this.f,g=1900*HSTEP*HSTEP,gy=f.gy;
-    for(const k of RK){const p=P[k];let vx=(p.x-p.px)*.986,vy=(p.y-p.py)*.986;const speed=Math.hypot(vx,vy);if(speed>8.5){vx*=8.5/speed;vy*=8.5/speed;}p.px=p.x;p.py=p.y;p.x+=vx;p.y+=vy+g;}
+    const P=this.p,f=this.f,g=1900*HSTEP*HSTEP,gy=f.gy,pin=this.pin,maxSpd=pin?18:8.5;
+    for(const k of RK){const p=P[k];let vx=(p.x-p.px)*.986,vy=(p.y-p.py)*.986;const speed=Math.hypot(vx,vy);if(speed>maxSpd){vx*=maxSpd/speed;vy*=maxSpd/speed;}p.px=p.x;p.py=p.y;p.x+=vx;p.y+=vy+(pin?g*.35:g);}
+    if(pin){
+      const pull=(pt,dist,w)=>{
+        const tx=pin.x+pin.ux*dist,ty=Math.min(gy-pt.r,pin.y+pin.uy*dist);
+        const dx=(tx-pt.x)*w,dy=(ty-pt.y)*w;
+        pt.x+=dx;pt.y+=dy;pt.px+=dx*.35;pt.py+=dy*.35;
+      };
+      pull(P.pel,92,.22);
+      pull(P.neck,148,.20);
+      pull(P.head,168,.16);
+    }
     for(let it=0;it<5;it++){
+      if(pin){const gp=P[pin.key];gp.x=pin.x;gp.y=pin.y;gp.px=pin.x;gp.py=pin.y;}
       for(const [a,b,l] of DC){const A=P[a],B=P[b],dx=B.x-A.x,dy=B.y-A.y,d=Math.hypot(dx,dy)||1e-4,df=(d-l)/d*.5;A.x+=dx*df;A.y+=dy*df;B.x-=dx*df;B.y-=dy*df;}
       for(const [a,b,mn,mx] of DMIN){const A=P[a],B=P[b],dx=B.x-A.x,dy=B.y-A.y,d=Math.hypot(dx,dy)||1e-4;let t=0;if(d<mn)t=mn;else if(d>mx)t=mx;else continue;const df=(d-t)/d*.5;A.x+=dx*df;A.y+=dy*df;B.x-=dx*df;B.y-=dy*df;}
       this.lim(P.pel,P.kN,P.aN,this.dir);this.lim(P.pel,P.kF,P.aF,this.dir);
@@ -1145,8 +1184,9 @@ class Ragdoll{
           if(d<m){const push=(m-d),nx=dx/d,ny=dy/d;p.x+=nx*push*.6;p.y+=ny*push*.6;A.x-=nx*push*.2*(1-t);A.y-=ny*push*.2*(1-t);B.x-=nx*push*.2*t;B.y-=ny*push*.2*t;}}}
       for(const [a,b,m] of [['wN','wF',8],['kN','kF',10],['aN','aF',11],['kN','aF',9],['kF','aN',9],['wN','head',16],['wF','head',16]]){
         const A=P[a],B=P[b],dx=B.x-A.x,dy=B.y-A.y,d=Math.hypot(dx,dy)||1e-4;if(d<m){const df=(d-m)/d*.5;A.x+=dx*df;A.y+=dy*df;B.x-=dx*df;B.y-=dy*df;}}
+      if(pin){const gp=P[pin.key];gp.x=pin.x;gp.y=pin.y;gp.px=pin.x;gp.py=pin.y;}
       for(const k of RK){const p=P[k],lim=gy-p.r;
-        if(p.y>lim){const vy=p.y-p.py;if(vy>2.4&&this.imp<=0)this.impact(p,vy);p.y=lim;p.py=p.y+vy*.22;p.px+=(p.x-p.px)*.22;}
+        if(p.y>lim){const vy=p.y-p.py;if(vy>2.4&&this.imp<=0&&(!pin||!pin.lift))this.impact(p,vy);p.y=lim;p.py=p.y+vy*.22;p.px+=(p.x-p.px)*.22;}
         if(p.x<f.minX-30){p.x=f.minX-30;p.px=p.x;}if(p.x>f.maxX+30){p.x=f.maxX+30;p.px=p.x;}}
     }
   }
@@ -1220,13 +1260,47 @@ class Fighter{
       hitDone:false,queued:false,lungeDone:false,wh:false,dustT:0,calmT:0,tie:null,cape:null,pvx:0,pvy:0,corpseFade:0,
       lz:null,lzSnd:false,burns:[],dive:false,diveT:0,diveHit:false,kickExt:0,fastGetup:false,
       hoverY:0,hlBrake:0,hlBrakeDir:1,hlBrakeFrom:null,hlLiftFx:false,hopDur:.38,
-      batLost:false,dizzyAlpha:0,dizzyPh:Math.random()*TAU
+      batLost:false,dizzyAlpha:0,dizzyPh:Math.random()*TAU,
+      grabCD:0,grabTarget:null,grabbedBy:null,grabInitDir:1,grabAnkle:'aN',grabTurned:false,grabSlammed:false,grabHand:null
     });
   }
   spawn(delay){this.state='spawn';this.sp=0;this.spT=delay||.05;this.visible=false;this.y=this.spawnY;this.vy=0;this.vx=0;this.st=0;this.cur=null;this.hoverY=0;}
   canBeHit(){return this.hp>0&&this.state!=='ragdoll'&&this.state!=='getup'&&this.state!=='spawn'&&this.state!=='win'&&this.invT<=0;}
   faceOpp(o){if(this.ctrl.noFace)return;if(this.skin==='homelander'&&this.hlBrake>.42)return;if(o&&this.y<2&&Math.abs(o.x-this.x)>10)this.dir=o.x>this.x?1:-1;}
   speedMul(){return this.hp<30?.85:1;}
+  canThrowFromHere(o){
+    if(!o||o.hp<=0||o.state!=='ragdoll'||!o.rag||o.grabbedBy)return false;
+    const d0=Math.abs(o.x-this.x)>8?(o.x>this.x?1:-1):this.dir;
+    const standX=o.x-d0*48,slamEnd=standX-d0*205;
+    return standX>=this.minX+18&&standX<=this.maxX-18&&slamEnd>=this.minX+14&&slamEnd<=this.maxX-14;
+  }
+  startGrabPrep(vic,d0){
+    if(!vic||vic.hp<=0||vic.state!=='ragdoll'||!vic.rag||vic.grabbedBy)return false;
+    const slamEnd=this.x-d0*195;
+    if(slamEnd<this.minX+12||slamEnd>this.maxX-12)return false;
+    this.dir=d0;this.grabInitDir=d0;this.grabTarget=vic;vic.grabbedBy=this;
+    this.state='grab_prep';this.st=0;this.vx=0;this.hlBrake=0;this.grabHand=null;
+    return true;
+  }
+  startGrabThrow(){
+    const vic=this.grabTarget;
+    if(!vic||vic.hp<=0||vic.state!=='ragdoll'||!vic.rag){this.cancelGrab(false);return;}
+    const P=vic.rag.p,hx=this.x+this.dir*32;
+    this.grabAnkle=Math.abs(P.aN.x-hx)<=Math.abs(P.aF.x-hx)?'aN':'aF';
+    this.state='grab_throw';this.st=0;this.vx=0;this.grabInitDir=this.dir;
+    this.grabTurned=false;this.grabSlammed=false;this.grabCD=rnd(9.5,14);
+    Snd.whoosh();
+  }
+  cancelGrab(interrupted){
+    const vic=this.grabTarget;
+    if(vic){
+      if(vic.grabbedBy===this)vic.grabbedBy=null;
+      if(vic.rag)vic.rag.pin=null;
+    }
+    this.grabTarget=null;this.grabHand=null;
+    if(interrupted)this.grabCD=Math.max(this.grabCD,rnd(6,9));
+    if(this.state==='grab_prep'||this.state==='grab_throw'){this.state='idle';this.st=0;}
+  }
   startAttack(i){this.state='attack';this.atk=atkSetFor(this.skin)[i];this.ak=i;this.st=0;this.hitDone=false;this.queued=false;this.lungeDone=false;this.connected=false;this.wh=false;this.atkStamp++;this.lzSnd=false;this.lz=null;this.hlBrake=0;}
   startJump(){this.vy=770;this.y=.5;this.state='air';this.st=0;this.hlBrake=0;this.fx&&this.fx.landing(this.x,this.gy,.5);}
   startDash(w){
@@ -1263,7 +1337,9 @@ class Fighter{
   }
   trip(o){
     Snd.thud();this.fastGetup=true;
-    if(o.state==='idle')o.vx=this.dir*220;
+    if(o.state==='grab_prep'||o.state==='grab_throw'){
+      o.cancelGrab(true);o.state='hit';o.st=0;o.stunT=.35;o.vx=this.dir*220;
+    }else if(o.state==='idle')o.vx=this.dir*220;
     this.fx&&this.fx.puff(this.x+this.dir*20,this.gy-20,3,1.2);
     this.toRagdoll(this.vx*.85,260);
   }
@@ -1291,6 +1367,7 @@ class Fighter{
     return hitAny;
   }
   takeHit(att,a){
+    if(this.grabTarget)this.cancelGrab(true);
     this.hp=Math.max(0,this.hp-a.dmg);
     const px=this.x-att.dir*10,py=this.gy-this.y-(a.zone==='head'?166:a.zone==='torso'?122:38);
     Game.hitFX(att,this,a,px,py);
@@ -1310,6 +1387,8 @@ class Fighter{
   }
   handDamage(a,vic){}
   toRagdoll(vx,vy){
+    if(this.grabTarget)this.cancelGrab(true);
+    if(this.grabbedBy)this.grabbedBy.cancelGrab(false);
     if(!this.rig)return;
     this.rag=new Ragdoll(this.rig,this);this.rag.launch(vx,vy);
     this.state='ragdoll';this.st=0;this.y=0;this.vx=0;this.vy=0;this.invT=0;this.dive=false;this.lz=null;
@@ -1362,6 +1441,7 @@ class Fighter{
   takeLaser(att,pt,first){
     this.addBurn(pt.x,pt.y);
     if(this.hp<=0||this.state==='spawn'||this.invT>0)return;
+    if(this.grabTarget)this.cancelGrab(true);
     this.hp=Math.max(0,this.hp-(first?3.5:1.6));
     if(this.fx){this.fx.spark(pt.x,pt.y,2,'255,150,40');if(first)this.fx.blood(pt.x,pt.y,att.dir,6,.5);}
     if(this.hp<=0){Game.ko(this,att,{lvx:300,lvy:380,pw:.9});return;}
@@ -1513,6 +1593,7 @@ class Fighter{
     if(!targetOpp&&this.hp>0&&this.state==='idle')this.calmT+=dt;else this.calmT=0;
     this.lagHp=Math.max(this.hp,this.lagHp-dt*28);
     this.dashCD=Math.max(0,this.dashCD-dt);
+    this.grabCD=Math.max(0,this.grabCD-dt);
     if(this.invT>0)this.invT-=dt;if(this.landT>0)this.landT-=dt;if(this.blend>0)this.blend-=dt;
     if(this.state!=='attack')this.comboT+=dt;
     if(this.burns.length){for(const b of this.burns)b.life-=dt;this.burns=this.burns.filter(b=>b.life>0);}
@@ -1574,7 +1655,10 @@ class Fighter{
       this.vx+=clamp(tgt-this.vx,-A,A);
       const rs=clamp(Math.abs(this.vx)/RUN_SPD,0,1);
       if(isHL){
-        if(rs>.6&&Math.random()<dt*8&&this.fx)this.fx.smoke(this.x-this.dir*28,this.gy-84+rnd(-10,10),-this.dir*rnd(70,135),rnd(-8,8),rnd(4,7),rnd(8,15),rnd(.16,.28),.26);
+        if(rs>.45&&this.fx){
+          if(Math.random()<dt*13)this.fx.smoke(this.x-this.dir*26,this.gy-96+rnd(-14,14),-this.dir*rnd(115,190),rnd(-8,8),rnd(3,6),rnd(7,13),rnd(.14,.24),.24);
+          if(Math.random()<dt*10)this.fx.dash(this.x-this.dir*8,this.gy,this.dir);
+        }
       }else{
         this.walkPh+=(9+rs*13)*dt;
         const sg=Math.sin(this.walkPh)>0?1:-1;
@@ -1631,6 +1715,84 @@ class Fighter{
       if(this.queued&&this.st>=a.cancel&&this.ak<3&&!a.air){this.startAttack(this.ak+1);break;}
       if(this.st>=a.dur){this.comboStep=(this.ak<3&&!a.air)?this.ak+1:0;this.comboT=0;this.state=this.y>0?'air':'idle';this.st=0;this.lz=null;}
       break;}
+     case 'grab_prep':{
+      this.vx*=Math.exp(-dt*14);
+      const vic=this.grabTarget;
+      if(!vic||vic.hp<=0||vic.state!=='ragdoll'||!vic.rag||vic.grabbedBy!==this||Math.abs(vic.x-this.x)>155){
+        this.cancelGrab(false);break;
+      }
+      if(this.st>=GRAB_PREP_DUR){
+        this.startGrabThrow();
+      }
+      break;}
+     case 'grab_throw':{
+      this.vx=0;
+      const vic=this.grabTarget,d0=this.grabInitDir;
+      if(!this.grabSlammed){
+        if(!vic||vic.hp<=0||vic.state!=='ragdoll'||!vic.rag||vic.grabbedBy!==this){
+          this.cancelGrab(false);break;
+        }
+        const u=clamp(this.st/.58,0,1);
+        if(!this.grabTurned&&u>=.5){
+          this.grabTurned=true;
+          this.dir=-d0;
+          Snd.whoosh();
+        }
+        const s=u<.5?.5*Math.pow(u*2,1.35):1-.5*Math.pow((1-u)*2,1.65);
+        const theta=lerp(.06,Math.PI+.16,s);
+        const baseY=this.gy-(this.hoverY||0);
+        let hx=this.x+d0*Math.cos(theta)*52;
+        let hy=Math.min(this.gy-12,(baseY-94)-Math.sin(theta)*88+Math.pow(Math.cos(theta),2)*48);
+        // Keep the ankle inside both arms' reach throughout the arc, including the
+        // facing change and Homelander's small hover-height adjustment this frame.
+        const poseRig=computeRig(this.targetPose(),this.x,this.gy,this.y+(this.hoverY||0),this.dir,false);
+        const dx=hx-poseRig.sh.x,dy=hy-poseRig.sh.y,dist=Math.hypot(dx,dy);
+        const reach=UA+FA-7;
+        if(dist>reach){hx=poseRig.sh.x+dx*reach/dist;hy=poseRig.sh.y+dy*reach/dist;}
+        const bodyTh=lerp(.04,Math.PI+.04,s);
+        const ux=d0*Math.cos(bodyTh),uy=-Math.sin(bodyTh);
+        this.grabHand={x:hx,y:hy};
+        vic.rag.pin={key:this.grabAnkle,x:this.grabHand.x,y:this.grabHand.y,ux,uy,lift:u<.86};
+        if(this.st>=.58){
+          this.grabSlammed=true;
+          this.grabHand=null;
+          vic.rag.pin=null;
+          vic.grabbedBy=null;
+          this.grabTarget=null;
+          for(const k of ['pel','neck','head','kN','kF']){
+            const pt=vic.rag.p[k];
+            pt.x=clamp(pt.x,vic.minX-10,vic.maxX+10);
+            pt.px=pt.x+d0*1.4;
+            pt.py=pt.y-3.6;
+          }
+          const impX=clamp(lerp(vic.rag.p.pel.x,vic.rag.p.head.x,.55),vic.minX,vic.maxX);
+          if(this.fx){
+            this.fx.crack(impX,this.gy+8,1.2);
+            this.fx.landing(impX,this.gy,1.3);
+            this.fx.impact(impX,this.gy-14,this.dir,1);
+            this.fx.blood(impX,this.gy-16,this.dir,10,.78);
+            for(let i=0;i<4;i++)this.fx.smoke(impX+rnd(-24,24),this.gy-rnd(2,16),rnd(-85,85),-rnd(25,95),rnd(10,18),rnd(20,36),rnd(.55,1),.48,1);
+          }
+          Snd.stomp();Snd.hit(.92);Snd.splat(.85);
+          Game.shake=Math.max(Game.shake,13);
+          Game.hs=.06;
+          vic.hp=Math.max(0,vic.hp-16);
+          injure(vic,'torso',.95);injure(vic,'head',.75);
+          if(vic.hp<=0){
+            Game.ko(vic,this,{lvx:150,lvy:180,pw:1.05,keepRag:true});
+          }else{
+            vic.fastGetup=false;
+            vic.rag.t=-.85;
+            vic.rag.settle=0;
+            vic.dizzyAlpha=1;
+          }
+        }
+      }
+      if(this.st>=GRAB_THROW_DUR){
+        this.grabHand=null;
+        this.state='idle';this.st=0;this.comboT=9;
+      }
+      break;}
      case 'hit':{
       this.vx*=Math.exp(-dt*8);
       if(this.st>=this.stunT){this.state='idle';this.st=0;}
@@ -1646,7 +1808,7 @@ class Fighter{
           this.fx.pool(bPt.x,this.gy+rnd(1,13),clamp((85-this.hp)/9,2.5,10));
         }
       }
-      if(this.hp>0){
+      if(this.hp>0&&!this.grabbedBy){
         if(this.fastGetup){ if((r.t>.35&&r.settle>.08)||r.t>1.2)this.startGetup(); }
         else if(r.t>.9&&r.settle>.35)this.startGetup();
         else if(r.t>4.2)this.startGetup();
@@ -1673,11 +1835,12 @@ class Fighter{
         this.hoverY=(HL_HOVER+Math.sin(this.t*2.7+this.seed)*2.2)*lift;
       }
     }else{
-      const tgtH=HL_HOVER+Math.sin(this.t*2.7+this.seed)*2.2;
+      const baseH=this.state==='grab_prep'?8:this.state==='run'?HL_HOVER+8:HL_HOVER;
+      const tgtH=baseH+Math.sin(this.t*2.7+this.seed)*2.2;
       this.hoverY+=(tgtH-this.hoverY)*Math.min(1,dt*14);
     }
     // Orbiting pixel yellow stars while unconscious in temporary knockdown (fade out when getting up).
-    if(this.hp>0&&this.state==='ragdoll'&&!this.fastGetup&&this.rag&&this.rag.t>.12){
+    if(this.hp>0&&this.state==='ragdoll'&&!this.fastGetup&&this.rag&&(this.rag.t>.12||this.dizzyAlpha>.2)){
       this.dizzyAlpha=Math.min(1,this.dizzyAlpha+dt*5.5);
     }else{
       this.dizzyAlpha=Math.max(0,this.dizzyAlpha-dt*2.4);
@@ -1691,17 +1854,18 @@ class Fighter{
   runPose(){
     const rs=clamp(Math.abs(this.vx)/RUN_SPD,0,1);
     if(this.skin==='homelander'){
-      const bob=Math.sin(this.t*7+this.seed)*1.2;
+      const bob=Math.sin(this.t*7.5+this.seed)*1.1;
+      // Forward-leaning power-glide: arms swept back at sides, legs nearly straight and slightly bent backward behind the spine.
       return P({
-        H:lerp(85,64,rs)+bob*(1-rs*.5),
-        tl:lerp(14,68,rs),
-        hd:lerp(6,26,rs),
-        px:lerp(2,10,rs),
-        a1:lerp(20,102,rs),e1:lerp(26,6,rs),c1:1,
-        a2:lerp(12,96,rs),e2:lerp(22,8,rs),c2:1,
-        f1x:lerp(4,-74,rs),f1h:lerp(14,42,rs),fa1:lerp(44,118,rs),
-        f2x:lerp(-10,-82,rs),f2h:lerp(2,48,rs),fa2:lerp(50,124,rs),
-        mo:.3*rs
+        H:lerp(85,82,rs)+bob*(1-rs*.35),
+        tl:lerp(12,35,rs),
+        hd:lerp(5,9,rs),
+        px:lerp(2,8,rs),
+        a1:lerp(18,-24,rs),e1:lerp(26,18,rs),c1:1,
+        a2:lerp(12,-32,rs),e2:lerp(22,14,rs),c2:1,
+        f1x:lerp(5,-46,rs),f1h:lerp(13,7.5,rs),fa1:lerp(42,62,rs),
+        f2x:lerp(-9,-40,rs),f2h:lerp(1,2.5,rs),fa2:lerp(48,66,rs),
+        mo:.22*rs
       });
     }
     const p=Object.assign({},D),ph=this.walkPh;
@@ -1723,15 +1887,15 @@ class Fighter{
     if(this.skin==='homelander'){
       const lean=ease(clamp(this.diveT/.32,0,1)),ext=this.kickExt;
       return P({
-        H:lerp(68,60,lean),
-        tl:lerp(56,78,lean)+4*ext,
-        hd:lerp(20,32,lean),
-        px:lerp(6,14,lean),
-        a1:lerp(96,112,lean)+6*ext,e1:3,c1:1,
-        a2:lerp(90,106,lean)+6*ext,e2:5,c2:1,
-        f1x:lerp(-62,-84,lean),f1h:lerp(36,48,lean),fa1:122,
-        f2x:lerp(-70,-88,lean),f2h:lerp(40,52,lean),fa2:128,
-        mo:.55
+        H:lerp(78,72,lean),
+        tl:lerp(48,66,lean)+4*ext,
+        hd:lerp(16,26,lean),
+        px:lerp(8,12,lean),
+        a1:lerp(92,108,lean)+6*ext,e1:4,c1:1,
+        a2:lerp(86,102,lean)+6*ext,e2:6,c2:1,
+        f1x:lerp(-52,-72,lean),f1h:lerp(18,36,lean),fa1:lerp(72,96,lean),
+        f2x:lerp(-48,-68,lean),f2h:lerp(14,32,lean),fa2:lerp(76,100,lean),
+        mo:.5
       });
     }
     const lean=ease(clamp(this.diveT/.55,0,1));
@@ -1748,6 +1912,20 @@ class Fighter{
       if(this.sp<3){const p=Object.assign({},T_POSE);if(this.sp===2){p.H+=Math.sin(this.st*38)*1.2*(this.spT/.55);p.tl+=Math.sin(this.st*30)*2*(this.spT/.55);}p.ey=0;return p;}
       return mix(T_POSE,isHL?HL_IDLE:D,ease(1-this.spT/.45));}
      case 'getup':return sampleKF(this.skin==='negan'?GETUP_NEGAN:isHL?GETUP_HL:GETUP,this.st);
+     case 'grab_prep':{
+      const p=Object.assign({},GRAB_PREP_POSE);
+      if(isHL){p.f1x=12;p.f1h=10;p.fa1=34;p.f2x=-10;p.f2h=2;p.fa2=42;}
+      if(this.skin==='negan'){p.a1=-16;p.e1=22;p.c1=1;p.a2=34;p.e2=24;p.c2=0;p.bg=0;}
+      p.tl+=Math.sin(t*7)*1.8;p.a2+=Math.sin(t*7)*3;
+      return p;}
+     case 'grab_throw':{
+      const p=sampleKF(GRAB_THROW_KF,this.st);
+      if(isHL){
+        const hlP=Object.assign({},p,{f1x:12,f1h:12,fa1:36,f2x:-10,f2h:2,fa2:44});
+        const endK=clamp((this.st-.62)/.22,0,1);
+        return endK>0?mix(hlP,HL_IDLE,ease(endK)):hlP;
+      }
+      return p;}
      case 'win':{
       if(isHL){const p=Object.assign({},HL_IDLE,{tl:-5,hd:-10,a1:142,e1:22,c1:1,a2:154,e2:16,c2:1,mo:1});p.a1+=Math.sin(t*8)*5;p.a2+=Math.sin(t*8+1)*5;return p;}
       const p=Object.assign({},WIN);p.H+=Math.sin(t*5)*1.5;p.a1+=Math.sin(t*9)*6;p.a2+=Math.sin(t*9+1)*6;return p;}
@@ -1772,7 +1950,7 @@ class Fighter{
      case 'dash':{
       if(isHL){
         return this.dashF
-          ?P({H:74,tl:48,hd:20,px:8,a1:88,e1:14,c1:1,a2:80,e2:18,c2:1,f1x:-44,f1h:28,fa1:92,f2x:-56,f2h:34,fa2:102,mo:.3})
+          ?P({H:80,tl:38,hd:12,px:8,a1:78,e1:14,c1:1,a2:70,e2:18,c2:1,f1x:-48,f1h:9,fa1:64,f2x:-42,f2h:4,fa2:68,mo:.3})
           :P({H:84,tl:-18,hd:8,px:-5,a1:46,e1:34,c1:0,a2:34,e2:38,c2:0,f1x:24,f1h:18,fa1:36,f2x:10,f2h:10,fa2:44,mo:.2});
       }
       return this.dashF?DASHF:DASHB;}
@@ -1833,11 +2011,12 @@ class Fighter{
   buildRig(dt){
     if(this.state==='ragdoll'){this.rig=this.rag.toRig(this);return;}
     const tp=this.targetPose();
-    const hard=this.state==='getup'||this.state==='spawn';
+    const hard=this.state==='getup'||this.state==='spawn'||this.state==='grab_throw';
     const k=hard?1:(this.state==='attack'||this.state==='hit')?1-Math.exp(-dt*45):1-Math.exp(-dt*24);
     this.cur=(this.cur&&!hard)?mix(this.cur,tp,k):Object.assign({},tp);
-    const hasBat=this.skin==='negan'&&this.hp>0&&!this.batLost;
+    const hasBat=this.skin==='negan'&&this.hp>0&&!this.batLost&&!(this.state==='grab_throw'&&this.st<.68);
     let R=computeRig(this.cur,this.x,this.gy,this.y+(this.hoverY||0),this.dir,hasBat);
+    if(this.state==='grab_throw'&&this.grabHand&&!this.grabSlammed)pinHandsWorld(R,this.grabHand.x,this.grabHand.y);
     if(this.state==='getup'&&this.blend>0&&this.blendFrom)R=blendRig(this.blendFrom,R,ease(1-this.blend/.3));
     this.rig=R;
   }
@@ -1859,6 +2038,7 @@ class AutoCombat{
     this.dodgeP=rnd(.28,.5);this.retreatP=rnd(.35,.6);
     this.jumpDist=250;this.goalX=0;this.retRun=false;
     this.rolled=false;this.intercept=false;this.afterHop=0;
+    this.grabChecked=0;
   }
   setMode(m){this.mode=m;this.modeT=0;}
   startCharge(dist){
@@ -1875,13 +2055,14 @@ class AutoCombat{
     this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.modeT+=dt;
     if(!o||f.hp<=0){this.mode='engage';return;}
     const st=f.state;
+    if(st==='grab_prep'||st==='grab_throw'){c.noFace=true;return;}
     const dx=o.x-f.x,dist=Math.abs(dx),toward=dx>=0?1:-1;
     if(st==='ragdoll'||st==='getup'||st==='spawn'||st==='hit'){
       this.mode='engage';this.reactT=-1;
       if(st!=='ragdoll')f.faceOpp(o);
       return;
     }
-    if(this.mode!=='retreat'&&st!=='run'&&st!=='air'&&st!=='hop')f.faceOpp(o);
+    if(this.mode!=='retreat'&&this.mode!=='grab_approach'&&st!=='run'&&st!=='air'&&st!=='hop')f.faceOpp(o);
     if(st==='air'||st==='hop'||st==='dash')return;
 
     // ---- dodge: notice a fresh strike aimed at me and hop back ----
@@ -1909,6 +2090,27 @@ class AutoCombat{
     }
 
     const oppDown=o.state==='ragdoll'||o.state==='getup'||o.state==='spawn';
+    if(this.mode==='grab_approach'){
+      if(o.hp<=0||o.state!=='ragdoll'||!o.rag||o.grabbedBy||f.grabCD>0||this.modeT>2.3||!f.canThrowFromHere(o)){
+        this.setMode('engage');return;
+      }
+      const d0=Math.abs(o.x-f.x)>8?(o.x>f.x?1:-1):f.dir;
+      const P=o.rag.p,footX=clamp(Math.abs(P.aN.x-f.x)<=Math.abs(P.aF.x-f.x)?P.aN.x:P.aF.x,o.x-85,o.x+85);
+      const standX=footX-d0*44;
+      if(standX<f.minX+18||standX>f.maxX-18||standX-d0*195<f.minX+12||standX-d0*195>f.maxX-12){
+        this.setMode('engage');return;
+      }
+      const gd=standX-f.x;
+      if(Math.abs(gd)>22){
+        c.noFace=true;
+        const md=gd>0?1:-1;c.mx=md;c.run=Math.abs(gd)>125;
+        if(st==='idle')f.dir=md;
+      }else if(st==='idle'&&o.rag.settle>.04){
+        f.startGrabPrep(o,d0);
+        this.setMode('engage');
+      }
+      return;
+    }
     if(this.mode==='charge'){
       if(oppDown||this.modeT>5){this.setMode('engage');return;}
       c.mx=toward;c.run=true;
@@ -1938,6 +2140,19 @@ class AutoCombat{
     // ---- engage ----
     if(st==='attack'||st!=='idle')return;
     if(oppDown){
+      if(o.state==='ragdoll'&&o.rag&&!o.fastGetup&&!o.grabbedBy&&this.grabChecked!==o.rag.id){
+        if(f.grabCD<=0&&dist<320&&f.canThrowFromHere(o)){
+          // A distant or wall-blocked knockdown can become eligible later.
+          this.grabChecked=o.rag.id;
+          let threatNear=false;
+          for(const e of all){
+            if(e!==f&&e!==o&&e.hp>0&&e.state!=='ragdoll'&&e.state!=='spawn'&&Math.abs(e.x-f.x)<200){threatNear=true;break;}
+          }
+          let pGrab=threatNear?.08:(o.hp>38?.38:.28);
+          if(f.hp<25&&threatNear)pGrab=0;
+          if(Math.random()<pGrab){this.setMode('grab_approach');return;}
+        }
+      }
       if(!this.downDecided){
         this.downDecided=true;
         const W=Game.W;this.goalX=o.x<W/2?W-120:120;
@@ -2089,6 +2304,37 @@ function drawDizzyStars(g,f){
   }
   g.restore();
 }
+/*
+  Small pixel-art gray circle that fills with green over GRAB_PREP_DUR right before a leg-grab slam,
+  and immediately disappears once filled or if interrupted.
+*/
+function drawGrabCircle(g,f){
+  if(f.state!=='grab_prep'||!f.grabTarget)return;
+  const vic=f.grabTarget;
+  const prog=clamp(f.st/GRAB_PREP_DUR,0,1);
+  if(prog>=1)return;
+  const sn=v=>Math.round(v/3)*3;
+  const cx=sn(lerp(f.x+f.dir*24,vic.x,.48)),cy=sn(f.gy-132);
+  g.save();
+  g.fillStyle='rgba(14,16,22,.88)';
+  g.beginPath();g.arc(cx,cy,14.5,0,TAU);g.fill();
+  g.fillStyle='#636a7a';
+  g.beginPath();g.arc(cx,cy,11.5,0,TAU);g.fill();
+  g.fillStyle='#2b303a';
+  g.beginPath();g.arc(cx,cy,5.4,0,TAU);g.fill();
+  if(prog>.01){
+    const a0=-Math.PI/2,a1=a0+TAU*prog;
+    g.fillStyle='#37d858';
+    g.beginPath();g.moveTo(cx,cy);g.arc(cx,cy,11.5,a0,a1);g.closePath();g.fill();
+    g.fillStyle='#9affad';
+    g.beginPath();g.moveTo(cx,cy);g.arc(cx,cy,11.5,Math.max(a0,a1-.22),a1);g.closePath();g.fill();
+    g.fillStyle='#232830';
+    g.beginPath();g.arc(cx,cy,5.4,0,TAU);g.fill();
+    g.fillStyle='rgba(65,225,98,.42)';
+    g.beginPath();g.moveTo(cx,cy);g.arc(cx,cy,5.4,a0,a1);g.closePath();g.fill();
+  }
+  g.restore();
+}
 /* ============================ SANDBOX GAME ENGINE ============================ */
 const Game={
   W:960,H:540,gy:468,S:1,cv:null,
@@ -2172,6 +2418,9 @@ const Game={
     this.spawnFighter(this.W*.68,-1,.32);
   },
   clearBodies(){
+    for(const f of this.fighters){
+      if(f.grabTarget&&f.grabTarget.hp<=0)f.cancelGrab(false);
+    }
     this.fighters=this.fighters.filter(f=>f.hp>0);
     this.droppedBats=[];
     this.syncHudCards();
@@ -2207,6 +2456,8 @@ const Game={
     if(a.pw>.6)Snd.splat(a.pw);
   },
   ko(v,att,a){
+    if(v.grabTarget)v.cancelGrab(false);
+    if(v.grabbedBy)v.grabbedBy.cancelGrab(false);
     v.hp=0;
     if(v.skin==='negan'&&!v.batLost){
       const R=v.rig;
@@ -2225,20 +2476,27 @@ const Game={
       });
     }
     this.koCount++;
-    v.toRagdoll(att.dir*(a.lvx||320)*1.15,(a.lvy||520)+150);
-    this.fx.blood(v.x,v.gy-v.y-125,att.dir,16,.72);
+    if(a&&a.keepRag&&v.state==='ragdoll'&&v.rag){
+      v.rag.t=0;v.rag.settle=0;
+      this.fx.blood(v.x,v.gy-22,att.dir,16,.75);
+    }else{
+      v.toRagdoll(att.dir*(a.lvx||320)*1.15,(a.lvy||520)+150);
+      this.fx.blood(v.x,v.gy-v.y-125,att.dir,16,.72);
+    }
     this.ts=.32;this.tsT=.95;
     Snd.ko();Snd.splat(1.2);
     this.shake=15;
     this.respawnTimer=2.4;
   },
   findBestOpponent(f){
+    if(f.grabTarget&&f.grabTarget.hp>0)return f.grabTarget;
     let best=null,bestScore=1e9;
     for(const o of this.fighters){
       if(o===f||o.hp<=0)continue;
       const dist=Math.abs(o.x-f.x);
       const downPenalty=(o.state==='ragdoll'||o.state==='getup'||o.state==='spawn')?280:0;
-      const sc=dist+downPenalty;
+      const busyPenalty=(o.grabbedBy&&o.grabbedBy!==f)?220:0;
+      const sc=dist+downPenalty+busyPenalty;
       if(sc<bestScore){bestScore=sc;best=o;}
     }
     return best;
@@ -2262,7 +2520,10 @@ const Game={
         }
       }
     }
-    for(const f of this.fighters){
+    // Update a grabber before its held opponent regardless of spawn order, so
+    // the ragdoll solves against the hand position from this frame, not the last.
+    const updateOrder=[...this.fighters.filter(f=>!f.grabbedBy),...this.fighters.filter(f=>f.grabbedBy)];
+    for(const f of updateOrder){
       const opp=f.hp>0?this.findBestOpponent(f):null;
       if(f.hp>0&&opp){
         f.autopilot.update(dt,f,opp,this.fighters);
@@ -2298,10 +2559,10 @@ const Game={
     }
     for(let i=0;i<alive.length;i++){
       const A=alive[i];
-      if(A.y>=60||A.state==='ragdoll'||A.state==='spawn'||A.state==='run')continue;
+      if(A.y>=60||A.state==='ragdoll'||A.state==='spawn'||A.state==='run'||A.state==='grab_throw')continue;
       for(let j=i+1;j<alive.length;j++){
         const B=alive[j];
-        if(B.y>=60||B.state==='ragdoll'||B.state==='spawn'||B.state==='run')continue;
+        if(B.y>=60||B.state==='ragdoll'||B.state==='spawn'||B.state==='run'||B.state==='grab_throw')continue;
         const dx=B.x-A.x,m=54;
         if(Math.abs(dx)<m){
           const s=dx>=0?1:-1,push=(m-Math.abs(dx))/2;
@@ -2398,12 +2659,12 @@ const Game={
         ctx.drawImage(layer.canvas,0,0,W,H);
       };
       paintLayer(this.batLayer,q=>drawFighterShadow(q,f),false);
-      paintLayer(this.bodyLayer,q=>{drawFighterBody(q,f);drawLayerBurns(q,f,'body');});
-      paintLayer(this.headLayer,q=>{drawFighterHead(q,f);drawLayerBurns(q,f,'head');});
+      paintLayer(this.bodyLayer,q=>drawFighterBody(q,f));
+      paintLayer(this.headLayer,q=>drawFighterHead(q,f));
       if(f.skin==='negan'&&!f.batLost&&f.hp>0&&f.rig.bd){
-        paintLayer(this.batLayer,q=>drawBat(q,f.rig,f));
+        paintLayer(this.batLayer,q=>drawBat(q,f));
       }
-      paintLayer(this.frontLayer,q=>{drawFighterFrontArm(q,f);drawLayerBurns(q,f,'front');});
+      paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,f));
       ctx.restore();
     }
 
@@ -2412,6 +2673,9 @@ const Game={
       if(f.state==='attack'&&f.atk&&f.atk.laser){
         drawEyeGlow(this.fxLayer.ctx,f);
         if(f.lz&&f.lz.on)drawBeam(this.fxLayer.ctx,f.lz);
+      }
+      if(f.state==='grab_prep'&&f.visible){
+        drawGrabCircle(this.fxLayer.ctx,f);
       }
       if(f.dizzyAlpha>.02){
         drawDizzyStars(this.fxLayer.ctx,f);
