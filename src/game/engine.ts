@@ -1,4 +1,7 @@
 // @ts-nocheck
+import { Audience } from './audience';
+import { BloodField } from './blood';
+
 /* ============================ UTILS ============================ */
 const TAU=Math.PI*2, rad=d=>d*Math.PI/180;
 const BODY_PIXEL=3, HEAD_PIXEL=1.5;
@@ -11,12 +14,9 @@ const TIE_N=6, TIE_SEG=9;
 const CAPE_N=7, CAPE_SEG=19;
 const HL_HOVER=19;
 const RUN_SPD=520, RUN_ACC=1250;
-const SLOW_WALK_SPD=84, SLOW_WALK_PH=2.4;
-const CATWALK_SY=104; // screen-y of the suspended ceiling walkway (0 = top of canvas)
 const BOX_GAP=.1, OVEREXTEND_DUR=1.12, FLANK_DUR=.34;
 const CHOKE_OFFSET=48, CHOKE_DPS=2.2, COUNTER_RELEASE=.43, COUNTER_DUR=.86;
 const SHOVE_DUR=.58, SHOVE_IMPACT=.25, SHOVE_REACH=105;
-const TAKEDOWN_IMPACT=.38, TAKEDOWN_REACH=94;
 const BLEED_DPS=2, BLEED_AFTER_DEATH=3;
 const STAGGER_KNOCKDOWN_CHANCE=.4, STAGGER_KO_CHANCE=.4;
 const LAMP_PULL_DUR=.7;
@@ -163,6 +163,14 @@ function aimArmWorld(R,s,x,y,preferUp=false){
   R['e'+s]={x:R.sh.x+J['e'+s].x*d,y:R.sh.y+J['e'+s].y};
   R['w'+s]={x:R.sh.x+J['w'+s].x*d,y:R.sh.y+J['w'+s].y};
 }
+function guardWobblePose(p,f){
+  const k=clamp(f.guardFlinch/.2,0,1),phase=f.guardShakePhase+f.t*42;
+  if(!k)return p;
+  // The upper body rocks around the planted hips with the same decaying
+  // impulse as the hands, without moving the feet or altering the guard pose.
+  const wobble=Math.sin(phase)*f.guardShakeX*k;
+  return Object.assign({},p,{tl:p.tl+wobble*.55,hd:p.hd+wobble*.35});
+}
 function poseGuardArms(R,f){
   const k=clamp(f.guardFlinch/.2,0,1),phase=f.guardShakePhase+f.t*42;
   // Each impact has its own small, decaying wobble in both extended arms.
@@ -197,20 +205,6 @@ function poseStruggleArms(R,t,prone=false){
   const n=R.neck,d=R.dir;
   aimArmWorld(R,'N',n.x+d*(12+Math.sin(t*15)*4),n.y-4+Math.sin(t*12)*4,prone);
   aimArmWorld(R,'F',n.x-d*(6+Math.sin(t*13+1)*3),n.y-7+Math.cos(t*11)*4,prone);
-  R.cN=R.cF=0;R.bd=null;
-}
-function poseTakedownArms(R,v){
-  if(!v||!v.rig)return;
-  const r=v.rig;
-  const near=pointBetween(r.pel,r.kN,.62),far=pointBetween(r.pel,r.kF,.62);
-  aimArmWorld(R,'N',near.x,near.y);aimArmWorld(R,'F',far.x,far.y);
-  R.cN=R.cF=0;R.bd=null;
-}
-function posePinArms(R,v){
-  if(!v||!v.rig)return;
-  const n=v.rig.neck,d=R.dir;
-  aimArmWorld(R,'N',n.x+d*2,n.y+3);
-  aimArmWorld(R,'F',n.x-d*4,n.y-1);
   R.cN=R.cF=0;R.bd=null;
 }
 function cloneRig(R){
@@ -497,6 +491,40 @@ for (const k in DEF) {
     else SK_[k][p] = spr(w, h, f);
   }
 }
+// Composite blood into each original limb sprite, not into world space. The
+// alpha mask and the usual limb transform keep stains on the moving skin.
+const STAINED_SKIN_CACHE=new WeakMap();
+function stainedSkinSprite(sprite,part,level){
+  if(!sprite||!level)return sprite;
+  const amount=clamp(Math.ceil(level),1,3),cacheKey=part+amount;
+  let cache=STAINED_SKIN_CACHE.get(sprite);
+  if(!cache){cache=new Map();STAINED_SKIN_CACHE.set(sprite,cache);}
+  if(cache.has(cacheKey))return cache.get(cacheKey);
+  const c=mk();c.width=sprite.width;c.height=sprite.height;
+  const g=c.getContext('2d');g.drawImage(sprite,0,0);
+  g.globalCompositeOperation='source-atop';g.globalAlpha=.84;g.fillStyle='#8c1724';
+  if(part==='boot'){
+    g.fillRect(2,3,3,2);g.fillRect(6,4,3,2);g.fillRect(10,3,2,2);
+    if(amount>1){g.fillRect(1,5,4,2);g.fillRect(8,2,3,3);}
+    if(amount>2)g.fillRect(4,4,6,3);
+    g.globalAlpha=.7;g.fillStyle='#b32a35';g.fillRect(3,3,2,1);
+  }else if(part==='shin'){
+    g.fillRect(2,13,2,3);g.fillRect(5,12,1,3);g.fillRect(4,15,2,1);
+    if(amount>1){g.fillRect(1,14,2,2);g.fillRect(4,11,2,2);}
+    if(amount>2)g.fillRect(2,12,4,4);
+    g.globalAlpha=.65;g.fillStyle='#b32a35';g.fillRect(2,13,1,1);
+  }else{
+    // A small irregular patch on both sides of the joint, so it remains
+    // continuous as the knee or elbow bends. Feet use their separate stains.
+    const bottom=part==='knee-thigh'||part==='elbow-upper';
+    const y=bottom?sprite.height-4:1;
+    g.fillRect(2,y,3,2);g.fillRect(4,y+2,2,1);g.fillRect(1,y+1,1,2);
+    if(amount>1){g.fillRect(1,y,2,2);g.fillRect(5,y+1,1,2);}
+    if(amount>2)g.fillRect(2,y+2,3,1);
+    g.globalAlpha=.65;g.fillStyle='#b32a35';g.fillRect(3,y,2,1);
+  }
+  cache.set(cacheKey,c);return c;
+}
 /* Lucille: a baseball bat wrapped in barbed wire (26x9 sprite, 3px per cell, handle on the left). */
 const BAT_SPR=(()=>{
   const W=26,H=9,C=4,c=mk();c.width=W;c.height=H;const g=c.getContext('2d');
@@ -529,7 +557,7 @@ function drawBat(g,f){
   g.restore();
 }
 function stowsBat(f){
-  return f.boxing||(f.bleed&&f.bleed.pressing)||['guard','guard_recoil','shove','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','catwalk','takedown','ground_pin','pinned'].includes(f.state);
+  return f.boxing||(f.bleed&&f.bleed.pressing)||['guard','guard_recoil','shove','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull'].includes(f.state);
 }
 function drawStowedBat(g,f){
   const R=f.rig;if(!R||f.batLost||f.hp<=0)return;
@@ -627,6 +655,48 @@ function drawSkinLimbWounds(g, list, a, b, width, dir) {
   for (const wound of list) {
     drawWound(g, wound, a.x + dx * wound.t + nx * wound.s * width, a.y + dy * wound.t + ny * wound.s * width);
   }
+}
+function drawRaggedHole(g,x,y,size,angle,cloth,under,phase,time){
+  g.save();g.translate(x,y);g.rotate(angle);
+  const w=size,h=Math.max(6,size*.72),j=Math.sin(phase)*1.2;
+  // The opening has a slightly uneven, stable outline rather than a rectangle.
+  g.fillStyle='#090A0D';g.beginPath();
+  g.moveTo(-w*.52,-h*.14);g.lineTo(-w*.42,-h*.43);g.lineTo(-w*.13,-h*.5+j);
+  g.lineTo(w*.05,-h*.34);g.lineTo(w*.34,-h*.47-j);g.lineTo(w*.5,-h*.16);
+  g.lineTo(w*.4,h*.08);g.lineTo(w*.52,h*.28);g.lineTo(w*.24,h*.5);
+  g.lineTo(-w*.05,h*.35);g.lineTo(-w*.32,h*.48-j);g.lineTo(-w*.5,h*.2);
+  g.closePath();g.fill();
+  g.fillStyle=under;g.beginPath();
+  g.moveTo(-w*.35,-h*.12);g.lineTo(-w*.26,-h*.3);g.lineTo(-w*.07,-h*.36);
+  g.lineTo(w*.08,-h*.22);g.lineTo(w*.29,-h*.3);g.lineTo(w*.32,-h*.05);
+  g.lineTo(w*.25,h*.09);g.lineTo(w*.34,h*.23);g.lineTo(w*.17,h*.32);
+  g.lineTo(-w*.04,h*.22);g.lineTo(-w*.23,h*.32);g.lineTo(-w*.34,h*.12);
+  g.closePath();g.fill();
+  g.fillStyle='rgba(0,0,0,.28)';g.fillRect(-w*.22,-h*.29,w*.4,1.5);
+  g.fillStyle=cloth;g.fillRect(-w*.48,-h*.42,w*.22,2);
+  g.fillRect(w*.22,h*.22,2,3+Math.sin(time*8+phase));
+  g.restore();
+}
+function drawLimbRips(g,R,f,part,a,b,halfWidth){
+  const rips=f.wounds.rips;
+  let found=false;for(const rip of rips)if(rip.part===part){found=true;break;}
+  if(!found)return;
+  const dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy)||1;
+  const nx=R.dir*dy/len,ny=-R.dir*dx/len;
+  // Clip each opening to the limb, and paint it with that limb rather than
+  // over a different arm/leg later in the fighter's layer stack.
+  g.save();g.beginPath();
+  g.moveTo(a.x+nx*halfWidth,a.y+ny*halfWidth);g.lineTo(b.x+nx*halfWidth,b.y+ny*halfWidth);
+  g.lineTo(b.x-nx*halfWidth,b.y-ny*halfWidth);g.lineTo(a.x-nx*halfWidth,a.y-ny*halfWidth);
+  g.closePath();g.clip();
+  for(const rip of rips){
+    if(rip.part!==part)continue;
+    const offset=clamp(rip.offset??rip.side*4,-halfWidth*.65,halfWidth*.65);
+    const x=a.x+dx*rip.t+nx*offset,y=a.y+dy*rip.t+ny*offset;
+    const angle=Math.atan2(dy,dx)-Math.PI/2+rip.angle*R.dir;
+    drawRaggedHole(g,x,y,rip.size,angle,rip.cloth,rip.under,rip.phase,f.t);
+  }
+  g.restore();
 }
 function drawPixelBand(g, a, b, t, halfWidth, thickness, color, edge) {
   if (!a || !b) return;
@@ -737,32 +807,12 @@ function drawSkinOutfitDetails(g, R, f, mode='all') {
       drawPixelBand(g,knee,ankle,.22,7,1,'#E1B94D','#4A1017');
     }
   }
-  const drawRaggedHole=(x,y,size,angle,cloth,under,phase)=>{
-    g.save();g.translate(x,y);g.rotate(angle);
-    const q=2, w=size, h=Math.max(6,size*.72);
-    g.fillStyle='#090A0D';g.fillRect(-w/2-1,-h/2-1,w+2,h+2);
-    g.fillStyle=under;g.fillRect(-w/2+q,-h/2+q,Math.max(2,w-2*q),Math.max(2,h-2*q));
-    g.fillStyle='rgba(0,0,0,.35)';g.fillRect(-w/2+q,-h/2+q,Math.max(2,w-2*q),2);
-    g.fillStyle=cloth;
-    g.fillRect(-w/2-3,-h/2-2,Math.max(3,w*.36),3);
-    g.fillRect(w*.16,-h/2-3,Math.max(3,w*.34),3);
-    g.fillRect(-w/2-3,h/2-1,Math.max(3,w*.28),3);
-    g.fillRect(w/2-1,-h/2+2,3,Math.max(3,h*.4));
-    const flap=Math.sin(f.t*8+phase)*2.2;
-    g.fillStyle=cloth;g.fillRect(w*.16,h/2-1,3,6+flap);
-    g.fillStyle='rgba(0,0,0,.45)';g.fillRect(w*.16+2,h/2+2,1,Math.max(2,4+flap));
-    g.restore();
-  };
-  for(const rip of (f.wounds.rips||[])){
-    if(rip.part==='torso' && mode!=='arms') { const wx=n.x+dir*uy*rip.x+ux*scale*rip.y, wy=n.y-dir*ux*rip.x+uy*scale*rip.y; drawRaggedHole(wx,wy,rip.size,rip.angle,rip.cloth,rip.under,rip.phase); }
-    else if(rip.part!=='torso'){
-      const map={uN:[R.sh,R.eN],uF:[R.sh,R.eF],fN:[R.eN,R.wN],fF:[R.eF,R.wF],tN:[R.pel,R.kN],tF:[R.pel,R.kF],sN:[R.kN,R.aN],sF:[R.kF,R.aF]};
-      const pair=map[rip.part];
-      if(pair && (mode==='arms' ? rip.part[0]==='u'||rip.part[0]==='f' : true)){
-        const pt=pointBetween(pair[0],pair[1],rip.t); const dx=pair[1].x-pair[0].x,dy=pair[1].y-pair[0].y;
-        drawRaggedHole(pt.x+(-dy/Math.hypot(dx,dy))*rip.side*5,pt.y+(dx/Math.hypot(dx,dy))*rip.side*5,rip.size,rip.angle,rip.cloth,rip.under,rip.phase);
-      }
-    }
+  if(mode!=='arms') for(const rip of f.wounds.rips){
+    if(rip.part!=='torso')continue;
+    const point=rip.laser?surfacePoint(R,{seg:'torso',t:rip.t,s:rip.offset}):
+      {x:n.x+dir*uy*rip.x+ux*scale*rip.y,y:n.y-dir*ux*rip.x+uy*scale*rip.y};
+    const angle=Math.atan2(uy,ux)-Math.PI/2+rip.angle*dir;
+    drawRaggedHole(g,point.x,point.y,rip.size,angle,rip.cloth,rip.under,rip.phase,f.t);
   }
   const tear=(a,b,list,width,color)=>{
     if(!list||!list.length)return;
@@ -921,21 +971,29 @@ function drawSaulTie(g, R, f) {
 function drawPixelArm(g, R, f, side, far, S) {
   const prefix = far ? 'F' : 'N';
   const elbow = R['e' + prefix], wrist = R['w' + prefix];
-  const upper = far ? S.uArmB : S.uArmF;
-  const lower = far ? S.lArmB : S.lArmF;
+  const stain=f.jointBlood?.['e'+prefix]||0;
+  const upper = stainedSkinSprite(far ? S.uArmB : S.uArmF,'elbow-upper',stain);
+  const lower = stainedSkinSprite(far ? S.lArmB : S.lArmF,'elbow-lower',stain);
   drawSkinSegment(g, upper, R.sh, elbow, far ? 18 : 19, 4, 4, R.dir === 1);
   drawSkinSegment(g, lower, elbow, wrist, 18, 3, 5, R.dir === 1);
   drawSkinLimbWounds(g, f.wounds['u' + prefix], R.sh, elbow, 8, R.dir);
   drawSkinLimbWounds(g, f.wounds['f' + prefix], elbow, wrist, 8, R.dir);
+  drawLimbRips(g,R,f,'u'+prefix,R.sh,elbow,far?9:9.5);
+  drawLimbRips(g,R,f,'f'+prefix,elbow,wrist,9);
 }
 function drawPixelLeg(g, R, f, far, S) {
   const prefix = far ? 'F' : 'N';
   const knee = R['k' + prefix], ankle = R['a' + prefix], foot = R[far ? 'fdF' : 'fdN'];
-  drawSkinSegment(g, far ? S.thighB : S.thighF, R.pel, knee, far ? 20 : 21, 5, 5, R.dir === 1);
-  drawSkinSegment(g, far ? S.shinB : S.shinF, knee, ankle, 18, 4, 4, R.dir === 1);
+  const stain=f.footBlood?.[prefix]||0,joint=f.jointBlood?.['k'+prefix]||0;
+  const thigh=stainedSkinSprite(far ? S.thighB : S.thighF,'knee-thigh',joint);
+  const shin=stainedSkinSprite(stainedSkinSprite(far ? S.shinB : S.shinF,'shin',stain),'knee-shin',joint);
+  drawSkinSegment(g, thigh, R.pel, knee, far ? 20 : 21, 5, 5, R.dir === 1);
+  drawSkinSegment(g, shin, knee, ankle, 18, 4, 4, R.dir === 1);
   drawSkinLimbWounds(g, f.wounds['t' + prefix], R.pel, knee, 10, R.dir);
   drawSkinLimbWounds(g, f.wounds['s' + prefix], knee, ankle, 8, R.dir);
-  drawSkinBoot(g, far ? S.bootB : S.bootF, ankle, foot, R.dir, 29, 18);
+  drawLimbRips(g,R,f,'t'+prefix,R.pel,knee,far?10:10.5);
+  drawLimbRips(g,R,f,'s'+prefix,knee,ankle,9);
+  drawSkinBoot(g, stainedSkinSprite(far ? S.bootB : S.bootF,'boot',stain), ankle, foot, R.dir, 29, 18);
 }
 // Orange laser scorch marks anchored to skin segments and masked strictly onto skin pixels ('source-atop').
 const BURN_SEGS=[
@@ -1080,9 +1138,39 @@ const RIP={
   walt:      {cloth:'#526B3D', torso:'#E0A67F', arm:'#E0A67F', leg:null},
   saul:      {cloth:'#17191F', torso:'#EF5B9A', arm:'#EF5B9A', leg:'#B58C73'}
 };
-function injure(f,zone,pw){
+function addLaserRip(f,mark){
+  if(!mark||mark.seg==='head'||!BURN_MAP[mark.seg])return false;
+  const part=mark.seg,leg=/^[ts][NF]$/.test(part),arm=/^[uf][NF]$/.test(part);
+  // The end of a forearm sprite is the hand, not a sleeve.
+  if(arm&&part[0]==='f'&&mark.t>.62)return false;
+  const pal=RIP[f.skin]||RIP.jane;
+  let cloth=pal.cloth,under=part==='torso'?pal.torso:leg?pal.leg:pal.arm;
+  if(leg){
+    if(f.skin==='walt'){
+      // Walt has bare legs: only his shorts or socks are actually cloth.
+      if(part[0]==='t'&&mark.t<.23)cloth='#E9E7DF';
+      else if(part[0]==='s'&&mark.t>.6)cloth='#8E9196';
+      else return false;
+      under=SF;
+    }else{
+      const trousers={jane:'#50555E',negan:'#323438',homelander:'#263B59',saul:'#22242B'};
+      cloth=trousers[f.skin]||pal.cloth;
+      if(f.skin==='homelander'&&part[0]==='s'&&mark.t>.35)cloth='#B81D26';
+    }
+  }
+  const rips=f.wounds.rips;
+  if(rips.length>=8||rips.filter(r=>r.part===part).length>=2||
+     rips.some(r=>r.laser&&r.part===part&&Math.abs(r.t-mark.t)<.18&&Math.abs(r.offset-mark.s)<7)||
+     Math.random()>=.34)return false;
+  const width=BURN_MAP[part][3];
+  rips.push({laser:true,part,t:mark.t,offset:clamp(mark.s,-width*.65,width*.65),
+    size:part==='torso'?rnd(12,17):rnd(9,13),angle:rnd(-.35,.35),cloth,under,phase:rnd(TAU)});
+  return true;
+}
+function injure(f,zone,pw,laserMark=null){
   const rr=Math.random;
-  if(zone!=='head'){
+  // Laser cuts are created separately on the actual impact segment.
+  if(zone!=='head'&&!laserMark){
     f.wounds.clothHits=(f.wounds.clothHits||0)+1;
     if((rr()<.19+pw*.08 || (f.wounds.clothHits>=5 && !f.wounds.rips.length)) && f.wounds.rips.length<3){
       const pal=RIP[f.skin]||RIP.jane;
@@ -1108,13 +1196,18 @@ function injure(f,zone,pw){
     addW(f,'torso',{k:'bruise',x:rnd(0,9),y:rnd(12,42),r:rnd(3.5,5.5),v:.45+pw*.3});
     if(pw>.45&&rr()<.35)addW(f,'torso',{k:'scratch',x:rnd(-2,9),y:rnd(13,40),r:rnd(2.5,4.5),v:.55});
   }else{
-    const s=rr()<.5?'N':'F';
-    addW(f,'s'+s,{k:'bruise',t:rnd(.2,.7),s:rnd(-.4,.4),r:rnd(2.8,4.6),v:.5+pw*.2});
+    const part=laserMark&&f.wounds[laserMark.seg]?laserMark.seg:'s'+(rr()<.5?'N':'F');
+    const width=BURN_MAP[part]?.[3]||8;
+    addW(f,part,{k:'bruise',t:laserMark?.t??rnd(.2,.7),
+      s:laserMark?clamp(laserMark.s/width,-.7,.7):rnd(-.4,.4),r:rnd(2.8,4.6),v:.5+pw*.2});
   }
 }
 /* ============================ FX / PIXEL BLOOD ============================ */
 class FX{
-  constructor(){this.sm=[];this.bl=[];this.sp=[];this.fl=[];this.rg=[];this.marks=[];this.decal=null;this.floorY=468;}
+  constructor(){
+    this.sm=[];this.bl=[];this.sp=[];this.laserSparks=[];this.fl=[];this.rg=[];this.marks=[];this.decal=null;this.floorY=468;
+    this.bloodField=new BloodField(960,this.floorY);
+  }
   smoke(x,y,vx,vy,r,gr,life,a,spr){
     if(this.sm.length>110)this.sm.shift();
     const n=3+((Math.random()*4)|0), cells=[];
@@ -1148,7 +1241,7 @@ class FX{
         vx:(dir*rnd(55,255)+rnd(-125,125))*1.18,
         vy:rnd(-190,72)*1.12,
         r:mist?2:fleck?2:rnd(2,4),
-        fy:this.floorY+rnd(-8,30),
+        fy:this.floorY+rnd(2,27),
         life:2.5,
         fleck,shape
       });
@@ -1156,16 +1249,38 @@ class FX{
   }
   drip(x,y){
     // Small, slow drops instead of the existing explosive hit spray.
-    this.bl.push({x,y,vx:rnd(-6,6),vy:rnd(8,25),r:1.5,fy:this.floorY+2,
+    this.bl.push({x,y,vx:rnd(-6,6),vy:rnd(8,25),r:1.5,fy:this.floorY+this.bloodField.range(3,15),
       life:2,shape:'drop',fleck:false,drip:true});
   }
-  stampDrip(x,y){
-    const d=this.decal;if(!d)return;
-    const q=3,sx=Math.round(x/q)*q,sy=Math.round(y/q)*q;
-    d.save();d.fillStyle='#5e0916';d.fillRect(sx,sy,q*2,q);
-    d.fillStyle='#8d1624';d.fillRect(sx+q,sy,q,q);d.restore();
+  stampDrip(x,y){this.bloodField.add(x,y,'drip');}
+  splash(x,y,dir,power){
+    // A strong step produces just a few tiny droplets, not another hit spray.
+    // Cosmetic randomness stays independent of the combat random stream.
+    const field=this.bloodField,n=3+(power>.85?2:1);
+    for(let i=0;i<n;i++)this.bl.push({
+      x:x+field.range(-4,4),y:y-2,
+      vx:(i%2?1:-1)*field.range(25,75)+dir*field.range(0,18),
+      vy:-field.range(55,150),r:1.5,fy:this.floorY+field.range(2,20),
+      life:1.2,shape:'drop',fleck:false,drip:true,splash:true
+    });
   }
+  clearBlood(){this.bl=[];this.bloodField.clear();}
   spark(x,y,n,col){for(let i=0;i<n;i++){const a=rnd(TAU),s=rnd(80,380);this.sp.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:rnd(.15,.35),col:col||'255,210,90'});}}
+  laserSpark(x,y,n,surf='body'){
+    // Cosmetic randomness is independent of combat. Floor and wall sparks
+    // travel away from the surface and fade in flight without leaving marks.
+    const field=this.bloodField,colors=['255,72,62','255,120,75','255,190,140'];
+    for(let i=0;i<n;i++){
+      let a=field.range(0,TAU);
+      if(surf==='floor')a=field.range(-2.65,-.49);
+      else if(surf==='wall'&&y<=12)a=field.range(.35,Math.PI-.35);
+      else if(surf==='wall')a=(x<field.width/2?0:Math.PI)+field.range(-1.2,1.2);
+      const speed=field.range(75,185),life=field.range(.18,.4),radius=field.range(2.3,4.4);
+      this.laserSparks.push({x,y,vx:Math.cos(a)*speed,vy:Math.sin(a)*speed,life,max:life,
+        radius,aspect:field.range(.75,1.15),col:colors[Math.floor(field.random()*colors.length)]});
+    }
+    if(this.laserSparks.length>120)this.laserSparks.splice(0,this.laserSparks.length-120);
+  }
   impact(x,y,dir,pw){this.fl.push({x,y,life:.16,max:.16,r:24+pw*30});this.spark(x,y,6+pw*8|0);}
   // Laser scorch on a floor/wall: orange blocks that cool down and fade.
   burnSurface(x,y,surf){
@@ -1185,46 +1300,8 @@ class FX{
     }
     ctx.globalAlpha=1;
   }
-  stamp(x,y,r,vx){
-    const d=this.decal;if(!d)return;
-    const q=3, snap=v=>Math.round(v/q)*q;
-    const sx=snap(x), sy=snap(y);
-    const stretch=clamp(1+Math.abs(vx||0)/300,1,2.4);
-    const wide=Math.max(6,snap((r*2.2+5)*stretch));
-    d.save();
-    d.fillStyle='rgba(48,0,5,.88)';
-    d.fillRect(sx-wide/2,sy-3,wide,6);
-    d.fillStyle='rgba(104,4,14,.88)';
-    d.fillRect(sx-wide*.32,sy-6,wide*.64,9);
-    d.fillStyle='rgba(154,10,24,.88)';
-    d.fillRect(sx-wide*.2,sy-3,wide*.42,3);
-    for(let i=0;i<4;i++){
-      const bx=snap(sx+rnd(-wide*.8,wide*.8)), by=snap(sy+rnd(-9,6));
-      d.fillStyle=i%2?'rgba(92,3,12,.82)':'rgba(142,8,20,.82)';
-      d.fillRect(bx,by,q*(i%3===0?2:1),q);
-    }
-    d.restore();
-  }
-  pool(x,y,r){
-    const d=this.decal;if(!d)return;
-    const q=3, snap=v=>Math.round(v/q)*q, sx=snap(x), sy=snap(y);
-    const wide=Math.max(18,snap(r*5.6)), rows=Math.max(2,Math.ceil(r/3));
-    d.save();
-    d.fillStyle='rgba(47,0,5,.88)';
-    d.fillRect(sx-wide/2,sy-3,wide,6);
-    d.fillRect(sx-wide*.34,sy-6,wide*.68,9);
-    d.fillStyle='rgba(103,3,13,.9)';
-    d.fillRect(sx-wide*.27,sy-3,wide*.54,6);
-    d.fillStyle='rgba(155,8,23,.8)';
-    d.fillRect(sx-wide*.14,sy-3,wide*.25,3);
-    for(let i=0;i<rows+2;i++){
-      const side=i%2?-1:1, bx=snap(sx+side*rnd(wide*.25,wide*.62));
-      const by=snap(sy+rnd(-6,6));
-      d.fillStyle=i%3?'rgba(91,2,11,.82)':'rgba(167,11,28,.78)';
-      d.fillRect(bx,by,q*(i%2+1),q);
-    }
-    d.restore();
-  }
+  stamp(x,y,r,vx){this.bloodField.add(x,y,'hit',r);}
+  pool(x,y,r){this.bloodField.add(x,y,'seep',r);}
   crack(x,y,dir){
     const d=this.decal;if(!d)return;
     d.strokeStyle='rgba(0,0,0,.65)';d.lineWidth=1.3;
@@ -1243,13 +1320,16 @@ class FX{
     for(const b of this.bl){
       b.vy+=1600*dt;b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;
       if(b.y>=b.fy){
-        if(b.drip)this.stampDrip(b.x,b.fy);else this.stamp(b.x,b.fy,b.r,b.vx);
+        if(b.splash)this.bloodField.add(b.x,b.fy,'splash');
+        else if(b.drip)this.stampDrip(b.x,b.fy);else this.stamp(b.x,b.fy,b.r,b.vx);
         b.dead=true;
       }
     }
     this.bl=this.bl.filter(b=>!b.dead&&b.life>0);
     for(const s of this.sp){s.x+=s.vx*dt;s.y+=s.vy*dt;s.vy+=500*dt;s.life-=dt;}
     this.sp=this.sp.filter(s=>s.life>0);
+    for(const s of this.laserSparks){s.x+=s.vx*dt;s.y+=s.vy*dt;s.vy+=220*dt;s.life-=dt;}
+    this.laserSparks=this.laserSparks.filter(s=>s.life>0);
     for(const f of this.fl)f.life-=dt;this.fl=this.fl.filter(f=>f.life>0);
     for(const r of this.rg){r.life-=dt;r.r+=r.w*dt/r.max;}this.rg=this.rg.filter(r=>r.life>0);
     for(const m of this.marks)m.life-=dt;this.marks=this.marks.filter(m=>m.life>0);
@@ -1301,6 +1381,13 @@ class FX{
       ctx.fillStyle='#FFF0C5';ctx.fillRect(Math.round(f.x/q)*q,Math.round(f.y/q)*q,q,q);ctx.globalAlpha=1;
     }
     for(const s of this.sp){ctx.fillStyle=`rgba(${s.col},${clamp(s.life*5,0,1)})`;ctx.fillRect(Math.round(s.x/q)*q,Math.round(s.y/q)*q,q,q);}
+  }
+  drawLaserSparks(ctx){
+    for(const s of this.laserSparks){
+      const k=clamp(s.life/s.max,0,1),radius=s.radius*(.55+.45*k);
+      ctx.fillStyle=`rgba(${s.col},${k})`;ctx.beginPath();
+      ctx.ellipse(s.x,s.y,radius,radius*s.aspect,0,0,TAU);ctx.fill();
+    }
   }
 }
 /* ============================ RAGDOLL ============================ */
@@ -1480,17 +1567,16 @@ class Fighter{
       overextendFor:null,overextendStamp:0,flankTarget:null,flankFrom:0,
       chokeCD:0,chokeCooldownPending:false,chokeTarget:null,chokedBy:null,chokeDuration:0,chokeCounterAt:Infinity,chokeReleaseAt:Infinity,
       counterBase:null,counterReleased:false,fallDamage:null,
-      grappleCD:0,grappleTarget:null,grappleBy:null,pinBase:null,
       staggerDir:0,staggerDur:0,shoveWillFall:false,
       shoveCD:0,shoveTarget:null,shoveDone:false,
       lampGoal:null,lampRef:null,lampAction:'pullup',lampStamina:0,
       lampGrabGap:52,lampGrabSide:0,lampBreakAt:Infinity,lampDiveAt:Infinity,lampHangStamp:0,lampPullTarget:null,lampPullDone:false,
-      lampClimb:0,catwalk:false,catwalkSide:0,descendT:0,catwalkRestT:0,pinHoldAt:0,slowWalk:false,catwalkDescentAt:Infinity,
-      bloodStains:[],bleed:null,collapseFrom:null,blinkT:rnd(2.2,5.5),blink:0,coughT:rnd(1,2.6)
+      bloodStains:[],footBlood:{N:0,F:0},jointBlood:{kN:0,kF:0,eN:0,eF:0},bloodFootfall:null,footSplashCooldown:0,
+      bleed:null,collapseFrom:null,blinkT:rnd(2.2,5.5),blink:0,coughT:rnd(1,2.6)
     });
   }
   spawn(delay){this.state='spawn';this.sp=0;this.spT=delay||.05;this.visible=false;this.y=this.spawnY;this.vy=0;this.vx=0;this.st=0;this.cur=null;this.hoverY=0;}
-  canBeHit(){return this.hp>0&&this.state!=='ragdoll'&&this.state!=='pinned'&&this.state!=='getup'&&this.state!=='spawn'&&this.state!=='win'&&this.invT<=0;}
+  canBeHit(){return this.hp>0&&this.state!=='ragdoll'&&this.state!=='getup'&&this.state!=='spawn'&&this.state!=='win'&&this.invT<=0;}
   faceOpp(o){if(this.ctrl.noFace)return;if(this.skin==='homelander'&&this.hlBrake>.42)return;if(o&&this.y<2&&Math.abs(o.x-this.x)>10)this.dir=o.x>this.x?1:-1;}
   bloodStrength(){
     if(!this.bleed)return 1;
@@ -1499,7 +1585,7 @@ class Fighter{
   }
   speedMul(){return wstat(this.skin).speedMul*(this.hp<30?.85:1)*this.bloodStrength();}
   startAttack(i,boxing=false){
-    if(['takedown','ground_pin','pinned','bleed_collapse'].includes(this.state))return false;
+    if(this.state==='bleed_collapse')return false;
     const pressing=this.bleed&&this.bleed.pressing;
     const set=(boxing||pressing)?(this.skin==='homelander'?ATK_HL:ATK):atkSetFor(this.skin);
     const a=set[i];
@@ -1541,9 +1627,7 @@ class Fighter{
       if(this.fx&&this.rig)this.fx.puff(this.rig.sh.x,this.rig.sh.y,3,.5);
       Snd.thud();return true;
     }
-    const wasHeld=!!this.grappleBy;
-    this.breakGrapple();this.breakChoke();this.boxing=false;this.lampPullTarget=null;this.shoveTarget=null;
-    if(wasHeld&&this.state==='ragdoll'&&this.rag){this.rag.launch(att.dir*100,80);Snd.thud();return true;}
+    this.breakChoke();this.boxing=false;this.lampPullTarget=null;this.shoveTarget=null;
     this.bodyJump=false;this.dive=false;this.kickExt=0;
     this.staggerDir=att.dir;this.dir=-this.staggerDir;
     this.staggerDur=rnd(.75,1.1);this.shoveWillFall=Math.random()<.42;
@@ -1627,67 +1711,13 @@ class Fighter{
     const grip=lamp.grip(),pose=this.targetPose();
     const base=computeRig(pose,0,this.gy,0,this.dir,false);
     this.x=clamp(grip.x+side-base.sh.x,this.minX,this.maxX);
-    this.vx=0;this.vy=0;
-    // Rope climb: pull yourself up toward the suspended ceiling walkway.
-    if(this.lampAction==='climb'){
-      this.lampClimb=clamp(this.st/1.6,0,1);
-      const hangY=Math.max(.5,base.sh.y-(grip.y+gap));
-      this.y=lerp(hangY,Game.catwalkFighterY(),this.lampClimb);
-      if(this.lampClimb>=1){
-        // Pull over the rail onto the walkway.
-        this.lampClimb=1;this.clearLamp();this.state='catwalk';this.st=0;
-        this.catwalk=true;this.catwalkSide=this.dir;this.y=Game.catwalkFighterY();
-        this.catwalkRestT=rnd(1.5,3);this.catwalkDescentAt=rnd(3,6);Snd.thud();
-        if(this.fx)this.fx.landing(this.x,this.gy-this.y,.4);
-        return;
-      }
-      return;
-    }
-    this.y=Math.max(.5,base.sh.y-(grip.y+gap));
+    this.y=Math.max(.5,base.sh.y-(grip.y+gap));this.vx=0;this.vy=0;
     if((this.lampAction==='pullup'||this.lampAction==='dive')&&this.st>=this.lampDiveAt){
       const target=opponent&&opponent.hp>0?opponent:null;
       const dive=target&&Math.abs(target.x-this.x)<300&&
         (this.lampAction==='dive'||Math.random()<.35);
       this.releaseLamp(dive?'dive':'jump',target);
     }
-  }
-  startLampClimb(){
-    if(this.state!=='lamp_hang'||!this.lampRef||this.lampAction==='climb')return false;
-    this.lampAction='climb';this.st=0;this.lampClimb=0;Snd.whoosh();return true;
-  }
-  // Carefully climb back down the lamp rope from the walkway.
-  descendLamp(){
-    if(this.state!=='catwalk')return false;
-    const lamp=Game.lamps.find(l=>!l.detached&&!l.occupant&&Math.abs(l.x-this.x)<120);
-    this.catwalk=false;this.catwalkSide=0;this.catwalkRestT=0;
-    if(!lamp){this.fallFromCatwalk();return false;}
-    this.lampRef=lamp;lamp.occupant=this;this.lampGoal=null;
-    this.state='lamp_hang';this.st=0;this.lampClimb=0;this.lampAction='climb';
-    this.lampStamina=rnd(2.8,3.5);this.lampDiveAt=Infinity;this.lampBreakAt=Infinity;
-    this.lampGrabGap=40;this.lampGrabSide=0;this.vx=0;this.vy=0;
-    // Descend: climbing down is the inverse of the climb, so start low.
-    this.lampClimb=1;Snd.whoosh();return true;
-  }
-  // Falling off the suspended walkway: severity scales with the drop. A hard
-  // impact can break the neck (instant KO); otherwise a ragdoll KO for 4-7s.
-  fallFromCatwalk(){
-    this.catwalk=false;this.catwalkSide=0;this.lampClimb=0;this.clearLamp();
-    this.state='air';this.dive=false;this.y=.5;this.vy=0;
-    const drop=Game.catwalkFighterY();
-    const sev=clamp(drop/380,0,1);
-    const lethal=Math.random()<sev*.5;
-    if(lethal){
-      this.hp=0;this.fallDamage={amount:100,source:null,severe:true,lethal:true};
-      Game.ko(this,null,{noStagger:true,preserveRagdoll:true,launch:false});
-      Snd.thud();return;
-    }
-    const dmg=Math.round(18+sev*22);
-    this.fallDamage={amount:dmg,source:null,severe:sev>.6};
-    this.hp=Math.max(0,this.hp-dmg);
-    this.toRagdoll(this.vx*.3,260);
-    if(this.rag)this.rag.stunScale=1.6;
-    if(this.hp<=0)Game.ko(this,null,{noStagger:true});
-    else Snd.thud();
   }
   startLampPull(v){
     if(this.state!=='idle'||this.hp<=0||this.y>5||!v||!Game.fighters.includes(v)||
@@ -1759,55 +1789,6 @@ class Fighter{
     if(this.fx)this.fx.puff(this.rig.sh.x,this.rig.sh.y,4,.8);
     Snd.whoosh();
   }
-  canGrapple(v){
-    return !!(v&&v!==this&&this.hp>0&&v.hp>0&&Game.fighters.includes(this)&&Game.fighters.includes(v)&&
-      v.canBeHit()&&v.y<=5&&!v.grappleBy&&!v.grappleTarget&&!v.chokedBy&&!v.chokeTarget&&
-      ['idle','attack','guard','overextend','run_hit_stop'].includes(v.state));
-  }
-  startTakedown(v){
-    if(this.state!=='idle'||!this.crouchActive||this.crouchTime<.07||this.grappleCD>0||
-       !this.canGrapple(v)||Math.abs(v.x-this.x)>TAKEDOWN_REACH||
-       (this.bleed&&this.bleed.pressing))return false;
-    this.dir=v.x>=this.x?1:-1;this.state='takedown';this.st=0;this.vx=0;
-    this.grappleTarget=v;this.grappleCD=rnd(6,9);this.hlBrake=0;Snd.whoosh();return true;
-  }
-  establishPin(v){
-    if(this.state!=='takedown'||this.grappleTarget!==v||!this.canGrapple(v)||
-       Math.abs(v.x-this.x)>TAKEDOWN_REACH)return false;
-    v.pinBase=cloneRig(v.rig);v.breakChoke();v.boxing=false;v.lz=null;
-    v.grappleBy=this;v.state='pinned';v.st=0;v.y=0;v.vy=0;v.vx=0;v.hoverY=0;
-    this.state='ground_pin';this.st=0;this.vx=0;this.y=0;this.vy=0;this.hoverY=0;
-    this.x=clamp(v.x-this.dir*45,this.minX+35,this.maxX-35);
-    this.pinHoldAt=rnd(1.1,1.7);
-    Snd.thud();if(this.fx)this.fx.landing(this.x,this.gy,.45);return true;
-  }
-  startLift(v,style){
-    // Lift-to-chest ("за пазуху") grab removed per request; kept as a no-op so any
-    // stray call is harmless and existing call sites do not need guards.
-    return false;
-  }
-  releaseGrapple(reason='interrupt'){
-    const v=this.grappleTarget,linked=!!v&&v.grappleBy===this,old=this.state;
-    this.grappleTarget=null;
-    if(linked)v.grappleBy=null;
-    if(['takedown','ground_pin'].includes(old)){
-      this.state='idle';this.st=0;this.vx=0;this.comboT=9;
-    }
-    if(linked&&v.state==='pinned'){
-      v.pinBase=null;v.fastGetup=false;
-      // Releasing a ground pin never throws: the victim is already lying down.
-      v.toRagdoll(0,0,true);
-      if(reason==='complete'&&v.rag){v.rag.stunScale=1.5;v.dizzyAlpha=1;}
-    }
-  }
-  breakGrapple(){
-    if(this.grappleTarget)this.releaseGrapple();
-    if(this.grappleBy){
-      const h=this.grappleBy;
-      if(h.grappleTarget===this)h.releaseGrapple();
-      else{this.grappleBy=null;this.pinBase=null;this.toRagdoll(0,0,true);}
-    }
-  }
   startJump(){this.vy=770;this.y=.5;this.state='air';this.st=0;this.hlBrake=0;this.fx&&this.fx.landing(this.x,this.gy,.5);}
   startBodyJump(){
     if(this.state!=='run'||this.hp<=0||this.y>5||Math.abs(this.vx)<260)return false;
@@ -1862,9 +1843,56 @@ class Fighter{
     this.fx&&this.fx.puff(this.x+this.dir*20,this.gy-20,3,1.2);
     this.toRagdoll(this.vx*.85,260);
   }
+  queueBloodFootfall(foot,power,landed=false){
+    if(!this.fx||power<.65)return;
+    const old=this.bloodFootfall;
+    if(!old||(landed&&!old.landed)||(!old.landed&&power>old.power))
+      this.bloodFootfall={foot,feet:foot?[foot]:['N','F'],power,landed,remaining:.14};
+  }
+  resolveBloodFootfall(dt=0){
+    const contact=this.bloodFootfall;
+    if(!contact)return;
+    if(!this.fx||!this.rig||this.hp<=0||this.y>2||(!contact.landed&&this.hoverY>5)||this.state==='ragdoll'){
+      this.bloodFootfall=null;return;
+    }
+    const hits=[],waiting=[];
+    for(const foot of contact.feet){
+      const ankle=this.rig['a'+foot],dir=this.rig['fd'+foot];
+      if(!ankle||!dir)continue;
+      // The blended rig can reach the ground a few frames after the gait
+      // phase crosses zero, especially at high frame rates. Wait briefly for
+      // the actual shoe instead of splashing under an airborne foot.
+      if(ankle.y<this.gy-22){waiting.push(foot);continue;}
+      const x=ankle.x+dir.x*7;
+      if(!this.fx.bloodField.puddleAtFoot(x,this.gy))continue;
+      this.footBlood[foot]=Math.min(3,this.footBlood[foot]+1);
+      hits.push(x);
+    }
+    contact.remaining-=dt;
+    if(waiting.length&&contact.remaining>0)contact.feet=waiting;
+    else this.bloodFootfall=null;
+    if(hits.length&&this.footSplashCooldown<=0){
+      this.fx.splash(hits.reduce((a,b)=>a+b,0)/hits.length,this.gy+3,this.dir,contact.power);
+      this.footSplashCooldown=.22;
+    }
+  }
+  resolveBloodJointContacts(dt){
+    const field=this.fx?.bloodField,R=this.rig;
+    if(!field||!field.groups.size||!R||!this.visible||(this.state==='spawn'&&this.sp<2))return;
+    for(const joint of ['kN','kF','eN','eF']){
+      if(this.jointBlood[joint]>=3)continue;
+      const p=R[joint];
+      // Use the actual joint's collision radius and horizontal position, not
+      // the fighter's center or an airborne joint projected onto the floor.
+      if(p&&p.y+JR[joint]>=this.gy-1.5&&field.puddleAtFoot(p.x,this.gy)){
+        this.jointBlood[joint]=Math.min(3,Math.max(1,this.jointBlood[joint]+dt*1.5));
+      }
+    }
+  }
   onLand(impact){
     const pvx=this.vx;
     this.landT=.12;this.vx*=.35;
+    if(impact>=450&&this.fx)this.queueBloodFootfall(null,clamp(impact/900,.65,1),true);
     if(impact>250&&this.fx)this.fx.landing(this.x,this.gy,clamp(impact/1100,.25,.8));
     if(impact>500)Snd.thud();
     if(this.dive){ // missed: tumbles along with the leftover momentum
@@ -1911,7 +1939,7 @@ class Fighter{
     const wasRunning=this.state==='run'&&!wasAirborne;
     const wasStaggering=this.state==='push_stagger'||this.state==='stagger_fall';
     this.lampPullTarget=null;this.shoveTarget=null;this.bodyJump=false;
-    this.breakGrapple();this.breakChoke();this.boxing=false;
+    this.breakChoke();this.boxing=false;
     this.hp=Math.max(0,this.hp-a.dmg);
     const impact=point&&typeof point.x==='number'?point:null;
     const px=impact?impact.x:this.x-att.dir*10;
@@ -1953,7 +1981,7 @@ class Fighter{
   handDamage(a,vic){}
   toRagdoll(vx,vy,gentle=false){
     this.clearLamp();this.lampPullTarget=null;this.shoveTarget=null;
-    this.breakGrapple();this.breakChoke();this.boxing=false;
+    this.breakChoke();this.boxing=false;
     if(!this.rig)return;
     this.rag=new Ragdoll(this.rig,this);if(!gentle)this.rag.launch(vx,vy);
     this.state='ragdoll';this.st=0;this.y=0;this.vx=0;this.vy=0;this.invT=0;this.dive=false;this.bodyJump=false;this.lz=null;
@@ -1987,9 +2015,10 @@ class Fighter{
   /* ---------------- Homelander's eye laser ---------------- */
   laserEye(){const h=this.rig.head;return {x:h.x+this.dir*9,y:h.y-5};}
   addBurn(x,y){
-    const mark=locateSurface(this.rig,x,y);if(!mark)return;
+    const mark=locateSurface(this.rig,x,y);if(!mark)return null;
     this.burns.push(Object.assign(mark,{life:3.4,max:3.4,sz:Math.random()}));
     if(this.burns.length>20)this.burns.shift();
+    return mark;
   }
   addBloodStain(x,y){
     const mark=locateSurface(this.rig,x,y);if(!mark)return;
@@ -2036,16 +2065,19 @@ class Fighter{
     }
   }
   takeLaser(att,pt,first){
-    this.addBurn(pt.x,pt.y);
-    if(this.hp<=0||this.state==='spawn'||this.invT>0)return;
+    const mark=this.addBurn(pt.x,pt.y);
+    if(this.state==='spawn'||this.invT>0)return;
+    addLaserRip(this,mark);
+    if(this.hp<=0)return;
     this.lampPullTarget=null;this.shoveTarget=null;
-    this.breakGrapple();this.breakChoke();this.boxing=false;
+    this.breakChoke();this.boxing=false;
     this.hp=Math.max(0,this.hp-(first?3.5:1.6));
-    if(this.fx){this.fx.spark(pt.x,pt.y,2,'255,150,40');if(first)this.fx.blood(pt.x,pt.y,att.dir,6,.5);}
+    if(this.fx&&first)this.fx.blood(pt.x,pt.y,att.dir,6,.5);
     if(this.hp<=0){Game.ko(this,att,{lvx:300,lvy:380,pw:.9,noStagger:true});return;}
     if(first){
       Snd.hit(.8);Game.shake=Math.max(Game.shake,5);
-      injure(this,'torso',.6);
+      const zone=!mark||mark.seg==='torso'?'torso':mark.seg==='head'?'head':'limb';
+      injure(this,zone,.6,mark);
       if(this.state!=='ragdoll'&&this.state!=='getup')this.toRagdoll(att.dir*300,400);
     }else if(this.state==='ragdoll'&&this.rag){
       this.rag.wake();for(const k of RK){this.rag.p[k].px-=att.dir*.35;}
@@ -2057,7 +2089,10 @@ class Fighter{
     const eye=this.laserEye();
     if(st<a.chargeT){
       if(!this.lzSnd){this.lzSnd=true;Snd.laserCharge();}
-      if(this.fx&&Math.random()<.6)this.fx.spark(eye.x+rnd(-16,16),eye.y+rnd(-16,16),1,'255,90,40');
+      if(this.fx&&this.fx.bloodField.random()<.6){
+        const field=this.fx.bloodField;
+        this.fx.laserSpark(eye.x+field.range(-12,12),eye.y+field.range(-12,12),1,'eye');
+      }
       return;
     }
     if(st>a.fireEnd){this.lz=null;return;}
@@ -2067,10 +2102,10 @@ class Fighter{
       desired=clamp(Math.atan2(ch.y-eye.y,Math.max(8,(ch.x-eye.x)*this.dir)),-1,1.2);
     }
     if(!this.lz){
-      this.lz={rel:desired,tick:0,hits:new Set(),sx:eye.x,sy:eye.y,ex:eye.x,ey:eye.y,surf:'none',f:null,on:true};
+      this.lz={rel:desired,tick:0,age:0,hits:new Set(),sx:eye.x,sy:eye.y,ex:eye.x,ey:eye.y,surf:'none',f:null,on:true};
       Snd.laser();Game.shake=Math.max(Game.shake,3);
     }
-    const lz=this.lz;
+    const lz=this.lz;lz.age+=dt;
     const m=2.1*dt;lz.rel+=clamp(desired-lz.rel,-m,m);
     const ux=Math.cos(lz.rel)*this.dir,uy=Math.sin(lz.rel);
     const res=Game.castRay(eye.x,eye.y,ux,uy,this);
@@ -2079,10 +2114,10 @@ class Fighter{
     if(lz.tick<=0){
       lz.tick=.07;
       if(res.f){const first=!lz.hits.has(res.f.id);lz.hits.add(res.f.id);res.f.takeLaser(this,res,first);}
-      else if(res.surf!=='none'){this.fx.burnSurface(res.x,res.y,res.surf);}
-      if(this.fx){
-        this.fx.spark(res.x,res.y,2,'255,160,50');
-        if(Math.random()<.3)this.fx.smoke(res.x,res.y,rnd(-30,30),-rnd(10,50),rnd(3,6),rnd(8,14),rnd(.3,.6),.4,1);
+      else if(this.fx&&res.surf!=='none')this.fx.burnSurface(res.x,res.y,res.surf);
+      if(this.fx&&res.surf!=='none'){
+        const n=3+Math.floor(this.fx.bloodField.random()*3);
+        this.fx.laserSpark(res.x,res.y,n,res.surf);
       }
     }
   }
@@ -2188,17 +2223,13 @@ class Fighter{
   update(dt,targetOpp,allFighters){
     this.t+=dt;this.st+=dt;const c=this.ctrl;
     const isHL=this.skin==='homelander';
-    if(this.hp>0&&this.state==='idle'){
-      // Relax once no opponent is nearby: either none left, or the nearest one
-      // is far enough away that the fighter can straighten and unwind.
-      const near=targetOpp&&Math.abs(targetOpp.x-this.x)<300&&targetOpp.hp>0;
-      this.calmT=near?0:this.calmT+dt;
-    }else this.calmT=0;
+    if(!targetOpp&&this.hp>0&&this.state==='idle')this.calmT+=dt;else this.calmT=0;
     this.lagHp=Math.max(this.hp,this.lagHp-dt*28);
     this.dashCD=Math.max(0,this.dashCD-dt);
     this.boxCD=Math.max(0,this.boxCD-dt);this.guardCD=Math.max(0,this.guardCD-dt);this.shoveCD=Math.max(0,this.shoveCD-dt);
-    this.chokeCD=Math.max(0,this.chokeCD-dt);this.grappleCD=Math.max(0,this.grappleCD-dt);
+    this.chokeCD=Math.max(0,this.chokeCD-dt);
     this.guardFlinch=Math.max(0,this.guardFlinch-dt);
+    this.footSplashCooldown=Math.max(0,this.footSplashCooldown-dt);
     // Homelander first settles out of his hover; the lowered pose and its
     // dodge window only begin once his feet have actually reached the floor.
     const wantsCrouch=this.state==='idle'&&c.crouch&&this.y<=1;
@@ -2210,7 +2241,7 @@ class Fighter{
     for(const b of this.bloodStains)b.age+=dt;
     this.updateBleeding(dt);
     if(this.lz&&!(this.state==='attack'&&this.atk&&this.atk.laser))this.lz=null;
-    if(this.state!=='ragdoll'&&this.state!=='spawn'&&this.state!=='lamp_hang'&&this.state!=='catwalk'&&(this.y>0||this.vy>0)){
+    if(this.state!=='ragdoll'&&this.state!=='spawn'&&this.state!=='lamp_hang'&&(this.y>0||this.vy>0)){
       this.vy-=2200*dt;this.y+=this.vy*dt;
       if(this.y<=0){const im=-this.vy;this.y=0;this.vy=0;this.onLand(im);}
     }
@@ -2222,6 +2253,7 @@ class Fighter{
         this.vy-=2600*dt;this.y+=this.vy*dt;
         if(this.fx&&Math.random()<.5&&this.rig)this.fx.spark(this.rig.pel.x+rnd(-20,20),this.rig.pel.y+rnd(-60,60),1,'120,200,255');
         if(this.y<=0){this.y=0;this.vy=0;this.sp=2;this.spT=.55;this.st=0;
+          this.queueBloodFootfall(null,1,true);
           if(this.fx){this.fx.landing(this.x,this.gy,1.2);for(let i=0;i<4;i++)this.fx.smoke(this.x+rnd(-20,20),this.gy-rnd(0,20),rnd(-60,60),-rnd(20,90),rnd(12,22),rnd(20,40),rnd(.8,1.4),.5,1);this.fx.crack(this.x,this.gy+8,1);}
           Snd.stomp();}
       }
@@ -2232,7 +2264,7 @@ class Fighter{
       this.faceOpp(targetOpp);
       const mv=c.mx;
       if(c.run&&mv&&!c.hop){this.dir=mv>0?1:-1;this.hlBrake=0;this.state='run';this.st=0;break;}
-      const toward=mv*this.dir,spd=mv?(this.slowWalk?SLOW_WALK_SPD:(this.crouchActive?70:(toward>0?235:185))):0;
+      const toward=mv*this.dir,spd=mv?(this.crouchActive?70:(toward>0?235:185)):0;
       const tgtVx=mv*spd*this.speedMul();
       if(isHL&&this.hlBrake>0){
         this.hlBrake=Math.max(0,this.hlBrake-dt/.34);
@@ -2244,12 +2276,11 @@ class Fighter{
       if(!isHL&&Math.abs(this.vx)>8){
         this.walkPh+=(this.vx*this.dir>=0?1:-1)*Math.abs(this.vx)*dt*.08;
         const sg=Math.sin(this.walkPh)>0?1:-1;
-        if(sg!==this.lastSign){this.lastSign=sg;if(Math.abs(this.vx)>120&&this.fx)this.fx.step(this.x-this.dir*10,this.gy,this.dir*(this.vx*this.dir>=0?1:-1));}
-      }else if(!isHL&&this.slowWalk){
-        // Keep the legs striding slowly even when momentarily pressed against a wall.
-        this.walkPh+=this.dir*dt*SLOW_WALK_PH;
-        const sg=Math.sin(this.walkPh)>0?1:-1;
-        if(sg!==this.lastSign){this.lastSign=sg;if(this.fx)this.fx.step(this.x-this.dir*10,this.gy,this.dir);}
+        if(sg!==this.lastSign){
+          this.lastSign=sg;
+          if(Math.abs(this.vx)>120&&this.fx)this.fx.step(this.x-this.dir*10,this.gy,this.dir*(this.vx*this.dir>=0?1:-1));
+          if(Math.abs(this.vx)>=220&&this.y<=2)this.queueBloodFootfall(sg>0?'N':'F',.68);
+        }
       }
       if(c.hop){this.startHop();}
       else if(c.jump){ if(mv&&this.dashCD<=0)this.startDash(toward>0?1:-1); else if(!mv)this.startJump(); }
@@ -2283,7 +2314,11 @@ class Fighter{
       }else{
         this.walkPh+=(9+rs*13)*dt;
         const sg=Math.sin(this.walkPh)>0?1:-1;
-        if(sg!==this.lastSign){this.lastSign=sg;if(rs>.25&&this.fx)this.fx.step(this.x-this.dir*10,this.gy,this.dir);}
+        if(sg!==this.lastSign){
+          this.lastSign=sg;
+          if(rs>.25&&this.fx)this.fx.step(this.x-this.dir*10,this.gy,this.dir);
+          if(rs>=.58&&this.y<=2)this.queueBloodFootfall(sg>0?'N':'F',clamp(rs,.65,1));
+        }
       }
       if(c.jump){this.startDive();break;}
       for(const o of allFighters){
@@ -2344,27 +2379,6 @@ class Fighter{
         this.lampPullDone=true;this.lampPullTarget=null;v.releaseLamp('pull',this);
       }
       if(this.st>=LAMP_PULL_DUR){this.state='idle';this.st=0;this.lampPullTarget=null;}
-      break;}
-     case 'catwalk':{
-      // Standing on the suspended ceiling walkway: walk, rest, or climb down
-      // the rope. Walking off the edge means a long fall.
-      const cwY=Game.catwalkFighterY();
-      this.y=cwY;this.hoverY=0;
-      if(c.mx){
-        this.dir=c.mx>0?1:-1;
-        const tgt=this.dir*SLOW_WALK_SPD*.8*this.speedMul();
-        this.vx+=clamp(tgt-this.vx,-RUN_ACC*dt,RUN_ACC*dt);
-        this.walkPh+=this.dir*dt*SLOW_WALK_PH*1.4;
-        this.x=clamp(this.x+this.vx*dt,this.minX+30,this.maxX-30);
-      }else this.vx*=Math.exp(-dt*10);
-      this.catwalkRestT-=dt;
-      // Carefully descend: drop back down the rope when the player chooses
-      // (via a rest cycle) or the AI decides to come down.
-      if(this.st>=this.catwalkDescentAt){
-        this.descendLamp();break;
-      }
-      // Walked off the walkway edge -> fall.
-      if(this.x<this.minX+30||this.x>this.maxX-30){this.fallFromCatwalk();break;}
       break;}
      case 'dash':{
       const k=1-this.st/this.dashT*.5;this.vx=this.dashW*(this.dashF?840:620)*k;
@@ -2430,29 +2444,6 @@ class Fighter{
       this.x=lerp(this.flankFrom,dest,u);this.vx=0;
       this.dir=this.st>=FLANK_DUR*.9?v.dir:(v.x>=this.x?1:-1);
       if(this.st>=FLANK_DUR&&!this.startChoke(v)){this.flankTarget=null;this.state='idle';this.st=0;}
-      break;}
-     case 'takedown':{
-      const v=this.grappleTarget;
-      if(!v||!allFighters.includes(v)||!this.canGrapple(v)||Math.abs(v.x-this.x)>TAKEDOWN_REACH+25){
-        this.releaseGrapple();break;
-      }
-      this.vx=clamp((v.x-this.x-this.dir*45)*6,-145,145);
-      if(this.st>=TAKEDOWN_IMPACT&&!this.establishPin(v))this.releaseGrapple();
-      break;}
-     case 'ground_pin':{
-      const v=this.grappleTarget;
-      if(this.hp<=0||!v||!allFighters.includes(v)||v.hp<=0||v.grappleBy!==this||v.state!=='pinned'){
-        this.releaseGrapple();break;
-      }
-      this.vx=0;
-      if(this.st>=this.pinHoldAt){this.releaseGrapple();break;}
-      break;}
-     case 'pinned':{
-      const h=this.grappleBy;
-      if(!h||!allFighters.includes(h)||h.hp<=0||h.grappleTarget!==this||h.state!=='ground_pin'){
-        this.breakGrapple();if(this.state==='pinned')this.toRagdoll(0,0,true);break;
-      }
-      this.dir=-h.dir;this.x=clamp(h.x-h.dir*10,this.minX,this.maxX);this.y=0;this.vx=0;this.vy=0;this.hoverY=0;
       break;}
      case 'choke':{
       const v=this.chokeTarget;
@@ -2561,7 +2552,7 @@ class Fighter{
       this.hoverY=0;
     }else if(this.state==='spawn'){
       this.hoverY=this.sp<3?0:HL_HOVER*ease(clamp(1-this.spT/.45,0,1));
-    }else if(['stagger_fall','push_stagger','shove','lamp_jump','lamp_hang','lamp_pull','catwalk','takedown','ground_pin','pinned','bleed_collapse'].includes(this.state)){
+    }else if(['stagger_fall','push_stagger','shove','lamp_jump','lamp_hang','lamp_pull','bleed_collapse'].includes(this.state)){
       this.hoverY=0;
     }else if(this.state==='getup'){
       if(this.st<1.76){this.hoverY=0;}
@@ -2586,6 +2577,8 @@ class Fighter{
     }
     if(this.dizzyAlpha>0)this.dizzyPh+=dt*4.4;
     this.buildRig(dt);
+    this.resolveBloodFootfall(dt);
+    this.resolveBloodJointContacts(dt);
     this.updateTie(dt);
     this.updateCape(dt);
     if(this.hp<=0&&this.state==='ragdoll'&&this.rag&&this.rag.frozen){this.corpseFade=Math.min(.14,this.corpseFade+dt*.018);}
@@ -2660,16 +2653,6 @@ class Fighter{
       return p;}
      case 'lamp_pull':{
       const p=Object.assign({},LAMP_PULL);p.tl-=ease(clamp(this.st/LAMP_PULL_DUR,0,1))*14;return p;}
-     case 'catwalk':{
-      // Standing or strolling along the suspended walkway, hands relaxed.
-      const p=Object.assign({},D);
-      const w=clamp(Math.abs(this.vx)/SLOW_WALK_SPD,0,1),ph=this.walkPh;
-      const step=Math.sin(ph);
-      p.f1x=lerp(20,20+step*16,w);p.f2x=lerp(-20,-20-step*16,w);
-      p.f1h=Math.max(0,-step)*14*w;p.f2h=Math.max(0,step)*14*w;
-      p.a1=52+Math.sin(t*1.2)*2;p.a2=52+Math.sin(t*1.2+1)*2;p.e1=106;p.e2=106;
-      p.H+=Math.sin(ph)*2*w;p.tl+=Math.sin(t*1.4)*.4;
-      return p;}
      case 'stagger_fall':
      case 'push_stagger':{
       const u=clamp(this.st/this.staggerDur,0,1),step=Math.sin(this.st*19);
@@ -2678,15 +2661,6 @@ class Fighter{
         a1:68+step*8,e1:55,c1:0,a2:54-step*8,e2:62,c2:0,
         f1x:22+step*21,f1h:Math.max(0,step)*15,f2x:-22-step*18,f2h:Math.max(0,-step)*13,mo:.8,bg:0});}
      case 'shove':return sampleKF(SHOVE_KF,this.st);
-     case 'takedown':{
-      const p=P({H:47,tl:58,hd:22,px:10,a1:75,e1:35,c1:0,a2:72,e2:38,c2:0,
-        f1x:34,f2x:-25,mo:.45,bg:0});
-      p.f1x+=Math.sin(this.st*18)*8;p.f2x-=Math.sin(this.st*18)*8;return p;}
-     case 'ground_pin':return P({H:25,tl:56,hd:25,px:3,a1:100,e1:0,a2:100,e2:0,f1x:22,f2x:3,mo:.35,bg:0});
-     case 'pinned':{
-      const p=P(LY),step=Math.sin(this.st*8);
-      p.f1x+=step*5;p.f2x-=step*4;p.f1h=2+Math.max(0,step)*5;p.f2h=2+Math.max(0,-step)*4;
-      p.mo=.8;return p;}
      case 'guard':{
       const p=Object.assign({},GUARD_POSE),w=clamp(Math.abs(this.vx)/48,0,1),step=Math.sin(this.walkPh)*w;
       p.f1x+=step*12;p.f2x-=step*12;p.f1h=Math.max(0,step)*7;p.f2h=Math.max(0,-step)*7;
@@ -2782,21 +2756,10 @@ class Fighter{
       return p;
     }
     const p=Object.assign({},D),sp=Math.abs(this.vx),w=clamp(sp/140,0,1),b=t*5.6+this.seed;
-    const relaxed=this.calmT>2.8;
-    if(relaxed){
-      // Post-fight unwind: straighten the spine, drop both fists, breathe. Every
-      // few seconds cycle into a seated rest, then back to a relaxed stand.
-      const breath=Math.sin(t*1.2),sit=Math.max(0,Math.sin(t*.34));
-      p.a1=52+breath*2;p.a2=52+Math.sin(t*1.2+1)*2;p.e1=106;p.e2=106;p.c1=0;p.c2=0;
-      p.tl=Math.sin(t*1.4)*.5-sit*2;p.H-=1.5+sit*14;p.hd+=Math.sin(t*.8)*1.2-sit*3;
-      p.gx=50;p.gy=22+sit*10;p.bt=150;
-      if(sp<14){
-        // Seated rest: bend the knees, drop the hips, hands resting on the legs.
-        p.f1x=18+sit*4;p.f2x=-18-sit*4;p.f1h=sit*22;p.f2h=sit*22;
-        return p;
-      }
-      // Relaxed stroll: keep the dropped fists, but fall through so the walk
-      // cycle below still animates the legs.
+    if(this.calmT>2.8&&sp<12){
+      p.a1=54+Math.sin(t*1.2)*2;p.a2=54+Math.sin(t*1.2+1)*2;p.e1=105;p.e2=105;p.tl+=Math.sin(t*1.4)*.5;p.H-=1.5;p.hd+=Math.sin(t*.8)*1.2;
+      p.gx=50;p.gy=22;p.bt=150;
+      return p;
     }
     p.H+=Math.sin(b)*1.7*(1-w);p.tl+=Math.sin(b+1)*1.2*(1-w);p.a1+=Math.sin(b+.6)*3*(1-w);p.a2+=Math.sin(b+1.2)*3*(1-w);
     p.f1x+=Math.sin(t*2.8)*2*(1-w);p.f2x-=Math.sin(t*2.8)*2*(1-w);
@@ -2823,26 +2786,23 @@ class Fighter{
       this.x=clamp(this.rig.pel.x,this.minX,this.maxX);return;
     }
     const tp=this.targetPose();
-    const hard=['getup','spawn','counter_throw','lamp_hang','shove','pinned'].includes(this.state);
+    const hard=['getup','spawn','counter_throw','lamp_hang','shove'].includes(this.state);
     const k=hard?1:(this.state==='attack'||this.state==='hit')?1-Math.exp(-dt*45):1-Math.exp(-dt*24);
     this.cur=(this.cur&&!hard)?mix(this.cur,tp,k):Object.assign({},tp);
     const hasBat=this.skin==='negan'&&this.hp>0&&!this.batLost&&!stowsBat(this);
-    let R=computeRig(this.cur,this.x,this.gy,this.y+(this.hoverY||0),this.dir,hasBat);
-    if(this.state==='guard'||this.state==='guard_recoil')poseGuardArms(R,this);
+    const guarding=this.state==='guard'||this.state==='guard_recoil';
+    const pose=guarding?guardWobblePose(this.cur,this):this.cur;
+    let R=computeRig(pose,this.x,this.gy,this.y+(this.hoverY||0),this.dir,hasBat);
+    if(guarding)poseGuardArms(R,this);
     if(this.state==='lamp_jump'||this.state==='lamp_hang')poseLampArms(R,this);
     if(this.state==='lamp_pull')poseLampPullArms(R,this.lampPullTarget);
     if(this.state==='choke')poseNeckHold(R,this.chokeTarget);
     if(this.state==='choked')poseStruggleArms(R,this.st);
     if(this.state==='counter_throw')poseCounterGrip(R,this);
-    if(this.state==='takedown')poseTakedownArms(R,this.grappleTarget);
-    if(this.state==='ground_pin')posePinArms(R,this.grappleTarget);
-    if(this.state==='pinned')poseStruggleArms(R,this.st,true);
     if(this.bleed&&this.bleed.pressing){
       const p=surfacePoint(R,this.bleed.mark);
       if(p){aimArmWorld(R,this.bleed.arm,p.x,p.y);R['c'+this.bleed.arm]=0;R.bd=null;}
     }
-    if(this.state==='pinned'&&this.pinBase&&this.st<.35)
-      R=blendRig(this.pinBase,R,ease(clamp(this.st/.35,0,1)));
     if(this.state==='getup'&&this.blend>0&&this.blendFrom)R=blendRig(this.blendFrom,R,ease(1-this.blend/.3));
     this.rig=R;
   }
@@ -2876,9 +2836,8 @@ class AutoCombat{
     this.shoveSeen=-1;this.pendingShove=null;this.pendingShoveT=0;
     this.lampCheck=rnd(5,12);this.lampTarget=null;this.hangSeen=null;this.hangStamp=-1;this.hangResponse=null;
     this.rolled=false;this.intercept=false;this.afterHop=0;this.reactAction='hop';
-    this.spaceCD=rnd(2,4);this.spaceDuration=0;this.grappleCheck=rnd(2,5);
+    this.spaceCD=rnd(2,4);this.spaceDuration=0;
     this.openingSeen=Object.create(null);this.openingTarget=null;
-    this.relaxDir=1;this.relaxPause=0;
   }
   setMode(m){this.mode=m;this.modeT=0;}
   planVault(f,body){
@@ -2902,7 +2861,7 @@ class AutoCombat{
   update(dt,f,o,all){
     const c=f.ctrl;
     c.mx=0;c.jump=false;c.punch=false;c.run=false;c.laser=false;c.hop=false;c.noFace=false;c.crouch=false;
-    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.lampCheck-=dt;this.spaceCD-=dt;this.grappleCheck-=dt;this.modeT+=dt;
+    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.lampCheck-=dt;this.spaceCD-=dt;this.modeT+=dt;
     this.pendingShoveT=Math.max(0,this.pendingShoveT-dt);
     if(f.hp<=0){this.mode='engage';this.openingTarget=null;this.lampTarget=null;return;}
     const st=f.state;
@@ -2910,10 +2869,10 @@ class AutoCombat{
       f.bleed.decision=rnd(2.2,4);
       if(Math.random()<.6)f.startPressure();
     }
-    if(['ragdoll','getup','stagger_fall','push_stagger','spawn','hit','run_hit_stop','pinned','bleed_collapse'].includes(st)){
+    if(['ragdoll','getup','stagger_fall','push_stagger','spawn','hit','run_hit_stop','bleed_collapse'].includes(st)){
       this.mode='engage';this.reactT=-1;this.reactAttacker=null;this.openingTarget=null;this.lampTarget=null;
       this.pendingShove=null;this.vaultTarget=null;this.downTarget=null;this.downDecided=false;
-      if(!['ragdoll','stagger_fall','push_stagger','pinned','bleed_collapse'].includes(st))f.faceOpp(o);
+      if(!['ragdoll','stagger_fall','push_stagger','bleed_collapse'].includes(st))f.faceOpp(o);
       return;
     }
     // Once airborne keep the running-jump momentum; interruption or landing
@@ -2954,37 +2913,9 @@ class AutoCombat{
       else o=all.filter(e=>e!==f&&e.hp<=0&&!this.handledCorpses.has(e)&&
         Math.abs(e.x-f.x)<350&&safeToVault(e,0)).sort((a,b)=>Math.abs(a.x-f.x)-Math.abs(b.x-f.x))[0]||null;
     }
-    if(!o){
-      this.mode='relax';this.openingTarget=null;this.lampTarget=null;this.downTarget=null;this.downDecided=false;
-      // No opponent nearby: unwind. Occasionally stroll slowly in one direction,
-      // turn around at the arena bounds, and otherwise stand/sit in the relax pose.
-      if(st==='idle'){
-        if(this.modeT>rnd(1.6,3.2)){
-          this.modeT=0;
-          this.relaxDir=Math.random()<.5?1:-1;
-          this.relaxPause=rnd(.6,1.6);
-        }
-        if(this.relaxPause>0){this.relaxPause-=dt;}
-        else{
-          const room=this.relaxDir>0?f.maxX-f.x:f.x-f.minX;
-          if(room>60){c.mx=this.relaxDir;f.dir=this.relaxDir;f.slowWalk=true;}
-          else{c.mx=0;f.slowWalk=false;this.relaxDir*=-1;}
-        }
-      }
-      return;
-    }
-    // Follow a climber up to the ceiling walkway when the way is clear. Checked
-    // before the ground engage logic so an adjacent opponent does not preempt it.
-    if(this.lampCheck<=0&&f.y<=5&&st==='idle'){
-      const leader=all.find(e=>e!==f&&e.hp>0&&(e.catwalk||(e.state==='lamp_hang'&&e.lampAction==='climb')));
-      if(leader&&Math.random()<.5){
-        const lamp=Game.lamps.filter(l=>!l.detached&&!l.occupant&&Math.abs(l.x-f.x)<220)
-          .sort((a,b)=>Math.abs(a.x-f.x)-Math.abs(b.x-f.x))[0];
-        if(lamp){this.lampTarget=lamp;this.lampCheck=rnd(25,45);this.setMode('catwalk_chase');return;}
-      }
-    }
+    if(!o){this.mode='engage';this.openingTarget=null;this.lampTarget=null;this.downTarget=null;this.downDecided=false;return;}
     const dx=o.x-f.x,dist=Math.abs(dx),toward=dx>=0?1:-1;
-    if(['guard','guard_recoil','shove','overextend','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','catwalk','takedown','ground_pin'].includes(st)){
+    if(['guard','guard_recoil','shove','overextend','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull'].includes(st)){
       c.noFace=true;return;
     }
     // Decide once per missed swing, not on every frame. A defender can finish
@@ -3049,7 +2980,7 @@ class AutoCombat{
       }
     }
 
-    const oppDown=o.state==='ragdoll'||o.state==='pinned'||o.state==='getup'||o.state==='spawn';
+    const oppDown=o.state==='ragdoll'||o.state==='getup'||o.state==='spawn';
     if(this.mode==='duck'){
       if(st!=='idle'||oppDown||this.modeT>=this.spaceDuration){this.setMode('engage');return;}
       c.noFace=true;c.crouch=true;f.dir=toward;
@@ -3059,33 +2990,6 @@ class AutoCombat{
       if(st!=='idle'||oppDown||this.modeT>=this.spaceDuration||dist>230){this.setMode('engage');return;}
       c.noFace=true;f.dir=toward;
       if(dist<180)c.mx=-toward;
-      return;
-    }
-    if(this.mode==='low_approach'){
-      if(st!=='idle'||oppDown||this.modeT>2.5||dist>190||!f.canGrapple(o)){
-        this.setMode('engage');return;
-      }
-      c.noFace=true;f.dir=toward;c.crouch=true;
-      if(dist<=TAKEDOWN_REACH-6&&f.crouchActive&&f.crouchTime>=.07&&f.startTakedown(o)){
-        this.setMode('engage');return;
-      }
-      if(dist>75)c.mx=toward;
-      return;
-    }
-    if(this.mode==='catwalk_chase'){
-      // Some opponents follow a climber up: approach a free lamp, jump it, and
-      // pull up the rope to the walkway when nobody is blocking the way.
-      const lamp=this.lampTarget;
-      const leader=all.find(e=>e!==f&&e.hp>0&&(e.catwalk||(e.state==='lamp_hang'&&e.lampAction==='climb')));
-      if(!leader||this.modeT>5){this.lampTarget=null;this.setMode('engage');return;}
-      if(!lamp||!Game.lamps.includes(lamp)||lamp.detached||lamp.occupant||oppDown){
-        this.lampTarget=null;this.setMode('engage');return;
-      }
-      if(st==='lamp_hang'){if(f.startLampClimb())return;this.setMode('engage');return;}
-      if(st!=='idle')return;
-      const d=lamp.x-f.x;
-      if(Math.abs(d)>22){c.mx=d>0?1:-1;return;}
-      if(f.startLampJump(lamp)){this.lampTarget=null;this.setMode('engage');}
       return;
     }
     if(this.mode==='lamp_approach'){
@@ -3183,13 +3087,6 @@ class AutoCombat{
       return;
     }
     this.downDecided=false;this.downTarget=null;
-    if(this.grappleCheck<=0){
-      this.grappleCheck=rnd(3,5.5);
-      if(f.grappleCD<=0&&dist<150&&f.y<=5&&!(f.bleed&&f.bleed.pressing)&&f.canGrapple(o)){
-        const roll=Math.random();
-        if(roll<.34){this.setMode('low_approach');c.crouch=true;return;}
-      }
-    }
     // Break up stationary exchanges: sometimes step or hop away and keep a
     // little space, without changing any attack or guard cooldowns.
     if(this.spaceCD<=0&&dist<165&&o.y<10&&o.state!=='attack'&&Math.random()<dt*.5){
@@ -3318,50 +3215,18 @@ function drawLamp(g,lamp){
   if(!lamp.detached){g.fillStyle='#fff1c5';g.fillRect(-9,18,18,3);}
   g.restore();
 }
-// The suspended ceiling walkway: a gray metal catwalk hung from the ceiling by
-// cables, with the lamp ropes rising into it. Drawn on the pixel lamp layer so
-// it stays crisp; only appears once someone has climbed up to it.
-function drawCatwalk(g,W,gy,revealed,alpha){
-  if(!revealed)return;
-  const cy=CATWALK_SY;
-  g.save();
-  g.globalAlpha=alpha;
-  // support cables from the ceiling down to the walkway ends
-  g.strokeStyle='#2a2a30';g.lineWidth=3;g.lineCap='round';
-  for(const x of [40,W/2-90,W/2+90,W-40]){
-    g.beginPath();g.moveTo(x,-20);g.lineTo(x,cy);g.stroke();
-  }
-  // the metal deck: a thick gray beam with a darker underside and lit top edge
-  g.fillStyle='#1c1c22';g.fillRect(0,cy+7,W,10);
-  g.fillStyle='#3a3a42';g.fillRect(0,cy,W,8);
-  g.fillStyle='#56565f';g.fillRect(0,cy,W,2);
-  g.fillStyle='rgba(180,185,195,.12)';g.fillRect(0,cy+2,W,1);
-  // rivet row along the deck
-  g.fillStyle='#26262c';
-  for(let x=24;x<W;x+=48)g.fillRect(x,cy+3,3,3);
-  // a faint safety rail on the near side
-  g.strokeStyle='rgba(90,90,98,.5)';g.lineWidth=2;
-  g.beginPath();g.moveTo(0,cy-8);g.lineTo(W,cy-8);g.stroke();
-  g.restore();
-}
 /* ============================ BACKGROUND ============================ */
 function makeBG(W,H,gy,S){
-  const c=document.createElement('canvas');const px=S/BODY_PIXEL;c.width=Math.ceil(W*px);c.height=Math.ceil(H*px);const x=c.getContext('2d');x.imageSmoothingEnabled=false;x.scale(px,px);
+  const c=document.createElement('canvas');const px=S/BODY_PIXEL;c.width=Math.ceil(W*px);c.height=Math.ceil(H*px);let x=c.getContext('2d');x.imageSmoothingEnabled=false;x.scale(px,px);
   let g=x.createLinearGradient(0,0,0,H);g.addColorStop(0,'#0b0910');g.addColorStop(.6,'#221620');g.addColorStop(1,'#150f14');x.fillStyle=g;x.fillRect(0,0,W,H);
   x.strokeStyle='rgba(0,0,0,.35)';x.lineWidth=1;
   for(let y=0,r=0;y<gy-60;y+=22,r++){const off=(r%2)*30;for(let xx=-off;xx<W;xx+=60)x.strokeRect(xx,y,60,22);}
   for(let i=0;i<300;i++){x.fillStyle=`rgba(${rnd(60,130)|0},${rnd(25,50)|0},${rnd(25,45)|0},${rnd(.03,.1)})`;x.fillRect(rnd(W),rnd(gy-60),rnd(10,60),rnd(6,22));}
   x.save();x.font="900 56px 'Russo One',Impact,sans-serif";x.textAlign='center';x.shadowColor='#ff2a44';x.shadowBlur=28;x.strokeStyle='#ff4a5e';x.lineWidth=3;x.strokeText('DUMMY FURY',W/2,110);x.fillStyle='rgba(255,120,130,.25)';x.fillText('DUMMY FURY',W/2,110);x.restore();
-  for(let row=0;row<2;row++){
-    const by=gy-118+row*14;
-    for(let xx=-10;xx<W+20;xx+=24+rnd(8)){
-      const hh=rnd(0,8),shade=row?'#0b0809':'#150f14';
-      x.fillStyle=shade;x.beginPath();x.ellipse(xx,by+34-hh*.3,17,24,0,Math.PI,0);x.fill();x.fillRect(xx-17,by+34-hh*.3,34,40);
-      x.beginPath();x.arc(xx,by+6-hh,9,0,TAU);x.fill();
-      x.fillStyle='rgba(255,170,120,.07)';x.beginPath();x.arc(xx-2,by+4-hh,8,Math.PI,Math.PI*1.7);x.fill();
-      if(Math.random()<.12){x.strokeStyle=shade;x.lineWidth=5;x.lineCap='round';x.beginPath();x.moveTo(xx+10,by+24);x.lineTo(xx+16,by-14-hh);x.stroke();}
-    }
-  }
+  // Keep the chain-link, railing and floor on a transparent foreground so
+  // animated spectators remain behind the enclosure.
+  const front=document.createElement('canvas');front.width=c.width;front.height=c.height;
+  x=front.getContext('2d');x.imageSmoothingEnabled=false;x.scale(px,px);
   x.strokeStyle='rgba(180,190,210,.06)';x.lineWidth=1;
   for(let i=-H;i<W+H;i+=22){x.beginPath();x.moveTo(i,20);x.lineTo(i+H,20+H);x.stroke();x.beginPath();x.moveTo(i+H,20);x.lineTo(i,20+H);x.stroke();}
   x.fillStyle='#17151b';x.fillRect(0,gy-62,W,8);x.fillStyle='rgba(255,255,255,.12)';x.fillRect(0,gy-62,W,1.5);
@@ -3374,7 +3239,7 @@ function makeBG(W,H,gy,S){
   for(let i=1;i<6;i++){const y=ft+(H-ft)*Math.pow(i/6,1.6);x.beginPath();x.moveTo(0,y);x.lineTo(W,y);x.stroke();}
   x.strokeStyle='rgba(255,200,60,.22)';x.lineWidth=3;x.beginPath();x.ellipse(W/2,gy+24,Math.min(W*.4,360),52,0,0,TAU);x.stroke();
   for(let i=0;i<500;i++){x.fillStyle=`rgba(255,255,255,${rnd(.01,.04)})`;x.fillRect(rnd(W),rnd(ft,H),rnd(1,3),1);}
-  return c;
+  return {back:c,front};
 }
 function makeVignette(W,H,S){
   const c=document.createElement('canvas');c.width=Math.round(W*S);c.height=Math.round(H*S);const x=c.getContext('2d');
@@ -3389,28 +3254,29 @@ function clearPixelLayer(layer){
   c.imageSmoothingEnabled=false;
   c.setTransform(layer.scale,0,0,layer.scale,0,0);
 }
-// Laser beam (drawn on the 3px FX layer): glow, hot body and white core, plus an impact flare.
+// A saturated red beam with a hot pale-red core and a small rounded impact.
 function drawBeam(g,lz){
-  const fl=.85+Math.random()*.3,sn=v=>Math.round(v/3)*3;
-  g.save();g.lineCap='butt';
+  const fl=.97+.12*Math.sin((lz.age||0)*55);
+  g.save();g.lineCap='round';
   const line=()=>{g.beginPath();g.moveTo(lz.sx,lz.sy);g.lineTo(lz.ex,lz.ey);g.stroke();};
-  g.strokeStyle='rgba(255,70,25,.30)';g.lineWidth=15*fl;line();
-  g.strokeStyle='rgba(255,130,40,.82)';g.lineWidth=7*fl;line();
-  g.strokeStyle='#fff0c0';g.lineWidth=3;line();
-  const x=sn(lz.ex),y=sn(lz.ey),s=lz.surf==='floor'?1:0;
-  g.fillStyle='rgba(255,90,25,.55)';g.fillRect(x-12*fl,y-(s?6:12)*fl,24*fl,(s?12:24)*fl);
-  g.fillStyle='rgba(255,170,50,.9)';g.fillRect(x-6,y-(s?3:6),12,s?6:12);
-  g.fillStyle='#fff6d0';g.fillRect(x-3,y-3,6,6);
+  g.strokeStyle='rgba(255,12,42,.32)';g.lineWidth=15*fl;line();
+  g.strokeStyle='#ff263e';g.lineWidth=7*fl;line();
+  g.strokeStyle='#ffe0e2';g.lineWidth=3;line();
+  if(lz.surf!=='none'){
+    const flat=lz.surf==='floor'?.55:1;
+    const dot=(rx,ry,color)=>{g.fillStyle=color;g.beginPath();g.ellipse(lz.ex,lz.ey,rx,ry,0,0,TAU);g.fill();};
+    dot(10*fl,10*fl*flat,'rgba(255,30,45,.55)');
+    dot(5,5*flat,'rgba(255,95,90,.9)');dot(2.7,2.7,'#fff1eb');
+  }
   g.restore();
 }
 function drawEyeGlow(g,f){
   const a=f.atk;if(!a||!a.laser||!f.rig)return;
-  const e=f.laserEye();
-  const k=f.st<a.chargeT?f.st/a.chargeT:1;
-  const s=Math.round((3+k*9)/3)*3;
-  g.fillStyle=`rgba(255,60,25,${.25+k*.35})`;g.fillRect(e.x-s,e.y-s,s*2,s*2);
-  g.fillStyle=`rgba(255,120,40,${.5+k*.4})`;g.fillRect(e.x-s/2-1.5,e.y-s/2-1.5,s+3,s+3);
-  g.fillStyle='#fff3c8';g.fillRect(Math.round(e.x/3)*3-3,Math.round(e.y/3)*3-3,6,6);
+  const e=f.laserEye(),k=f.st<a.chargeT?f.st/a.chargeT:1,s=3+k*9;
+  const dot=(r,color)=>{g.fillStyle=color;g.beginPath();g.ellipse(e.x,e.y,r,r*.88,0,0,TAU);g.fill();};
+  dot(s,`rgba(255,20,45,${.25+k*.35})`);
+  dot(s*.55,`rgba(255,75,85,${.5+k*.4})`);
+  dot(2.7,'#ffe7e5');
 }
 /*
   Pixel-art yellow dizzy stars orbiting above a knocked-out (unconscious) fighter's head.
@@ -3468,12 +3334,10 @@ const Game={
   W:960,H:540,gy:468,S:1,cv:null,
   shake:0,hs:0,ts:1,tsT:0,
   fighters:[],lamps:[],detachedLamps:0,
-  droppedBats:[],camera:null,
+  droppedBats:[],camera:null,audience:null,
   autoSpawn:true,shiftCrouch:false,
   respawnTimer:0,
   koCount:0,
-  catwalkRevealed:false,
-  panActive:false,panDx:0,panDy:0,
   fx:null,
   init(){
     this.cv=document.querySelector('#gameCv');
@@ -3481,13 +3345,13 @@ const Game={
     this.ctx.imageSmoothingEnabled=false;
     this.fighters=[];this.droppedBats=[];this.lamps=[];this.detachedLamps=0;
     this.koCount=0;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;this.respawnTimer=0;this.autoSpawn=true;this.shiftCrouch=false;
-    this.catwalkRevealed=false;this.panActive=false;this.panDx=0;this.panDy=0;
-    this.camera={x:this.W/2,y:270,zoom:1,vignette:0};
+    this.camera={x:this.W/2,y:270,zoom:1,vignette:0};this.audience=null;
     skinCursor=0;
     this.fx=new FX();
     this.dc=document.createElement('canvas');
     this.dctx=this.dc.getContext('2d');
     this.resize();
+    this.audience=new Audience(this.W,this.gy);
     this.lamps=makeLamps(this.W);
     this.camera.x=this.W/2;
     this.fx.decal=this.dctx;
@@ -3509,6 +3373,8 @@ const Game={
       this.camera.y=clamp(this.camera.y,halfH,540-halfH);
     }
     for(const lamp of this.lamps)lamp.resize(this.W);
+    if(this.audience)this.audience.resize(this.W,this.gy);
+    if(this.fx){this.fx.floorY=this.gy;this.fx.bloodField.resize(this.W,this.gy);}
     this.buildBG();
     for(const f of this.fighters){f.minX=70;f.maxX=this.W-70;}
   },
@@ -3524,13 +3390,19 @@ const Game={
       const g=c.getContext('2d');g.imageSmoothingEnabled=false;g.setTransform(scale,0,0,scale,0,0);
       return {canvas:c,ctx:g,scale};
     };
+    this.audienceLayer=makeLayer(bodyScale);
     this.lampLayer=makeLayer(bodyScale);
     this.bodyLayer=makeLayer(bodyScale);
     this.headLayer=makeLayer(headScale);
     this.batLayer=makeLayer(bodyScale);
     this.frontLayer=makeLayer(bodyScale);
     this.fxLayer=makeLayer(bodyScale);
+    // Tiny round laser particles need full resolution; the rest of the game
+    // and the beam itself retain their deliberately pixelated layers.
+    this.laserLayer=makeLayer(this.S);
     this.markLayer=makeLayer(bodyScale);
+    this.bloodLayer=makeLayer(bodyScale);this.puddleMaskLayer=makeLayer(bodyScale);
+    this.reflectionLayer=makeLayer(bodyScale);this.bloodVersion=-1;
     this.dc.width=Math.ceil(this.W*bodyScale);this.dc.height=Math.ceil(540*bodyScale);
     this.dctx=this.dc.getContext('2d');this.dctx.imageSmoothingEnabled=false;
     if(keep){this.dctx.setTransform(1,0,0,1,0,0);this.dctx.drawImage(old,0,0,this.dc.width,this.dc.height);}
@@ -3573,29 +3445,10 @@ const Game={
     this.spawnFighter(this.W*.32,1,.08);
     this.spawnFighter(this.W*.68,-1,.32);
   },
-  catwalkFighterY(){return this.gy-CATWALK_SY;},
   updateCamera(dt){
     const c=this.camera;if(!c)return;
     const k=1-Math.exp(-dt*3);
-    c.zoom+=(1-c.zoom)*k;
-    // The highest rope-climber (or anyone on the catwalk) raises the camera
-    // ceiling so the suspended walkway comes into view.
-    let climb=0;
-    for(const f of this.fighters){
-      if(f.hp<=0)continue;
-      const h=f.catwalk?1:f.lampClimb;
-      if(h>climb)climb=h;
-    }
-    if(climb>.05)this.catwalkRevealed=true;
-    const baseY=this.H/2;
-    const riseY=CATWALK_SY+this.H*.22;
-    let ty=lerp(baseY,riseY,clamp(climb,0,1));
-    // Right-click pan: the camera drifts toward the held mouse offset, and
-    // gently returns when the drag ends.
-    if(!this.panActive){this.panDx*=Math.exp(-dt*1.8);this.panDy*=Math.exp(-dt*1.8);}
-    if(this.panActive){ty+=this.panDy;}
-    c.y+=(ty-c.y)*k;
-    c.x+=(this.W/2-c.x)*k+(this.panActive?this.panDx:0)*k;
+    c.zoom+=(1-c.zoom)*k;c.x+=(this.W/2-c.x)*k;c.y+=(this.H/2-c.y)*k;
   },
   screenToWorldX(x){
     const c=this.camera;return c?(x-this.W/2)/c.zoom+c.x:x;
@@ -3606,11 +3459,11 @@ const Game={
     this.syncHudCards();
   },
   clearBlood(){
-    this.dctx.save();
-    this.dctx.setTransform(1,0,0,1,0,0);
-    this.dctx.clearRect(0,0,this.dc.width,this.dc.height);
-    this.dctx.restore();
-    for(const f of this.fighters)if(f.hp>0){f.wounds=newWounds();f.bloodStains=[];}
+    this.fx.clearBlood();
+    for(const f of this.fighters){
+      if(f.hp>0)f.wounds=newWounds();
+      f.bloodStains=[];f.footBlood={N:0,F:0};f.jointBlood={kN:0,kF:0,eN:0,eF:0};f.bloodFootfall=null;
+    }
   },
   // Ray against the arena: stops at the first fighter body, the floor, a wall post or the ceiling.
   castRay(x,y,ux,uy,self){
@@ -3636,10 +3489,10 @@ const Game={
     if(a.pw>.6)Snd.splat(a.pw);
   },
   ko(v,att,a){
-    a=a||{};att=att||{dir:1,x:v.x};
+    a=a||{};
     const delayed=!a.bleedOut&&!a.noStagger&&!a.preserveRagdoll&&!a.keepRag&&
       (a.launch||a.pw>=.4)&&v.canStagger(att)&&Math.random()<STAGGER_KO_CHANCE;
-    v.breakGrapple();v.breakChoke();v.boxing=false;v.shoveTarget=null;v.hp=0;
+    v.breakChoke();v.boxing=false;v.shoveTarget=null;v.hp=0;
     if(v.skin==='negan'&&!v.batLost){
       const R=v.rig;
       const bx=R&&R.bd?R.wN.x+R.bd.x*24:v.x+v.dir*26;
@@ -3657,6 +3510,7 @@ const Game={
       });
     }
     this.koCount++;
+    if(this.audience)this.audience.cheer();
     if(a.bleedOut){
       // Blood loss ends in an exhausted, gradual collapse, not the impact KO
       // explosion, hit-stop or a fresh launch of an already prone body.
@@ -3685,7 +3539,7 @@ const Game={
     for(const o of this.fighters){
       if(o===f||o.hp<=0)continue;
       const dist=Math.abs(o.x-f.x);
-      const downPenalty=(o.state==='ragdoll'||o.state==='pinned'||o.state==='getup'||o.state==='spawn')?280:0;
+      const downPenalty=(o.state==='ragdoll'||o.state==='getup'||o.state==='spawn')?280:0;
       const sc=dist+downPenalty;
       if(sc<bestScore){bestScore=sc;best=o;}
     }
@@ -3714,28 +3568,23 @@ const Game={
     for(const lamp of this.lamps)lamp.update(dt,this);
     // Owners/throwers update before the restrained fighter, independent of
     // spawn order, then the holder's hands are aligned to the current neck.
-    const dependent=f=>['choked','counter_carried','pinned'].includes(f.state);
+    const dependent=f=>['choked','counter_carried'].includes(f.state);
     const order=[...this.fighters.filter(f=>!dependent(f)),...this.fighters.filter(dependent)];
     for(const f of order){
       const opp=f.hp>0?this.findBestOpponent(f):null;
       if(f.hp>0&&f===keyboardFighter){
-        // Shift triggers a slow, leg-animated stroll for the first living fighter
-        // (not a crouch or a mere speed cap); releasing it returns to the AI.
-        const c=f.ctrl;f.slowWalk=true;
-        c.mx=f.dir;c.crouch=false;c.run=false;
-        c.jump=false;c.punch=false;c.hop=false;c.laser=false;c.noFace=false;
+        // Shift is a temporary crouch command for the first living fighter;
+        // releasing it returns the fighter to the normal autonomous AI.
+        const c=f.ctrl;c.mx=0;c.jump=false;c.punch=false;c.run=false;c.hop=false;c.laser=false;c.noFace=false;c.crouch=true;
       }else if(f.hp>0){
-        f.slowWalk=false;
         f.autopilot.update(dt,f,opp,this.fighters);
       }else{
-        f.slowWalk=false;
         const c=f.ctrl;c.mx=0;c.jump=false;c.punch=false;c.run=false;c.hop=false;c.laser=false;c.noFace=false;c.crouch=false;
       }
       f.update(dt,opp,this.fighters);
     }
     for(const f of this.fighters){
       if(f.state==='choke'&&f.chokeTarget&&f.chokeTarget.rig)f.buildRig(0);
-      if(['takedown','ground_pin'].includes(f.state)&&f.grappleTarget&&f.grappleTarget.rig)f.buildRig(0);
     }
     for(const b of this.droppedBats){
       if(b.settled){b.fade=Math.min(.14,b.fade+dt*.018);continue;}
@@ -3768,12 +3617,12 @@ const Game={
       for(let j=i+1;j<alive.length;j++){
         const B=alive[j];
         if(B.hp<=0||B.y>=60||['ragdoll','spawn','run','counter_carried'].includes(B.state))continue;
-        if(A.chokeTarget===B||B.chokeTarget===A||A.flankTarget===B||B.flankTarget===A||A.lampPullTarget===B||B.lampPullTarget===A||A.grappleTarget===B||B.grappleTarget===A)continue;
+        if(A.chokeTarget===B||B.chokeTarget===A||A.flankTarget===B||B.flankTarget===A||A.lampPullTarget===B||B.lampPullTarget===A)continue;
         const dx=B.x-A.x,m=54;
         if(Math.abs(dx)<m){
           const s=dx>=0?1:-1,push=(m-Math.abs(dx))/2;
-          const fixedA=['choke','choked','counter_throw','ground_pin','pinned'].includes(A.state);
-          const fixedB=['choke','choked','counter_throw','ground_pin','pinned'].includes(B.state);
+          const fixedA=['choke','choked','counter_throw'].includes(A.state);
+          const fixedB=['choke','choked','counter_throw'].includes(B.state);
           const ok1=!fixedA&&A.x-s*push>=A.minX&&A.x-s*push<=A.maxX;
           const ok2=!fixedB&&B.x+s*push>=B.minX&&B.x+s*push<=B.maxX;
           if(ok1&&ok2){A.x-=s*push;B.x+=s*push;}
@@ -3783,6 +3632,7 @@ const Game={
       }
     }
     this.fx.update(dt);
+    if(this.audience)this.audience.update(rdt);
     this.updateCamera(rdt);
     this.updateHud();
   },
@@ -3830,18 +3680,27 @@ const Game={
     ctx.translate(shakeX,shakeY);
     const camera=this.camera;
     if(camera){ctx.translate(W/2,H/2);ctx.scale(camera.zoom,camera.zoom);ctx.translate(-camera.x,-camera.y);}
-    ctx.drawImage(this.bg,0,0,W,H);
+    ctx.drawImage(this.bg.back,0,0,W,H);
+    clearPixelLayer(this.audienceLayer);
+    if(this.audience)this.audience.draw(this.audienceLayer.ctx);
+    ctx.drawImage(this.audienceLayer.canvas,0,0,W,H);
+    ctx.drawImage(this.bg.front,0,0,W,H);
     clearPixelLayer(this.lampLayer);
     for(const lamp of this.lamps)drawLamp(this.lampLayer.ctx,lamp);
-    drawCatwalk(this.lampLayer.ctx,W,this.gy,this.catwalkRevealed,1);
     ctx.drawImage(this.lampLayer.canvas,0,0,W,H);
-    // Dimmer, cooler light once the ceiling walkway is in view.
-    if(this.catwalkRevealed){
-      ctx.save();ctx.globalCompositeOperation='multiply';
-      ctx.fillStyle='rgba(70,78,92,.34)';ctx.fillRect(0,0,W,H);
-      ctx.restore();
-    }
     ctx.drawImage(this.dc,0,0,W,H);
+    const blood=this.fx.bloodField;
+    if(this.bloodVersion!==blood.version){
+      clearPixelLayer(this.bloodLayer);blood.drawBase(this.bloodLayer.ctx);
+      clearPixelLayer(this.puddleMaskLayer);blood.drawReflectionMask(this.puddleMaskLayer.ctx);
+      this.bloodVersion=blood.version;
+    }
+    ctx.drawImage(this.bloodLayer.canvas,0,0,W,H);
+    if(blood.hasPuddles()){
+      clearPixelLayer(this.reflectionLayer);
+      blood.drawReflections(this.reflectionLayer.ctx,this.fighters,this.lamps,this.audience?.time||0,this.puddleMaskLayer.canvas);
+      ctx.drawImage(this.reflectionLayer.canvas,0,0,W,H);
+    }
     // fading laser scorch marks on the floor / walls
     if(this.fx.marks.length){
       clearPixelLayer(this.markLayer);
@@ -3858,11 +3717,8 @@ const Game={
     }
 
     const dependent=f=>['choked','counter_carried'].includes(f.state);
-    // A pinned body is below its kneeling opponent; a choked body is in front
-    // of its holder, whose gripping arm is painted once more over the top.
     const ordered=[...this.fighters.filter(f=>f.hp<=0),
-      ...this.fighters.filter(f=>f.hp>0&&f.state==='pinned'),
-      ...this.fighters.filter(f=>f.hp>0&&f.state!=='pinned'&&!dependent(f)),
+      ...this.fighters.filter(f=>f.hp>0&&!dependent(f)),
       ...this.fighters.filter(f=>f.hp>0&&dependent(f))];
     for(const f of ordered){
       if(!f.rig||(f.state==='spawn'&&f.sp===0))continue;
@@ -3897,15 +3753,6 @@ const Game={
       paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,f));
       if(f.bleed&&f.bleed.pressing&&f.bleed.arm==='F')
         paintLayer(this.frontLayer,q=>drawPixelArm(q,f.rig,f,'F',true,SK_[f.skin]||SK_.jane));
-      if(f.state==='ground_pin'&&f.grappleTarget&&f.grappleTarget.rig){
-        const victim=f.grappleTarget;
-        paintLayer(this.frontLayer,q=>{
-          drawPixelArm(q,victim.rig,victim,'F',true,SK_[victim.skin]||SK_.jane);
-          drawFighterFrontArm(q,victim);
-        },false);
-      }
-      const tackler=this.fighters.find(h=>h.state==='takedown'&&h.grappleTarget===f&&h.rig);
-      if(tackler)paintLayer(this.frontLayer,q=>drawFighterFrontArm(q,tackler),false);
       // The near arm wraps in front of the opponent's neck rather than being
       // hidden behind the opponent's sprite.
       if(f.state==='choked'&&f.chokedBy&&f.chokedBy.rig){
@@ -3930,6 +3777,10 @@ const Game={
     }
     this.fx.draw(this.fxLayer.ctx);
     ctx.drawImage(this.fxLayer.canvas,0,0,W,H);
+    if(this.fx.laserSparks.length){
+      clearPixelLayer(this.laserLayer);this.fx.drawLaserSparks(this.laserLayer.ctx);
+      ctx.drawImage(this.laserLayer.canvas,0,0,W,H);
+    }
 
     ctx.save();ctx.globalCompositeOperation='lighter';
     for(const lamp of this.lamps){
@@ -3969,33 +3820,8 @@ export function startGame(){
   const onCtx=e=>e.preventDefault();
   const onKeyDown=e=>{if(e.key==='Shift'&&!e.ctrlKey&&!e.altKey&&!e.metaKey)Game.shiftCrouch=true;};
   const onKeyUp=e=>{if(e.key==='Shift')Game.shiftCrouch=false;};
-  const onBlur=()=>{Game.shiftCrouch=false;Game.panActive=false;};
-  // Right-click drag pans the camera across the (possibly raised) ceiling view.
-  let panLastX=0,panLastY=0;
-  const onMouseDown=e=>{
-    if(e.button!==2)return;
-    Game.panActive=true;
-    const rect=cv.getBoundingClientRect();
-    panLastX=(e.clientX-rect.left)/rect.width*Game.W;
-    panLastY=(e.clientY-rect.top)/rect.height*540;
-    e.preventDefault();
-  };
-  const onMouseMove=e=>{
-    if(!Game.panActive)return;
-    const rect=cv.getBoundingClientRect();
-    const sx=(e.clientX-rect.left)/rect.width*Game.W;
-    const sy=(e.clientY-rect.top)/rect.height*540;
-    const cam=Game.camera;
-    const z=cam&&cam.zoom?cam.zoom:1;
-    Game.panDx=clamp(Game.panDx+(sx-panLastX)/z,-Game.W*.4,Game.W*.4);
-    Game.panDy=clamp(Game.panDy+(sy-panLastY)/z,-260,260);
-    panLastX=sx;panLastY=sy;
-  };
-  const onMouseUp=e=>{if(e.button===2)Game.panActive=false;};
+  const onBlur=()=>{Game.shiftCrouch=false;};
   cv.addEventListener('pointerdown',onDown);
-  cv.addEventListener('mousedown',onMouseDown);
-  addEventListener('mousemove',onMouseMove);
-  addEventListener('mouseup',onMouseUp);
   addEventListener('resize',onResize);
   addEventListener('keydown',onKeyDown);addEventListener('keyup',onKeyUp);addEventListener('blur',onBlur);
   document.addEventListener('contextmenu',onCtx);
