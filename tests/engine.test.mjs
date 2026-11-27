@@ -82,18 +82,6 @@ function fighter(x, dir, skin = 'jane') {
   return f;
 }
 
-// Jane + a standing target at a valid mental-influence range.
-function mentalPair(dir = 1, victimFirst = false, targetSkin = 'walt') {
-  const a = fighter(dir === 1 ? 330 : 630, dir, 'jane');
-  const v = fighter(a.x + dir * 220, -dir, targetSkin);
-  a.mentalCD = 0;
-  // Freeze only the autonomous decisions, not the actual fighter physics.
-  a.autopilot.update = () => {};
-  v.autopilot.update = () => {};
-  Game.fighters = victimFirst ? [v, a] : [a, v];
-  return { a, v };
-}
-
 function advanceUntil(predicate, maxFrames = 900, dt = 1 / 60) {
   for (let i = 0; i < maxFrames; i++) {
     if (predicate()) return i;
@@ -241,8 +229,12 @@ test('a front guard absorbs ordinary punches; powerful or lethal blows cause a b
     disableAI(defender, attacker);
     assert.equal(defender.startGuard(attacker), true);
     tick(.12);
-    assert.ok(distance(defender.rig.wN, defender.rig.head) < 24);
-    assert.ok(distance(defender.rig.wF, defender.rig.head) < 24);
+    for (const side of ['N', 'F']) {
+      const r = defender.rig, wrist = r[`w${side}`], elbow = r[`e${side}`];
+      assert.ok(distance(wrist, r.sh) > 40 && distance(wrist, r.sh) < 62, 'guard hands are extended but not locked');
+      assert.ok(kneeAngle(r.sh, elbow, wrist) > 80 && kneeAngle(r.sh, elbow, wrist) < 150, 'guard elbows remain bent');
+      assert.ok((wrist.x - r.head.x) * dir > 35, 'hands stay in front of the face');
+    }
     const smoke = Game.fx.sm.length, blood = Game.fx.bl.length;
     defender.takeHit(attacker, punch);
     assert.equal(defender.hp, 100);
@@ -462,7 +454,7 @@ test('other fighters collide with but do not separate a held pair, including nea
 });
 
 test('removed Jane hypnosis, pistol and grounded leg-grab code stay absent while Jane remains playable', () => {
-  assert.doesNotMatch(source, /hypno|trance|bullet|droppedgun|grab_prep|grab_throw|grabtarget|grabbedby/i);
+  assert.doesNotMatch(source, /hypno|trance|mental|bullet|droppedgun|grab_prep|grab_throw|grabtarget|grabbedby/i);
   const jane = fighter(450, 1, 'jane');
   assert.equal(jane.skin, 'jane');
   assert.equal(jane.hp, 100);
@@ -612,349 +604,6 @@ test('portrait sizing keeps the full arena visible and vertically letterboxed', 
   }
 });
 
-test('mental influence requires a minimum range and a large cooldown', () => {
-  const { a, v } = mentalPair();
-  // Too close: cannot cast.
-  v.x = a.x + 40;
-  assert.equal(a.canMental(v), false, 'too close to use mental influence');
-  // Too far: cannot cast.
-  v.x = a.x + 900;
-  assert.equal(a.canMental(v), false, 'too far to use mental influence');
-  // Correct range.
-  v.x = a.x + 250;
-  assert.equal(a.canMental(v), true);
-  assert.equal(a.startMental(v), true);
-  // Big cooldown, and it is consumed even on a successful cast.
-  assert.ok(a.mentalCD >= 12 && a.mentalCD <= 18, `big cooldown expected, got ${a.mentalCD}`);
-  assert.equal(a.canMental(v), false, 'cooldown blocks immediate recast');
-});
-
-test('mental influence runs the full cutscene: glow, clutch, run, wall slam, stun', () => {
-  for (const dir of [1, -1]) {
-    seedRandom(4321);
-    Game.init(); Game.autoSpawn = false; Game.fighters = [];
-    const { a, v } = mentalPair(dir, dir < 0);
-    assert.equal(a.startMental(v), true);
-    const phases = new Set();
-    let glowSeen = false, slammed = false, stunned = false, runningFrames = 0;
-    const initialX = v.x;
-    const wall = dir > 0 ? v.maxX : v.minX;
-    for (let i = 0; i < Math.ceil(8 / (1 / 60)); i++) {
-      Game.update(1 / 60);
-      if (v.mentalPhase) phases.add(v.mentalPhase);
-      if (v.mentalPhase === 'run') runningFrames++;
-      if (v.mentalGlow > 0.3) glowSeen = true;
-      if (v.mentalPhase === 'stun') {
-        slammed = true;
-        assert.ok(Math.abs(v.x - (wall - dir * 8)) < 1, `victim should stop at the wall (dir=${dir})`);
-      }
-      if (v.mentalStunT > 0 && v.mentalPhase === 'stun') stunned = true;
-      if (v.state === 'idle' && v.mentalPhase === 'idle') break;
-    }
-    const label = `dir=${dir}`;
-    for (const p of ['clutch', 'turn', 'run', 'stun']) {
-      assert.ok(phases.has(p), `${label}: missing victim phase ${p}`);
-    }
-    assert.ok(glowSeen, `${label}: purple outline must appear`);
-    assert.ok(runningFrames > 5, `${label}: victim must actually run to the wall`);
-    assert.ok(slammed, `${label}: victim must reach the wall`);
-    assert.ok(stunned, `${label}: victim must be stunned at the wall`);
-    assert.ok((v.x - initialX) * dir > 0, `${label}: victim must move toward the wall`);
-    // Influence ends and the victim returns to idle.
-    assert.equal(v.mentalInfluence, false);
-    assert.equal(v.state, 'idle');
-  }
-});
-
-test('the victim ignores hits at self: damage is taken but is not knocked down', () => {
-  const { a, v } = mentalPair();
-  assert.equal(a.startMental(v), true);
-  advanceUntil(() => v.isMentalVictim());
-  const hpBefore = v.hp;
-  const enemy = fighter(230, 1, 'saul');
-  enemy.autopilot.update = () => {};
-  v.takeHit(enemy, { dmg: 8, zone: 'torso', pw: 0.9, stun: 0.4, kb: 200 });
-  assert.equal(v.hp, hpBefore - 8, 'victim still takes damage');
-  assert.equal(v.state, 'mental_influence', 'ordinary hit does not knock the victim down');
-  assert.ok(v.mentalInfluence, 'influence survives ordinary damage');
-  // A launching attack can still move the victim into ragdoll physics.
-  v.takeHit(enemy, { dmg: 5, zone: 'torso', pw: 1, launch: true, lvx: 200, lvy: 420 });
-  assert.equal(v.state, 'ragdoll', 'launching attacks can break the influence');
-});
-
-test('lasers, trips and KOs interrupt a cast and clear the victim influence', () => {
-  for (const kind of ['laser', 'trip', 'ko']) {
-    seedRandom(7788);
-    Game.init(); Game.autoSpawn = false; Game.fighters = [];
-    const { a, v } = mentalPair();
-    assert.equal(a.startMental(v), true);
-    advanceUntil(() => v.isMentalVictim());
-    const enemy = fighter(190, 1, 'homelander');
-    enemy.autopilot.update = () => {};
-    if (kind === 'laser') a.takeLaser(enemy, a.rig.pel, true);
-    if (kind === 'trip') enemy.trip(a);
-    if (kind === 'ko') Game.ko(a, enemy, { lvx: 300, lvy: 400, pw: 1 });
-    assert.notEqual(a.state, 'mental', kind);
-    assert.equal(a.mentalTarget, null, kind);
-    assert.equal(v.mentalInfluence, false, kind);
-    assert.equal(v.mentalCaster, null, kind);
-    assert.notEqual(v.state, 'mental_influence', kind);
-    assert.ok(a.mentalCD > 0, kind);
-    if (kind === 'laser') assert.ok(a.burns.length > 0, 'laser burn remains on Jane');
-  }
-});
-
-test('the purple glow is drawn on the FX layer while under influence', () => {
-  const { a, v } = mentalPair();
-  assert.equal(a.startMental(v), true);
-  advanceUntil(() => v.isMentalVictim());
-  const stats = Game.fxLayer.ctx.stats;
-  stats.colors.clear();
-  stats.arc = 0;
-  Game.render();
-  assert.ok(stats.arc > 0, 'glow should draw arcs around body segments');
-  assert.ok(stats.colors.has('rgba(168,85,247,1)') || [...stats.colors].some(c => typeof c === 'string' && c.includes('168,85,247')),
-    'purple glow color should be painted');
-});
-
-test('mental text label and phrase are drawn and expire with the influence', () => {
-  const { a, v } = mentalPair();
-  assert.equal(a.startMental(v), true);
-  advanceUntil(() => v.isMentalVictim());
-  const textStats = Game.textLayer.ctx.stats;
-  textStats.texts.length = 0;
-  Game.render();
-  assert.ok(textStats.texts.some(t => t.text === 'UNDER INFLUENCE'), 'victim label should be drawn');
-  const castLabel = textStats.texts.find(t => t.text === 'MENTAL PUSH');
-  assert.ok(castLabel, 'caster label should be drawn');
-  // The phrase is spoken during the cast.
-  advanceUntil(() => v.mentalPhase === 'stun');
-  textStats.texts.length = 0;
-  Game.render();
-  // After the victim is stunned and influence fades, labels disappear.
-  advanceUntil(() => v.state === 'idle');
-  textStats.texts.length = 0;
-  Game.render();
-  assert.ok(!textStats.texts.some(t => t.text === 'UNDER INFLUENCE'));
-  assert.ok(!textStats.texts.some(t => t.text === 'MENTAL PUSH'));
-});
-
-test('camera follows Jane and zooms during the mental cast, then eases back', () => {
-  const { a, v } = mentalPair();
-  a.x = 430; v.x = 650;
-  a.buildRig(1 / 60); v.buildRig(1 / 60);
-  assert.equal(a.startMental(v), true);
-  for (let i = 0; i < 20; i++) Game.update(1 / 60);
-  assert.ok(Game.camera.zoom > 1.05 && Game.camera.zoom < 1.2);
-  assert.ok(Game.camera.vignette > 0.5);
-  const oldCameraX = Game.camera.x;
-  a.x += 45;
-  for (let i = 0; i < 15; i++) Game.update(1 / 60);
-  assert.ok(Game.camera.x > oldCameraX, 'camera should follow the caster');
-  const interrupter = fighter(250, 1, 'saul');
-  interrupter.autopilot.update = () => {};
-  a.takeHit(interrupter, { dmg: 5, zone: 'head', pw: .4, stun: .3, kb: 80 });
-  const zoom = Game.camera.zoom;
-  Game.update(1 / 60);
-  assert.ok(Game.camera.zoom < zoom, 'camera must ease out after interruption');
-  for (let i = 0; i < 180; i++) Game.update(1 / 60);
-  assert.ok(Math.abs(Game.camera.zoom - 1) < .001);
-  assert.ok(Game.camera.vignette < .001);
-});
-
-test('interrupting before induction cancels the cast and consumes cooldown', () => {
-  const { a, v } = mentalPair();
-  assert.equal(a.startMental(v), true);
-  for (let i = 0; i < 5; i++) Game.update(1 / 60);
-  const enemy = fighter(200, 1, 'saul');
-  a.takeHit(enemy, { dmg: 5, zone: 'head', pw: .4, stun: .3, kb: 80 });
-  assert.equal(a.state, 'hit');
-  assert.ok(a.mentalCD > 0, 'an interrupted attempt still consumes cooldown');
-  assert.equal(v.mentalInfluence, false);
-});
-
-test('a launched victim under influence stays incapacitated until the stun ends', () => {
-  const { a, v } = mentalPair();
-  assert.equal(a.startMental(v), true);
-  advanceUntil(() => v.isMentalVictim());
-  const enemy = fighter(230, 1, 'saul'); enemy.autopilot.update = () => {};
-  v.takeHit(enemy, { dmg: 8, zone: 'head', pw: 1, launch: true, lvx: 200, lvy: 420 });
-  assert.equal(v.state, 'ragdoll');
-  for (let i = 0; i < 120; i++) Game.update(1 / 60);
-  assert.equal(v.state, 'ragdoll', 'launched victim cannot get up early');
-  advanceUntil(() => v.state === 'getup' || v.state === 'idle');
-});
-
-test('spoken lines vary across casts without changing within one cast', () => {
-  const phrases = new Set();
-  for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
-    seedRandom(seed * 997);
-    Game.init(); Game.autoSpawn = false; Game.fighters = [];
-    const { a, v } = mentalPair();
-    assert.equal(a.startMental(v), true);
-    advanceUntil(() => v.isMentalVictim());
-    assert.ok(a.mentalPhrase && a.mentalPhrase.length <= 24);
-    phrases.add(a.mentalPhrase);
-    const phrase = a.mentalPhrase;
-    for (let i = 0; i < 10; i++) Game.update(1 / 60);
-    assert.equal(a.mentalPhrase, phrase, 'the phrase must not cycle mid-cast');
-  }
-  assert.ok(phrases.size > 2, 'spoken lines should vary');
-});
-
-test('the AI uses mental influence with a cooldown at range', () => {
-  const a = fighter(330, 1, 'jane'), v = fighter(550, -1, 'walt');
-  Game.fighters = [a, v];
-  a.mentalCD = 0;
-  Math.random = () => .001;
-  a.autopilot.update(1 / 60, a, v, [a, v]);
-  assert.equal(a.state, 'mental');
-  assert.ok(a.mentalCD >= 12 && a.mentalCD <= 18);
-  // Cooldown blocks a second cast.
-  a.state = 'idle';
-  a.autopilot.update(1 / 60, a, v, [a, v]);
-  assert.notEqual(a.state, 'mental', 'cooldown must block immediate recast');
-});
-
-test('portrait sizing keeps the entire arena and both fighters visible', () => {
-  const oldWidth = innerWidth, oldHeight = innerHeight;
-  try {
-    globalThis.innerWidth = 390; globalThis.innerHeight = 844;
-    Game.resize();
-    assert.equal(Game.W, 800);
-    assert.ok(parseFloat(Game.cv.style.width) <= innerWidth + 0.01);
-    assert.ok(parseFloat(Game.cv.style.height) < innerHeight);
-    assert.ok(parseFloat(Game.cv.style.top) > 0, 'letterboxed arena is vertically centered');
-    const { a, v } = mentalPair();
-    v.x = a.x + 350; v.buildRig(1 / 60);
-    assert.equal(a.startMental(v), true);
-    advanceUntil(() => v.isMentalVictim());
-    const c = Game.camera;
-    const screenX = worldX => (worldX - c.x) * c.zoom + Game.W / 2;
-    assert.ok(screenX(a.x) > 0 && screenX(a.x) < Game.W);
-    assert.ok(screenX(v.x) > 0 && screenX(v.x) < Game.W);
-    assert.ok(Math.abs(Game.screenToWorldX(screenX(v.x)) - v.x) < 1e-8);
-    const texts = Game.textLayer.ctx.stats.texts;
-    texts.length = 0;
-    Game.render();
-    const label = texts.find(t => t.text === 'UNDER INFLUENCE');
-    assert.ok(label, `label not found; texts=${JSON.stringify(texts.map(t => ({text:t.text,font:t.font})))}`);
-    const fontWorld = Number(label.font.match(/(\d+(\.\d+)?)px/)[1]);
-    assert.ok(fontWorld * Game.displayScale * c.zoom >= 10.9, 'phone text stays readable');
-  } finally {
-    globalThis.innerWidth = oldWidth; globalThis.innerHeight = oldHeight;
-    Game.resize();
-  }
-});
-
-test('removing the target before induction cancels the cast', () => {
-  const { a, v } = mentalPair();
-  assert.equal(a.startMental(v), true);
-  Game.fighters = [a];
-  Game.update(1 / 60);
-  assert.equal(a.state, 'idle');
-  assert.equal(v.mentalInfluence, false);
-});
-
-test('seeded autonomous matches still induce mental influence alongside the new moves', () => {
-  let casts = 0, influences = 0;
-  for (const seed of [57, 83, 101]) {
-    seedRandom(seed);
-    Game.init();
-    let sawCast = false, sawInfluence = false;
-    for (let i = 0; i < 40 * 60; i++) {
-      Game.update(1 / 60);
-      if (Game.fighters.some(f => f.skin === 'jane' && f.state === 'mental')) sawCast = true;
-      if (Game.fighters.some(f => f.isMentalVictim())) sawInfluence = true;
-      if (sawCast && sawInfluence) break;
-    }
-    if (sawCast) casts++;
-    if (sawInfluence) influences++;
-  }
-  assert.ok(casts >= 2, 'Jane should choose the ability in unattended fights');
-  assert.ok(influences >= 2, 'opponents should be put under influence');
-});
-
-test('autonomous matches maintain finite physics and valid mental state', () => {
-  for (const seed of [11, 982451653]) {
-    seedRandom(seed);
-    Game.init();
-    for (let frame = 0; frame < 5400; frame++) {
-      Game.update(1 / 60);
-      if (frame % 60 === 0) Game.render();
-      for (const f of Game.fighters) {
-        assert.ok(Number.isFinite(f.x) && Number.isFinite(f.y) && Number.isFinite(f.hp), `invalid fighter at frame ${frame}`);
-        if (f.isMentalVictim()) {
-          assert.equal(f.state, 'mental_influence');
-        }
-        if (f.rag) for (const p of Object.values(f.rag.p)) {
-          assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y), `invalid ragdoll at frame ${frame}`);
-        }
-      }
-    }
-  }
-});
-
-test('mental induction safely releases either member of a choke or counterthrow', () => {
-  for (const dir of [1, -1]) for (const targetRole of ['holder', 'victim', 'counter-holder', 'counter-victim']) {
-    Game.fighters = [];
-    const { holder, victim } = heldPair({ dir, reverseOrder: dir < 0, holderSkin: 'negan' });
-    const caster = fighter(200, 1, 'jane');
-    disableAI(caster);
-    caster.mentalCD = 0;
-    const target = targetRole.endsWith('holder') ? holder : victim;
-    assert.equal(caster.startMental(target), true, `${dir} ${targetRole}: cast`);
-    tick(.8);
-    if (targetRole.startsWith('counter')) holder.beginCounter();
-    advanceUntil(() => target.isMentalVictim(), 90);
-    assert.equal(holder.chokeTarget, null, `${dir} ${targetRole}: holder link`);
-    assert.equal(victim.chokedBy, null, `${dir} ${targetRole}: victim link`);
-    const other = target === holder ? victim : holder;
-    assert.ok(!['choke', 'choked', 'counter_throw', 'counter_carried'].includes(other.state));
-    assert.equal(target.mentalCaster, caster);
-    tick(.25);
-    assert.equal(target.state, 'mental_influence');
-    assert.equal(holder.chokeTarget, null);
-    assert.equal(victim.chokedBy, null);
-  }
-});
-
-test('launch, laser, knockout or removal clean up both sides of mental influence', () => {
-  for (const cause of ['launch-victim', 'laser-victim', 'ko-victim', 'hit-caster', 'remove-caster', 'remove-victim']) {
-    Game.fighters = []; Game.koCount = 0;
-    const { a, v } = mentalPair();
-    assert.equal(a.startMental(v), true);
-    advanceUntil(() => v.isMentalVictim());
-    const enemy = fighter(150, 1, 'homelander'); disableAI(enemy);
-    if (cause === 'launch-victim') v.takeHit(enemy, launchPunch);
-    if (cause === 'laser-victim') v.takeLaser(enemy, v.rig.head, true);
-    if (cause === 'ko-victim') { v.hp = 3; v.takeHit(enemy, punch); }
-    if (cause === 'hit-caster') a.takeHit(enemy, punch);
-    if (cause === 'remove-caster') Game.fighters = Game.fighters.filter(f => f !== a);
-    if (cause === 'remove-victim') Game.fighters = Game.fighters.filter(f => f !== v);
-    Game.update(1 / 60);
-    assert.equal(a.mentalTarget, null, `${cause}: cast target`);
-    assert.notEqual(a.state, 'mental', `${cause}: caster state`);
-    assert.equal(v.mentalInfluence, false, `${cause}: victim flag`);
-    assert.equal(v.mentalCaster, null, `${cause}: victim caster`);
-    assert.notEqual(v.state, 'mental_influence', `${cause}: victim state`);
-    if (cause.endsWith('victim') && cause !== 'remove-victim') assert.equal(v.state, 'ragdoll', cause);
-  }
-});
-
-test('a completed mental wall impact stays stunned after the caster recovers', () => {
-  const { a, v } = mentalPair();
-  assert.equal(a.startMental(v), true);
-  advanceUntil(() => v.mentalPhase === 'stun');
-  tick(.6);
-  assert.equal(a.state, 'idle');
-  assert.equal(v.state, 'mental_influence');
-  assert.equal(v.mentalPhase, 'stun');
-  assert.equal(v.mentalCaster, null);
-  advanceUntil(() => v.state === 'idle', 300);
-  assert.equal(v.mentalInfluence, false);
-});
-
 test('upstream character weight affects walking speed and ragdoll launch', () => {
   const light = fighter(350, 1, 'saul'), heavy = fighter(620, -1, 'homelander');
   disableAI(light, heavy);
@@ -990,4 +639,529 @@ test('explicit character selection spawns the requested fighter', () => {
     assert.ok(selected.name.includes(label));
     assert.equal(Game.fighters.at(-1), selected);
   }
+});
+
+// Keep a living body on the ground while testing optional interactions; normal
+// recovery is tested separately with the real AI and timer.
+function sleepingBody(f, vx = 0, dt = 1 / 60) {
+  f.toRagdoll(vx, 220);
+  f.rag.recoverAt = 999;
+  advanceUntil(() => f.rag && f.rag.sleeping, 360, dt);
+  return f.rag;
+}
+function ragSnapshot(r) {
+  return Object.fromEntries(Object.entries(r.p).map(([k, p]) => [k, [p.x, p.y, p.px, p.py]]));
+}
+
+test('ragdolls follow the impulse, come to rest, and do not drift or fly across the arena', () => {
+  const zeroSides = new Set();
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) {
+    for (const vx of [-200, 0, 200]) for (const seed of [137, 274, 411, 548]) {
+      seedRandom(seed);
+      Game.fighters = [];
+      const f = fighter(480, dir, 'jane'); disableAI(f);
+      const random = Math.random;
+      if (vx === 0) Math.random = () => seed % 2 ? .1 : .9;
+      try { f.toRagdoll(vx, 220); } finally { Math.random = random; }
+      const r = f.rag, start = r.p.pel.x;
+      let x2 = start;
+      for (let i = 0; i < Math.round(8 / dt); i++) {
+        r.update(dt);
+        if (i === Math.round(2 / dt) - 1) x2 = r.p.pel.x;
+        for (const p of Object.values(r.p)) {
+          assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
+          assert.ok(p.y <= f.gy - p.r + 1e-6, 'joint must stay above the floor');
+          assert.ok(Math.hypot(p.x - p.px, p.y - p.py) * 120 <= 541, 'solver velocity stays bounded');
+        }
+      }
+      assert.equal(r.sleeping, true, `body should settle: ${dir}, ${vx}, ${dt}, ${seed}`);
+      assert.ok(Math.abs(r.p.pel.x - x2) < 5, 'a settled body must not crawl across the floor');
+      assert.ok(Math.abs(r.p.pel.x - start) < (vx ? 130 : 35), 'no spontaneous long-distance launch');
+      const headOffset = r.p.head.x - r.p.pel.x;
+      if (vx) assert.equal(Math.sign(headOffset), Math.sign(vx), 'head falls in the impulse direction');
+      else zeroSides.add(Math.sign(headOffset));
+    }
+  }
+  assert.deepEqual(zeroSides, new Set([-1, 1]), 'no-impulse falls can face either way');
+});
+
+test('a real laser hit wakes a sleeping ragdoll without reviving a corpse', () => {
+  const v = fighter(460, 1), a = fighter(700, -1, 'homelander'); disableAI(v, a);
+  const r = sleepingBody(v, -100);
+  const old = ragSnapshot(r);
+  v.takeLaser(a, { x: v.rig.head.x, y: v.rig.head.y - 6 }, false);
+  assert.equal(r.sleeping, false);
+  assert.notDeepEqual(ragSnapshot(r), old, 'a laser applies an actual impulse');
+  assert.ok(v.hp < 100);
+});
+
+test('ground kicks deal little damage, never move the sleeping victim, and stop at three until cooldown', () => {
+  const v = fighter(480, 1, 'walt'); disableAI(v);
+  const r = sleepingBody(v, -100), a = fighter(r.p.pel.x - 60, 1, 'jane'); disableAI(a);
+  const before = ragSnapshot(r), hp = v.hp;
+  for (let i = 0; i < 3; i++) {
+    assert.equal(a.startGroundKick(v), true);
+    let leanedBack = false, extended = false;
+    for (let frame = 0; frame < 60 && a.state === 'ground_kick'; frame++) {
+      Game.update(1 / 60);
+      if (a.state === 'ground_kick' && a.st > .1 && a.st < .3) leanedBack ||= a.cur.tl < -5;
+      if (a.state === 'ground_kick' && a.st >= .36) extended ||= a.cur.f1x > 45;
+      assert.deepEqual(ragSnapshot(r), before, 'the kick must not displace any Verlet point');
+    }
+    assert.ok(leanedBack && extended, 'kick has a wind-up and a visible extension');
+    assert.equal(v.hp, hp - 2 * (i + 1));
+    tick(.34);
+  }
+  assert.ok(a.groundKickCD >= 6);
+  assert.equal(a.startGroundKick(v), false, 'a fourth kick is prohibited');
+  tick(11);
+  assert.equal(a.groundKickCount, 0, 'the series resets after the cooldown');
+  assert.equal(a.startGroundKick(v), true);
+});
+
+test('ground kicks can be chosen autonomously, but are optional and stop if interrupted', () => {
+  const v = fighter(480, 1, 'walt'); disableAI(v);
+  const r = sleepingBody(v, 80), a = fighter(r.p.pel.x - 64, 1, 'jane');
+  const ai = a.autopilot;
+  const rand = Math.random;
+  try {
+    Math.random = () => .9;
+    ai.update(1 / 60, a, v, Game.fighters);
+    assert.equal(ai.groundTarget, null, 'a fighter may choose not to kick');
+    assert.equal(a.state, 'idle');
+    ai.downDecided = false;
+    Math.random = () => .1;
+    ai.update(1 / 60, a, v, Game.fighters);
+    assert.equal(a.state, 'ground_kick', 'the real controller can choose a kick');
+  } finally { Math.random = rand; }
+  const third = fighter(a.x - 85, 1, 'saul'); disableAI(a, v, third);
+  const hp = v.hp;
+  a.takeHit(third, punch);
+  assert.equal(a.state, 'hit');
+  assert.ok(a.groundKickCD > 0);
+  tick(1);
+  assert.equal(v.hp, hp, 'an interrupted wind-up cannot hit later');
+  assert.equal(a.groundKickTarget, null);
+});
+
+test('a grounded kick that KOs preserves the exact resting body position', () => {
+  const v = fighter(480, -1, 'negan'); disableAI(v);
+  const r = sleepingBody(v, 100), a = fighter(r.p.pel.x - 65, 1); disableAI(a);
+  v.hp = 2; const before = ragSnapshot(r);
+  assert.equal(a.startGroundKick(v), true);
+  advanceUntil(() => v.hp === 0, 90);
+  assert.equal(v.state, 'ragdoll');
+  assert.equal(v.rag, r);
+  assert.deepEqual(ragSnapshot(r), before);
+  assert.equal(Game.koCount, 1);
+  assert.equal(v.batLost, true);
+});
+
+test('strong front hits sometimes stagger backward before a knockout or temporary ragdoll', () => {
+  for (const lethal of [false, true]) for (const dir of [1, -1]) {
+    Game.fighters = [];
+    const v = fighter(480, dir), a = fighter(480 + dir * 90, -dir, 'negan'); disableAI(v, a);
+    if (lethal) v.hp = 5;
+    const x = v.x, rand = Math.random;
+    try { Math.random = () => 0; v.takeHit(a, launchPunch); } finally { Math.random = rand; }
+    assert.equal(v.state, 'stagger_fall');
+    assert.equal(v.rag, null);
+    assert.equal(v.hp <= 0, lethal);
+    tick(.35);
+    assert.ok((v.x - x) * dir < -8, 'the stagger steps away from the incoming hit');
+    advanceUntil(() => v.state === 'ragdoll', 240);
+    const r = v.rag;
+    for (let i = 0; i < 150; i++) r.update(1 / 60);
+    assert.ok((r.p.head.x - r.p.pel.x) * dir < -25, 'the delayed fall ends on the back');
+  }
+  Game.fighters = [];
+  const v = fighter(480, 1), a = fighter(570, -1); disableAI(v, a);
+  const rand = Math.random;
+  try { Math.random = () => .99; v.takeHit(a, launchPunch); } finally { Math.random = rand; }
+  assert.equal(v.state, 'ragdoll', 'the ordinary immediate fall remains possible');
+});
+
+test('tactical retreat is a rare decision, faces the threat, blocks attacks and avoids a fighter behind', () => {
+  const f = fighter(440, 1), o = fighter(600, -1); disableAI(o);
+  const ai = f.autopilot;
+  ai.attackWait = ai.farCD = ai.lampCheck = 1e6;
+  let retreats = 0;
+  seedRandom(7001);
+  for (let i = 0; i < 5000; i++) {
+    ai.setMode('engage'); ai.retreatCheck = 0;
+    ai.update(.001, f, o, Game.fighters);
+    if (ai.mode === 'tactical_retreat') retreats++;
+  }
+  assert.ok(retreats > 190 && retreats < 310, `expected roughly 5%, got ${retreats}/5000`);
+  ai.setMode('tactical_retreat'); ai.dodgeP = 0; ai.hopCD = 100; f.guardCD = 0;
+  const start = f.x;
+  for (let i = 0; i < 20; i++) {
+    ai.update(1 / 60, f, o, Game.fighters); f.update(1 / 60, o, Game.fighters);
+    assert.equal(f.dir, 1, 'the backstep must not turn its back');
+  }
+  assert.ok(f.x < start - 10);
+  o.x = f.x + 120; o.buildRig(1 / 60);
+  o.startAttack(0); o.st = .02; ai.setMode('tactical_retreat');
+  ai.update(1 / 60, f, o, Game.fighters);
+  assert.equal(f.state, 'guard', 'an incoming blow can be actively blocked while retreating');
+  f.state = 'idle'; f.guardCD = 0; o.state = 'idle';
+  const behind = fighter(f.x - 80, 1); disableAI(behind);
+  ai.setMode('tactical_retreat'); ai.update(1 / 60, f, o, Game.fighters);
+  assert.equal(ai.mode, 'engage', 'do not retreat into another fighter');
+  assert.equal(f.dir, 1);
+});
+
+test('face-down quick push-up can become a stumble-run halfway through recovery', () => {
+  const f = fighter(470, 1), o = fighter(740, -1); disableAI(f, o);
+  const r = sleepingBody(f, 200);
+  assert.equal(f.quickGetupKind(), 'push');
+  assert.ok(r.p.head.x > r.p.pel.x);
+  f.startGetup('push', true, o);
+  advanceUntil(() => f.state === 'scramble', 100);
+  const start = f.x;
+  assert.equal(f.dir, -1);
+  tick(.35);
+  assert.ok(f.x < start - 35, 'the halfway escape moves away from the opponent');
+  assert.ok(f.cur.tl > 30, 'the escape remains hunched and awkward');
+  advanceUntil(() => f.state === 'idle', 120);
+});
+
+test('a face-up kip-up needs a tucked leg and knocks over a nearby unguarded enemy', () => {
+  for (const guarded of [false, true]) {
+    Game.fighters = [];
+    const f = fighter(480, 1); disableAI(f);
+    const r = sleepingBody(f, -200);
+    assert.equal(f.quickGetupKind(), 'kip');
+    const o = fighter(r.p.pel.x + 70, -1, 'walt'); disableAI(o);
+    if (guarded) assert.equal(o.startGuard(f), true);
+    f.startGetup('kip', false, o);
+    advanceUntil(() => f.quickBumpDone, 100);
+    if (guarded) {
+      assert.equal(o.hp, 100);
+      assert.equal(o.state, 'guard');
+    } else {
+      assert.equal(o.hp, 97);
+      assert.equal(o.state, 'ragdoll');
+    }
+    advanceUntil(() => f.state === 'idle', 120);
+  }
+});
+
+test('the AI makes a single optional quick-recovery decision for each settled knockdown', () => {
+  const f = fighter(480, 1), o = fighter(750, -1); disableAI(o);
+  const ai = f.autopilot;
+  sleepingBody(f, 200);
+  assert.equal(f.quickGetupKind(), 'push');
+  const rand = Math.random;
+  try { Math.random = () => 0; ai.update(1 / 60, f, o, Game.fighters); } finally { Math.random = rand; }
+  assert.equal(f.state, 'quick_getup');
+  assert.equal(f.quickKind, 'push');
+  assert.equal(f.quickEscape, true);
+});
+
+function hangingPair({ index = 1, dir = 1, skin = 'jane' } = {}) {
+  Game.init(); Game.autoSpawn = false; Game.fighters = [];
+  const lamp = Game.lamps[index];
+  const f = fighter(lamp.x, dir, skin);
+  const o = fighter(Math.max(80, Math.min(Game.W - 80, lamp.x + (dir > 0 ? 240 : -240))), -dir, 'walt');
+  disableAI(f, o);
+  assert.equal(f.startLampJump(lamp), true);
+  advanceUntil(() => f.state === 'lamp_hang', 100);
+  f.lampAction = 'hide'; f.lampStamina = 9; f.lampBreakAt = Infinity;
+  tick(.15);
+  return { f, o, lamp };
+}
+
+test('lamps are randomly high, have offscreen ropes, and survive resizing without resetting the map cap', () => {
+  const heights = new Set();
+  for (let i = 0; i < 5; i++) {
+    seedRandom(1000 + i); Game.init(); Game.autoSpawn = false;
+    assert.equal(Game.lamps.length, 3);
+    for (const lamp of Game.lamps) {
+      heights.add(Math.round(lamp.y));
+      assert.ok(lamp.y > 0 && lamp.y <= Game.H / 2, 'attached lamp remains above mid-screen');
+      assert.ok(lamp.anchorY < 0 && lamp.length > lamp.y, 'rope continues beyond the top edge');
+    }
+  }
+  assert.ok(heights.size > 3, 'heights are not fixed decorations');
+  const [a, b, c] = Game.lamps, oldWidth = innerWidth, oldHeight = innerHeight;
+  assert.equal(Game.detachLamp(a), true);
+  assert.equal(Game.detachLamp(b), true);
+  assert.equal(Game.detachLamp(c), false, 'no more than two lamps can detach');
+  try {
+    globalThis.innerWidth = 390; globalThis.innerHeight = 844; Game.resize();
+    assert.deepEqual(Game.lamps, [a, b, c]);
+    assert.equal(Game.detachedLamps, 2);
+    assert.equal(Game.detachLamp(c), false, 'resizing must not reset the cap');
+    assert.ok(c.y <= Game.H / 2);
+    Game.render();
+    Game.init();
+    assert.equal(Game.detachedLamps, 0, 'a new map gets its own cap');
+    assert.equal(Game.lamps.filter(l => l.detached).length, 0);
+  } finally {
+    globalThis.innerWidth = oldWidth; globalThis.innerHeight = oldHeight; Game.resize();
+  }
+});
+
+test('an undetached lamp swings as a damped pendulum and never falls below mid-screen', () => {
+  const lamp = Game.lamps[1];
+  lamp.theta = 0; lamp.omega = .8;
+  const initial = lamp.omega ** 2, startX = lamp.x;
+  let maxTravel = 0;
+  for (let i = 0; i < 600; i++) {
+    lamp.update(1 / 60, Game);
+    maxTravel = Math.max(maxTravel, Math.abs(lamp.x - startX));
+    assert.ok(lamp.y <= Game.H / 2);
+  }
+  const energy = lamp.omega ** 2 + 1800 / lamp.length * lamp.theta ** 2;
+  assert.ok(maxTravel > 15, 'the lamp has visible inertia');
+  assert.ok(energy < initial * .03, `swing should damp out: ${energy}`);
+});
+
+test('all heroes can jump to a reachable lamp and hold the moving rope with one or two hands', () => {
+  for (const skin of ['jane', 'negan', 'homelander']) for (const dir of [1, -1]) {
+    const { f, lamp } = hangingPair({ skin, dir });
+    assert.equal(lamp.occupant, f);
+    assert.ok(f.y > 0 && f.lampStamina > 0);
+    for (const style of ['near', 'far', 'two', 'switch']) {
+      f.lampGripStyle = style; tick(.05);
+      const p = lamp.point(f.lampClimb);
+      const dn = distance(f.rig.wN, p), df = distance(f.rig.wF, p);
+      if (style === 'near' || style === 'two') assert.ok(dn < 6, `${skin} ${dir} ${style}: near hand`);
+      if (style === 'far' || style === 'two') assert.ok(df < 6, `${skin} ${dir} ${style}: far hand`);
+      if (style === 'switch') assert.ok(Math.min(dn, df) < 6, 'an alternating hand still grips the rope');
+      Game.render();
+    }
+    assert.ok(Math.abs(lamp.theta) > .001 || Math.abs(lamp.omega) > .001, 'grabbing sets the lamp in motion');
+  }
+});
+
+test('pull-up, rope climbing, finite stamina and a deliberate dive all use the live lamp position', () => {
+  {
+    const { f, lamp } = hangingPair();
+    f.lampGripStyle = 'two'; f.lampAction = 'climb';
+    tick(1.9);
+    assert.ok(f.lampClimb > 30, 'the fighter can climb a short distance');
+    assert.ok(distance(f.rig.wN, lamp.point(f.lampClimb)) < 6);
+    f.lampAction = 'pullup'; f.st = .5; f.lampClimb = 0;
+    tick(.1);
+    const gap = f.rig.sh.y - lamp.point(f.lampClimb).y;
+    assert.ok(gap < 46, `pull-up should bend the arms and lift the body, got ${gap}`);
+    f.lampAction = 'hide'; f.lampStamina = .05;
+    tick(.2);
+    assert.notEqual(f.state, 'lamp_hang', 'stamina cannot last forever');
+    assert.equal(lamp.occupant, null);
+  }
+  {
+    const { f, o, lamp } = hangingPair();
+    o.x = f.x + 125; o.buildRig(1 / 60);
+    f.lampAction = 'dive'; f.lampDiveAt = .1; f.st = 0;
+    advanceUntil(() => f.state === 'air' && f.dive, 60);
+    assert.equal(lamp.occupant, null);
+    assert.ok(f.vx > 0, 'the fighter jumps toward the opponent');
+    advanceUntil(() => o.hp < 100 || !f.dive, 120);
+    assert.ok(o.hp < 100, 'a well-timed lamp dive can hit the opponent');
+  }
+});
+
+test('a hit, laser or KO during a lamp jump or hang releases the rope and starts airborne ragdoll', () => {
+  for (const phase of ['jump', 'hang']) for (const attack of ['punch', 'laser', 'ko']) {
+    let f, o, lamp;
+    if (phase === 'hang') ({ f, o, lamp } = hangingPair());
+    else {
+      Game.fighters = [];
+      lamp = Game.lamps.reduce((a, b) => a.y < b.y ? a : b);
+      f = fighter(lamp.x, 1); o = fighter(lamp.x + 100, -1, 'homelander'); disableAI(f, o);
+      assert.equal(f.startLampJump(lamp), true);
+      tick(1 / 60);
+      assert.equal(f.state, 'lamp_jump');
+    }
+    const p = { ...f.rig.pel };
+    if (attack === 'ko') f.hp = 1;
+    if (attack === 'laser') f.takeLaser(o, { x: f.rig.head.x, y: f.rig.head.y - 6 }, true);
+    else f.takeHit(o, punch);
+    assert.equal(f.state, 'ragdoll', `${phase} ${attack}`);
+    assert.equal(f.lampRef, null);
+    assert.equal(f.lampGoal, null);
+    assert.equal(lamp.occupant, null);
+    assert.ok(distance(f.rag.p.pel, p) < 1, 'fall starts from the current airborne pose');
+  }
+});
+
+test('another fighter can pull a hanging opponent down; interruption cancels the grab', () => {
+  {
+    const { f, o, lamp } = hangingPair();
+    o.x = f.x + 65; o.buildRig(1 / 60);
+    assert.equal(o.startLampPull(f), true);
+    const initialOmega = lamp.omega;
+    advanceUntil(() => f.state === 'ragdoll', 100);
+    assert.equal(lamp.occupant, null);
+    assert.equal(f.lampRef, null);
+    assert.equal(f.fallDamage?.source, o);
+    assert.ok(f.rag.p.pel.y - f.rag.p.pel.py > 0, 'the pull initially accelerates downward');
+    assert.notEqual(lamp.omega, initialOmega, 'the tug adds swing to the freed lamp');
+    f.rag.recoverAt = 999;
+    advanceUntil(() => f.fallDamage === null, 180);
+    assert.equal(f.hp, 97, 'landing applies the small pull-down damage once');
+  }
+  {
+    const { f, o, lamp } = hangingPair();
+    o.x = f.x + 65; o.buildRig(1 / 60);
+    const third = fighter(o.x + 85, -1, 'saul'); disableAI(third);
+    assert.equal(o.startLampPull(f), true);
+    o.takeHit(third, punch);
+    assert.equal(o.state, 'hit');
+    assert.equal(o.lampPullTarget, null);
+    tick(.6);
+    assert.equal(f.state, 'lamp_hang');
+    assert.equal(lamp.occupant, f);
+  }
+});
+
+test('the AI can ignore, try to pull, or attempt to strike a hanging opponent', () => {
+  for (const [roll, expected] of [[.1, 'ignore'], [.5, 'pull'], [.9, 'strike']]) {
+    const { f, o } = hangingPair();
+    o.x = f.x + 65; o.buildRig(1 / 60); o.guardCD = 99; o.boxCD = 99;
+    // Restore the real autonomous decision function for this fighter.
+    delete o.autopilot.update;
+    const ai = o.autopilot;
+    ai.attackWait = 0; ai.farCD = ai.lampCheck = ai.retreatCheck = 100;
+    const rand = Math.random;
+    try { Math.random = () => roll; ai.update(1 / 60, o, f, Game.fighters); } finally { Math.random = rand; }
+    assert.equal(ai.hangResponse, expected);
+    if (expected === 'ignore') assert.equal(o.ctrl.punch, false);
+    if (expected === 'pull') assert.equal(o.state, 'lamp_pull');
+    if (expected === 'strike') assert.equal(o.ctrl.punch, true);
+  }
+});
+
+test('detaching an occupied lamp drops its rider and removing a lamp cannot leave a dangling reference', () => {
+  {
+    const { f, lamp } = hangingPair();
+    assert.equal(Game.detachLamp(lamp), true);
+    assert.equal(f.state, 'ragdoll');
+    assert.equal(f.lampRef, null);
+    assert.equal(lamp.occupant, null);
+    assert.equal(Game.detachedLamps, 1);
+  }
+  {
+    const { f, lamp } = hangingPair();
+    Game.lamps.splice(Game.lamps.indexOf(lamp), 1);
+    tick(.1);
+    assert.notEqual(f.state, 'lamp_hang');
+    assert.equal(f.lampRef, null);
+    assert.equal(lamp.occupant, null);
+  }
+});
+
+test('the AI rarely decides to approach and jump for an available lamp', () => {
+  const lamp = Game.lamps[1], f = fighter(lamp.x - 65, 1), o = fighter(lamp.x + 260, -1);
+  disableAI(o);
+  const ai = f.autopilot;
+  ai.attackWait = ai.farCD = ai.retreatCheck = 100; ai.lampCheck = 0;
+  const rand = Math.random;
+  try { Math.random = () => .9; ai.update(1 / 60, f, o, Game.fighters); } finally { Math.random = rand; }
+  assert.equal(ai.mode, 'engage', 'choosing a lamp is not mandatory');
+  ai.lampCheck = 0;
+  try { Math.random = () => 0; ai.update(1 / 60, f, o, Game.fighters); } finally { Math.random = rand; }
+  assert.equal(ai.mode, 'lamp_approach');
+  assert.equal(ai.lampTarget, lamp);
+  advanceUntil(() => f.state === 'lamp_hang', 240);
+  assert.equal(lamp.occupant, f);
+  assert.ok(ai.lampCheck > 10, 'the AI cannot immediately spam a new attempt');
+});
+
+test('lamp detachment is substantially rarer than grabbing', () => {
+  const lamp = Game.lamps[1], f = fighter(lamp.x, 1);
+  seedRandom(43210);
+  let breakRolls = 0;
+  for (let i = 0; i < 10000; i++) {
+    f.state = 'lamp_jump'; f.lampGoal = lamp; f.vx = 0; lamp.occupant = null; lamp.omega = 0;
+    assert.equal(f.grabLamp(lamp), true);
+    if (Number.isFinite(f.lampBreakAt)) breakRolls++;
+    f.clearLamp();
+  }
+  assert.ok(breakRolls > 145 && breakRolls < 255, `expected roughly 2%, got ${breakRolls}/10000`);
+});
+
+test('seeded unattended fights use the optional actions and keep physics and lamp links valid', () => {
+  const counts = { ground: 0, impact: 0, stagger: 0, push: 0, kip: 0, scramble: 0,
+    jump: 0, grab: 0, pull: 0, dive: 0, retreat: 0 };
+  const names = ['startGroundKick', 'hitGroundTarget', 'startStagger', 'startGetup',
+    'startLampJump', 'grabLamp', 'startLampPull', 'releaseLamp'];
+  const original = Object.fromEntries(names.map(name => [name, Fighter.prototype[name]]));
+  try {
+    for (const name of names) Fighter.prototype[name] = function (...args) {
+      const hp = this.groundKickTarget?.hp;
+      const result = original[name].apply(this, args);
+      if (name === 'startGroundKick' && result) counts.ground++;
+      if (name === 'hitGroundTarget' && this.groundKickTarget && this.groundKickTarget.hp < hp) counts.impact++;
+      if (name === 'startStagger' && this.state === 'stagger_fall') counts.stagger++;
+      if (name === 'startGetup' && (args[0] === 'push' || args[0] === 'kip')) counts[args[0]]++;
+      if (name === 'startLampJump' && result) counts.jump++;
+      if (name === 'grabLamp' && result) counts.grab++;
+      if (name === 'startLampPull' && result) counts.pull++;
+      if (name === 'releaseLamp' && args[0] === 'dive') counts.dive++;
+      return result;
+    };
+    for (const seed of [19, 31, 57, 83, 101, 133, 177, 251]) {
+      seedRandom(seed); Game.init();
+      const previousState = new Map(), previousMode = new Map();
+      for (let frame = 0; frame < 240 * 60; frame++) {
+        Game.update(1 / 60);
+        assert.ok(Game.detachedLamps <= 2);
+        for (const f of Game.fighters) {
+          assert.ok(Number.isFinite(f.x) && Number.isFinite(f.y) && Number.isFinite(f.hp));
+          if (f.state === 'lamp_hang') {
+            assert.ok(f.lampRef && Game.lamps.includes(f.lampRef));
+            assert.equal(f.lampRef.occupant, f);
+          }
+          if (f.rag) for (const p of Object.values(f.rag.p)) {
+            assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
+          }
+          if (f.state === 'scramble' && previousState.get(f.id) !== 'scramble') counts.scramble++;
+          if (f.autopilot.mode === 'tactical_retreat' && previousMode.get(f.id) !== 'tactical_retreat') counts.retreat++;
+          previousState.set(f.id, f.state); previousMode.set(f.id, f.autopilot.mode);
+        }
+        for (const lamp of Game.lamps) {
+          if (!lamp.detached) assert.ok(lamp.y <= Game.H / 2);
+          if (lamp.occupant) assert.equal(lamp.occupant.lampRef, lamp);
+        }
+      }
+    }
+    console.log('optional autonomous events:', counts);
+    for (const [name, count] of Object.entries(counts)) assert.ok(count > 0, `${name} never happened autonomously`);
+    assert.ok(counts.jump < 35, 'lamp attempts stay rare over many complete matches');
+    assert.ok(counts.ground < 150, 'ground kicks are not the default behavior');
+  } finally {
+    for (const name of names) Fighter.prototype[name] = original[name];
+  }
+});
+
+test('a fighter can run up to a distant downed opponent before choosing a grounded kick', () => {
+  const v = fighter(500, -1, 'walt'); disableAI(v);
+  const r = sleepingBody(v, 0), a = fighter(100, 1, 'jane');
+  const ai = a.autopilot, start = a.x, random = Math.random;
+  try { Math.random = () => .1; ai.update(1 / 60, a, v, Game.fighters); } finally { Math.random = random; }
+  assert.equal(ai.groundTarget, v);
+  let ran = false;
+  for (let i = 0; i < 360 && a.state !== 'ground_kick'; i++) {
+    Game.update(1 / 60); ran ||= a.state === 'run';
+  }
+  assert.ok(ran, 'the attacker chose to run while far away');
+  assert.equal(a.state, 'ground_kick');
+  assert.ok(a.x > start + 150 && Math.abs(a.x - r.p.pel.x) < 78);
+});
+
+test('a grounded kick misses cleanly if the victim starts getting up before impact', () => {
+  const v = fighter(480, 1, 'walt'); disableAI(v);
+  const r = sleepingBody(v, -100), a = fighter(r.p.pel.x - 60, 1); disableAI(a);
+  assert.equal(a.startGroundKick(v), true);
+  tick(.12);
+  const hp = v.hp;
+  v.startGetup();
+  tick(.8);
+  assert.equal(v.hp, hp);
+  assert.equal(a.state, 'idle');
+  assert.equal(a.groundKickTarget, null);
 });

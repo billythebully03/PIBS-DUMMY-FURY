@@ -4,5 +4,5 @@
 
 export const SOUND_NAMES = [
   'hit', 'bat', 'splat', 'whoosh', 'hop', 'thud', 'stomp', 'ui', 'ko', 'spawn',
-  'laserCharge', 'laser', 'mental', 'wallSlam', 'shot',
+  'laserCharge', 'laser', 'shot',
 ] as const;
