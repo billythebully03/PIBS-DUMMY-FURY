@@ -2347,7 +2347,8 @@ test('new: local face names and Chester selection, guitar impacts, breakage cap 
   assert.deepEqual(HEAD_URL, {
     jane: '/faces/patrick.png', negan: '/faces/negan.png', chester: '/faces/chester.png',
     homelander: '/faces/homelander.png', saul: '/faces/saul.png', walt: '/faces/walt.png',
-    tubtrooper: '/faces/stormtrooper.png',
+    tubtrooper: '/faces/stormtrooper.png', hector: '/faces/hector.png',
+    salamanca: '/faces/salamanca.png', salamanca_axe: '/faces/salamanca.png',
   });
   assert.match(await readFile(new URL('../public/faces/README.md', import.meta.url), 'utf8'), /chester\.png/);
   const selected = Game.spawnFighter(360, 1, 0, 'chester');
@@ -3300,6 +3301,8 @@ test('bridge: a lone fighter autonomously reaches a rope and descends safely at 
     const f = fighter(110, 1, 'walt');
     f.onBridge = true; f.gy = BRIDGE_Y; f.buildRig(0);
     f.autopilot.bridgeDescentWait = .1; f.autopilot.wanderT = 10;
+    // Isolate uninterrupted descent; deliberate reversals have separate tests.
+    f.autopilot.reconsiderRope = () => {};
     const hp = f.hp; let hanging = 0, previousFoot = BRIDGE_Y, landed = false;
     for (let i = 0; i < Math.ceil(20 / dt); i++) {
       Game.update(dt);
@@ -3449,4 +3452,582 @@ test('sandbox: pause freezes physics, visual clocks, sound and input; cleanup st
     gameCanvas.classList = saved.classList; globalThis.requestAnimationFrame = saved.raf;
     globalThis.cancelAnimationFrame = saved.cancel; globalThis.removeEventListener = saved.removeWindow;
   }
+});
+
+test('rope: AI can reverse either way continuously, without losing its grip or health', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const initial of ['climb', 'descend']) {
+    Game.init({ sandbox: true });
+    const lamp = Game.lamps[1], f = fighter(lamp.x, 1, 'jane');
+    const originalUpdate = f.autopilot.update;
+    disableAI(f);
+    assert.equal(f.startLampJump(lamp), true);
+    advanceUntil(() => f.state === 'lamp_hang', Math.ceil(3 / dt), dt);
+    f.lampAction = 'climb'; f.lampStamina = 20; f.lampBreakAt = Infinity; f.tackleCheck = Infinity;
+    advanceUntil(() => f.lampClimb > 390, Math.ceil(4 / dt), dt);
+    f.lampAction = initial;
+    const ai = f.autopilot; ai.update = originalUpdate;
+    ai.ropeDecisionStamp = f.lampHangStamp; ai.ropeReversals = 0; ai.ropeDecisionT = 0;
+    f.ambientRandom = () => 0;
+    const before = f.gy - f.y, hp = f.hp;
+    Game.update(dt);
+    assert.equal(f.lampAction, initial === 'climb' ? 'descend' : 'climb');
+    const after = f.gy - f.y;
+    assert.ok(Math.abs(after - before) < 15, 'reversal does not teleport');
+    assert.ok((after - before) * (initial === 'climb' ? 1 : -1) > 0, 'the rider actually changes direction');
+    assert.ok(distance(f.rig.wN, lamp.point(30 + f.lampClimb)) < 7);
+    assert.equal(f.hp, hp); assert.ok(lamp.riders.has(f));
+    Game.render();
+  }
+});
+
+test('rope: a reversal cannot create converging riders but can let them move apart', () => {
+  Game.init({ sandbox: true });
+  const lamp = Game.lamps[1], lower = fighter(lamp.x, 1); disableAI(lower);
+  assert.equal(lower.startLampJump(lamp), true);
+  advanceUntil(() => lower.state === 'lamp_hang', 180);
+  lower.lampAction = 'climb'; lower.lampStamina = 20; lower.lampBreakAt = Infinity;
+  advanceUntil(() => lower.lampClimb > 160, 180);
+  const upper = fighter(lamp.x, 1); disableAI(upper);
+  assert.equal(upper.startLampJump(lamp), true);
+  advanceUntil(() => upper.state === 'lamp_hang', 180);
+  // Names describe positions after the second person has joined below.
+  const high = lower, low = upper;
+  high.lampAction = 'climb'; low.lampAction = 'climb';
+  assert.equal(high.reconsiderLampDirection('descend'), false, 'would move into the lower ascending rider');
+  assert.equal(low.reconsiderLampDirection('descend'), true, 'the lower rider can move away');
+  assert.equal(high.reconsiderLampDirection('descend'), true, 'following is safe after the other rider turns');
+  assert.equal(low.reconsiderLampDirection('climb'), false, 'would create a head-on encounter');
+  for (let i = 0; i < 75 && low.state === 'lamp_hang'; i++) {
+    Game.update(1 / 60);
+    if (low.state === 'lamp_hang') assert.ok(high.lampClimb - low.lampClimb >= 89);
+  }
+});
+
+test('bridge: a hidden approaching rope climber can be watched, guarded against, ignored or avoided', () => {
+  for (const [roll, response] of [[.1, 'ignore'], [.5, 'watch'], [.8, 'guard'], [.97, 'retreat']]) {
+    Game.init({ sandbox: true });
+    const lamp = Game.lamps[1], rider = fighter(lamp.x, 1, 'jane'); disableAI(rider);
+    assert.equal(rider.startLampJump(lamp), true); advanceUntil(() => rider.state === 'lamp_hang', 180);
+    rider.lampAction = 'climb'; rider.lampStamina = 20; rider.lampBreakAt = Infinity; rider.tackleCheck = Infinity;
+    advanceUntil(() => rider.gy - rider.y < BRIDGE_Y + 340, 600);
+    const upper = fighter(rider.x - 150, 1, 'walt');
+    upper.onBridge = true; upper.gy = BRIDGE_Y; upper.buildRig(0);
+    const ai = upper.autopilot; ai.bridgeDescentWait = 99; ai.wanderT = 99; ai.wanderAction = 'stand';
+    upper.ambientRandom = () => roll;
+    assert.equal(Game.findBestOpponent(upper), null, 'awareness does not make the climber a target');
+    ai.update(1 / 60, upper, null, [upper]);
+    if (response === 'ignore') {
+      assert.equal(ai.bridgeAlert, null); assert.equal(upper.ctrl.mx, 0);
+    } else {
+      assert.equal(ai.bridgeAlert?.response, response);
+      if (response === 'guard') assert.equal(upper.state, 'guard');
+      else if (response === 'retreat') assert.equal(upper.ctrl.mx, -1);
+      else assert.equal(upper.ctrl.mx, 0, 'watching does not approach the rope');
+    }
+    assert.notEqual(upper.state, 'attack');
+  }
+});
+
+test('guard: even a stationary guard breathes while keeping both hands up', () => {
+  const f = fighter(400, 1), enemy = fighter(580, -1); disableAI(f, enemy);
+  assert.ok(f.startGuard(enemy)); f.guardMoves = false; f.guardDur = 3;
+  tick(.35); const first = { head: { ...f.rig.head }, hand: { ...f.rig.wN }, x: f.x };
+  tick(.55);
+  assert.equal(f.state, 'guard'); assert.ok(Math.abs(f.x - first.x) < .01);
+  assert.ok(distance(first.head, f.rig.head) > .3, 'head and torso breathe');
+  assert.ok(distance(first.hand, f.rig.wN) > .3, 'hands follow breathing');
+  assert.ok((f.rig.wN.x - f.rig.head.x) * f.dir > 30, 'the guard remains raised');
+});
+
+test('roll: real somersaults from standing and running can lead to a straight rear kick or a choke', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1])
+    for (const running of [false, true]) for (const follow of ['kick', 'choke']) {
+      Game.init({ sandbox: true });
+      const a = fighter(480 - dir * 130, dir, 'jane'), v = fighter(480, -dir, 'walt');
+      disableAI(a, v); v.ctrl.noFace = true;
+      if (running) { a.state = 'run'; a.vx = dir * 400; }
+      assert.ok(a.startTacticalRoll(v, running, follow));
+      let inverted = false, prevX = a.x;
+      for (let i = 0; i < Math.ceil(1.4 / dt) && a.state === 'tactical_roll'; i++) {
+        Game.update(dt);
+        assert.ok(Math.abs(a.x - prevX) <= 760 * dt + 2, 'roll movement is continuous');
+        prevX = a.x;
+        if (a.state === 'tactical_roll') {
+          if (a.rig.head.y > a.rig.pel.y) inverted = true;
+          for (const k of ['head', 'pel', 'wN', 'wF', 'kN', 'kF', 'aN', 'aF'])
+            assert.ok(a.rig[k].y <= a.gy + .01, `${k} stays above the floor`);
+          const angle = Math.atan2(a.rig.head.y - a.rig.neck.y, a.rig.head.x - a.rig.neck.x) + Math.PI / 2;
+          const height = 44, aspect = Math.max(.55, Math.min(1.35, skinHeads[a.skin]?.aspect || .8));
+          const portraitBottom = a.rig.head.y + Math.abs(Math.sin(angle)) * height * aspect / 2 +
+            Math.max((-height * .6 - 1) * Math.cos(angle), (height * .4 - 1) * Math.cos(angle));
+          assert.ok(portraitBottom <= a.gy + .01, 'the rotated portrait also stays above the floor');
+        }
+      }
+      assert.ok(inverted, 'body actually rotates upside down during the roll');
+      if (follow === 'choke') {
+        assert.equal(a.state, 'choke'); assert.equal(v.state, 'choked');
+        assert.equal(a.chokeTarget, v); assert.equal(v.chokedBy, a);
+      } else {
+        assert.equal(a.state, 'rear_kick'); assert.equal(a.dir, v.dir);
+        a.st = .25; a.buildRig(0);
+        assert.ok(kneeAngle(a.rig.pel, a.rig.kN, a.rig.aN) > 145, 'kicking leg is nearly straight');
+        // Rewind to just before impact so the real update applies it once.
+        a.st = .25 - dt / 2; const hp = v.hp; Game.update(dt);
+        assert.ok(v.hp < hp); assert.equal(v.state, 'push_stagger');
+        assert.equal(v.rearPush, true); assert.equal(v.staggerDir, v.dir);
+        const x = v.x; tick(.25, dt);
+        assert.ok((v.x - x) * v.staggerDir > 10, 'victim stumbles forward');
+      }
+      Game.render();
+    }
+});
+
+test('roll: rear kick usually causes a forward stumble, rarely a fall, and never hits after interruption', () => {
+  let falls = 0;
+  for (let i = 0; i < 100; i++) {
+    seedRandom(i + 321); Game.init({ sandbox: true });
+    const a = fighter(420, 1), v = fighter(500, 1); disableAI(a, v);
+    assert.ok(v.receiveRearKick(a)); if (v.shoveWillFall) falls++;
+  }
+  assert.ok(falls > 1 && falls < 25, `rare falls: ${falls}/100`);
+  Game.init({ sandbox: true });
+  const a = fighter(350, 1), v = fighter(480, -1); disableAI(a, v); v.ctrl.noFace = true;
+  assert.ok(a.startTacticalRoll(v, false, 'kick'));
+  advanceUntil(() => a.state === 'rear_kick', 120);
+  const hp = v.hp; a.takeHit(v, punch); tick(.7);
+  assert.equal(v.hp, hp, 'an interrupted kick never lands later');
+});
+
+test('roll: autonomous fighters use both entries and can actually land follow-ups', () => {
+  const counts = { running: 0, standing: 0, kick: 0, choke: 0 };
+  const roll = Fighter.prototype.startTacticalRoll;
+  const kick = Fighter.prototype.receiveRearKick;
+  const choke = Fighter.prototype.startChoke;
+  try {
+    Fighter.prototype.startTacticalRoll = function (v, running, ...rest) {
+      const ok = roll.call(this, v, running, ...rest);
+      if (ok) counts[running ? 'running' : 'standing']++;
+      return ok;
+    };
+    Fighter.prototype.receiveRearKick = function (...args) {
+      const ok = kick.apply(this, args); if (ok) counts.kick++; return ok;
+    };
+    Fighter.prototype.startChoke = function (...args) {
+      const fromRoll = this.state === 'tactical_roll';
+      const ok = choke.apply(this, args); if (ok && fromRoll) counts.choke++; return ok;
+    };
+    for (const seed of [9, 23, 41, 77, 109, 151, 209, 277]) {
+      seedRandom(seed); Game.init();
+      for (let i = 0; i < 100 * 60; i++) Game.update(1 / 60);
+    }
+  } finally {
+    Fighter.prototype.startTacticalRoll = roll;
+    Fighter.prototype.receiveRearKick = kick;
+    Fighter.prototype.startChoke = choke;
+  }
+  console.log('autonomous roll events:', counts);
+  for (const [name, count] of Object.entries(counts)) assert.ok(count > 0, `${name} happens in real play`);
+  assert.ok(counts.running > counts.standing, 'running entries are more common');
+});
+
+test('Hector: selectable portrait, seated rig and detailed wheelchair render on both floors', async () => {
+  assert.equal(HEAD_URL.hector, '/faces/hector.png');
+  assert.ok(SK_.hector?.chest && SK_.hector?.shinF);
+  const png = await readFile(new URL('../public/faces/hector.png', import.meta.url));
+  assert.equal(png.subarray(1, 4).toString(), 'PNG');
+  for (const onBridge of [false, true]) {
+    Game.init({ sandbox: true });
+    const f = Game.spawnFighter(450, 1, 0, 'hector', { onBridge });
+    disableAI(f); advanceUntil(() => f.state === 'idle', 600);
+    assert.equal(f.skin, 'hector'); assert.ok(f.chair?.attached);
+    assert.equal(f.chair.floor, onBridge ? BRIDGE_Y : Game.gy);
+    assert.ok(f.rig.pel.y > f.gy - 75 && f.rig.pel.y < f.gy - 45, 'hips sit at chair-seat height');
+    assert.ok((f.rig.kN.x - f.rig.pel.x) * f.dir > 20, 'knees stay forward in a sitting position');
+    assert.ok(f.rig.aN.y > f.rig.kN.y + 20, 'lower legs rest toward the footplates');
+    const arcs = Game.bodyLayer.ctx.stats.arc + Game.frontLayer.ctx.stats.arc;
+    Game.render();
+    assert.ok(Game.bodyLayer.ctx.stats.arc + Game.frontLayer.ctx.stats.arc > arcs, 'actual wheels are painted');
+    assert.ok(Game.frontLayer.ctx.stats.colors.has('#bd8f32'), 'the armrest bell has brass detail');
+    assert.equal(f.startLampJump(Game.lamps[1]), false);
+    assert.equal(f.startTacticalRoll(f, false), false);
+  }
+});
+
+test('Hector: walking and running turn real wheels and hands while the legs remain seated', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) {
+    Game.init({ sandbox: true });
+    const f = fighter(480, dir, 'hector'); disableAI(f);
+    f.ctrl.mx = dir; f.ctrl.noFace = true;
+    tick(.35, dt);
+    const first = { x: f.x, angle: f.chair.angle, hand: { ...f.rig.wN },
+      kneeX: f.rig.kN.x - f.x, footX: f.rig.aN.x - f.x };
+    tick(.35, dt);
+    assert.ok((f.x - first.x) * dir > 20, 'chair moves under hand power');
+    assert.ok(Math.abs(f.chair.angle - first.angle) > .5, 'spokes turn with distance traveled');
+    assert.ok(distance(first.hand, f.rig.wN) > 12, 'arms move as well as the chair');
+    assert.ok(Math.abs((f.rig.kN.x - f.x) - first.kneeX) < 2);
+    assert.ok(Math.abs((f.rig.aN.x - f.x) - first.footX) < 2, 'legs do not walk');
+    f.ctrl.run = true; tick(.8, dt);
+    assert.equal(f.state, 'run'); assert.equal(f.y, 0); assert.ok(f.chair.attached);
+    assert.ok(Math.abs(f.vx) > 250, 'running accelerates the chair');
+  }
+});
+
+test('Hector: punches are hand attacks, and jump inputs become grounded rams or dodges', () => {
+  for (const i of [0, 1, 2, 3]) {
+    Game.init({ sandbox: true });
+    const f = fighter(390, 1, 'hector'), v = fighter(480, -1); disableAI(f, v);
+    assert.ok(f.startAttack(i)); assert.ok(f.atk.fist && !f.atk.air, 'no standing knee or airborne kick');
+    tick(.27); assert.ok(v.hp < 100, 'the punch really hits');
+    assert.ok(f.chair.attached); assert.ok(f.rig.pel.y > f.gy - 80);
+  }
+  Game.init({ sandbox: true });
+  const f = fighter(300, 1, 'hector'), v = fighter(500, -1); disableAI(f, v);
+  f.startJump(); assert.equal(f.state, 'wheel_ram'); assert.equal(f.y, 0); assert.equal(f.vy, 0);
+  const random = Math.random;
+  try {
+    Math.random = () => .99;
+    advanceUntil(() => f.state === 'wheel_bump', 100);
+    assert.ok(v.hp < 100, 'a collision damages the opponent');
+    assert.equal(f.y, 0); assert.ok(f.chair.attached);
+    tick(.5); f.startHop();
+    assert.equal(f.state, 'wheel_dodge'); assert.equal(f.y, 0); assert.equal(f.vy, 0);
+  } finally { Math.random = random; }
+});
+
+test('Hector: an impact can throw him from the chair, which then has independent motion', () => {
+  Game.init({ sandbox: true });
+  const f = fighter(400, 1, 'hector'), v = fighter(455, -1); disableAI(f, v);
+  const random = Math.random;
+  try {
+    Math.random = () => 0;
+    assert.ok(f.wheelCollision(v));
+  } finally { Math.random = random; }
+  assert.equal(f.state, 'ragdoll'); assert.equal(f.chair.attached, false);
+  const before = f.chair.x;
+  tick(.2); assert.notEqual(f.chair.x, before, 'chair rolls separately after the fall');
+  assert.notEqual(f.rig.pel.x, f.chair.x, 'body does not remain glued to the chair');
+  Game.render();
+});
+
+test('Hector: after a distant fall he crawls with his arms and remounts without teleporting', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) {
+    Game.init({ sandbox: true });
+    const f = fighter(480, dir, 'hector'); disableAI(f);
+    f.toRagdoll(-dir * 200, 160); assert.equal(f.chair.attached, false);
+    // Simulate a chair rolling some distance away; the body stays where it fell.
+    f.chair.x = 480 + dir * 220; f.chair.vx = 0;
+    advanceUntil(() => f.state === 'hector_crawl', Math.ceil(10 / dt), dt);
+    const start = f.x, chairX = f.chair.x; let last = f.x, crawled = 0;
+    let knee = null, ankle = null, hand = null, armMotion = false;
+    for (let i = 0; i < Math.ceil(15 / dt) && f.state === 'hector_crawl'; i++) {
+      Game.update(dt);
+      assert.ok(Math.abs(f.x - last) <= 38 * dt + 5.1, 'no long-distance snap during recovery');
+      if (f.state === 'hector_crawl' && f.blend <= 0) {
+        crawled += Math.abs(f.x - last);
+        const k = { x: f.rig.kN.x - f.rig.pel.x, y: f.rig.kN.y - f.rig.pel.y };
+        const a = { x: f.rig.aN.x - f.rig.pel.x, y: f.rig.aN.y - f.rig.pel.y };
+        const h = { x: f.rig.wN.x - f.rig.pel.x, y: f.rig.wN.y - f.rig.pel.y };
+        if (knee) {
+          assert.ok(distance(knee, k) < .05 && distance(ankle, a) < .05, 'legs drag instead of stepping');
+          if (distance(hand, h) > 8) armMotion = true;
+        } else hand = h;
+        knee = k; ankle = a;
+      }
+      last = f.x;
+    }
+    assert.ok(Math.abs(chairX - start) > 100 && crawled > 80);
+    assert.ok(armMotion, 'arms visibly pull him along');
+    assert.equal(f.state, 'hector_remount'); assert.equal(f.chair.attached, false);
+    advanceUntil(() => f.state === 'idle', Math.ceil(3 / dt), dt);
+    assert.ok(f.chair.attached); assert.ok(Math.abs(f.x - f.chair.x) < .01);
+    assert.ok(f.rig.pel.y > f.gy - 75, 'he returns to the seated pose');
+  }
+});
+
+test('Hector: death leaves a ragdoll and detached chair until bodies are cleared', () => {
+  Game.init({ sandbox: true });
+  const f = fighter(450, 1, 'hector'); disableAI(f);
+  f.hp = 0; f.toRagdoll(100, 150); tick(2);
+  assert.equal(f.state, 'ragdoll'); assert.equal(f.chair.attached, false);
+  const x = f.chair.x; Game.paused = true; Game.update(1);
+  assert.equal(f.chair.x, x, 'pause also freezes the loose wheelchair');
+  Game.render(); Game.clearBodies(); assert.ok(!Game.fighters.includes(f));
+});
+
+test('Hector call: a single real call freezes the world, survives pause, and brings the car and two allies at common frame rates', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.init({ sandbox: true });
+    const h = fighter(360, 1, 'hector'), enemy = fighter(830, -1, 'jane'); disableAI(h, enemy);
+    tick(8.5, dt); assert.equal(Game.special, null, 'not an immediate decorative event');
+    advanceUntil(() => Game.special?.phase === 'phone', Math.ceil(3 / dt), dt);
+    const frozen = { world: Game.time, enemyT: enemy.t, enemyX: enemy.x, hand: { ...h.rig.wF } };
+    tick(1.7, dt);
+    assert.equal(Game.special.phase, 'phone');
+    assert.equal(Game.time, frozen.world); assert.equal(enemy.t, frozen.enemyT); assert.equal(enemy.x, frozen.enemyX);
+    assert.ok(distance(h.rig.wF, frozen.hand) > 10, 'the actual hand moves to the telephone during the freeze');
+    assert.equal(Game.special.phoneVisible, true); assert.ok(Game.camera.zoom > 2);
+    Game.render();
+    advanceUntil(() => Game.special?.phase === 'desert', Math.ceil(5 / dt), dt);
+    Game.render();
+    const paused = { t: Game.special.t, phase: Game.special.phase, time: Game.time, camera: { ...Game.camera } };
+    Game.paused = true; tick(2, dt);
+    assert.equal(Game.special.t, paused.t); assert.equal(Game.special.phase, paused.phase);
+    assert.equal(Game.time, paused.time); assert.deepEqual(Game.camera, paused.camera);
+    Game.paused = false;
+    advanceUntil(() => !Game.special, Math.ceil(8 / dt), dt);
+    assert.equal(h.specialUsed, true); assert.equal(h.state, 'idle');
+    assert.equal(Game.pendingCalls.length, 1); assert.equal(Game.cars.length, 0);
+    tick(3, dt); assert.equal(Game.cars.length, 0, 'the car does not appear instantly');
+    advanceUntil(() => Game.cars.length === 1, Math.ceil(5 / dt), dt);
+    const car = Game.cars[0], start = car.x;
+    assert.equal(car.phase, 'approach');
+    advanceUntil(() => car.phase === 'parked', Math.ceil(8 / dt), dt);
+    assert.ok(Math.abs(car.x - start) > 250, 'the car travels into the arena');
+    assert.equal(car.brothers.length, 2);
+    assert.deepEqual(new Set(car.brothers.map(b => b.skin)), new Set(['salamanca', 'salamanca_axe']));
+    assert.ok(car.brothers.every(b => Game.areAllies(h, b) && b.familyOwner === h && b.hp > 0));
+    assert.equal(h.hp, 100, 'the family car does not hurt its owner');
+    Game.render();
+    tick(1.5, dt); assert.ok(car.brothers.every(b => b.state !== 'car_exit'), 'both finish getting out');
+    assert.equal(Game.cars.length, 1); assert.equal(Game.pendingCalls.length, 0);
+  }
+});
+
+test('Hector call: interruptions and cleanup do not leave a stuck camera or summon', () => {
+  Game.init({ sandbox: true });
+  const h = fighter(400, 1, 'hector'), enemy = fighter(800, -1); disableAI(h, enemy);
+  h.specialCombatT = 9;
+  const before = { ...Game.camera };
+  assert.ok(Game.beginHectorSpecial(h)); tick(.18);
+  h.takeHit(enemy, punch); assert.equal(h.state, 'hit');
+  Game.update(1 / 60);
+  assert.equal(Game.special, null); assert.equal(h.state, 'hit', 'a real hit is not overwritten');
+  assert.equal(h.specialUsed, false); assert.ok(h.specialCombatT < 9, 'retry is not immediate');
+  assert.deepEqual(Game.camera, before); assert.equal(Game.pendingCalls.length, 0);
+  h.state = 'idle'; h.specialCombatT = 9; h.invT = 0;
+  assert.ok(Game.beginHectorSpecial(h)); tick(1.5);
+  Game.paused = true; Game.clearAll();
+  assert.equal(Game.special, null); assert.deepEqual(Game.camera, before);
+  assert.equal(Game.pendingCalls.length, 0); assert.equal(Game.cars.length, 0);
+  Game.paused = false; tick(12); assert.equal(Game.fighters.length, 0); assert.equal(Game.cars.length, 0);
+});
+
+test('Hector call: the approaching car hits enemies once but not its family or the upper floor', () => {
+  Game.init({ sandbox: true });
+  const h = fighter(270, 1, 'hector'), enemy = fighter(850, -1), rivalHector = fighter(740, -1, 'hector');
+  const ally = fighter(630, -1, 'salamanca'), upper = fighter(780, -1, 'walt');
+  disableAI(h, enemy, rivalHector, ally, upper);
+  ally.familyId = h.familyId; ally.familyOwner = h;
+  upper.onBridge = true; upper.gy = BRIDGE_Y; upper.y = 0; upper.buildRig(0);
+  const car = Game.spawnFamilyCar({ owner: h, axeIndex: 0, caller: 1 });
+  advanceUntil(() => car.phase === 'parked', 600);
+  assert.equal(enemy.hp, 85); assert.equal(rivalHector.hp, 85, 'an unrelated Hector is still an opponent');
+  assert.equal(ally.hp, 100); assert.equal(h.hp, 100); assert.equal(upper.hp, 100);
+  assert.ok(car.hits.has(enemy) && car.hits.has(rivalHector));
+  assert.ok(!car.hits.has(ally) && !car.hits.has(h) && !car.hits.has(upper));
+  assert.equal(car.hits.size, 2, 'each actual collision is recorded once');
+  Game.render();
+});
+
+test('Hector call: family fighters attack opponents, not one another, with real axes and cleanable blood', () => {
+  Game.init({ sandbox: true });
+  const h = fighter(180, 1, 'hector'), ally = fighter(330, 1, 'salamanca_axe'), sibling = fighter(410, 1, 'salamanca');
+  const enemy = fighter(520, -1, 'jane'); disableAI(h, ally, sibling, enemy);
+  ally.familyId = sibling.familyId = h.familyId; ally.familyOwner = sibling.familyOwner = h;
+  assert.equal(Game.findBestOpponent(ally), enemy);
+  assert.equal(Game.findBestOpponent(h), enemy);
+  assert.ok(ally.startAttack(0)); assert.equal(ally.atk.axe, true);
+  assert.equal(ally.tryHit(ally.atk, [sibling, h]), false);
+  assert.equal(sibling.hp, 100); assert.equal(h.hp, 100);
+  sibling.takeHit(ally, ally.atk); assert.equal(sibling.hp, 100, 'direct attack paths also reject friendly fire');
+  sibling.x = 840; sibling.buildRig(0); enemy.x = 405; enemy.buildRig(0);
+  assert.equal(ally.tryHit(ally.atk, [enemy]), true);
+  assert.ok(enemy.hp < 100); assert.ok(ally.axeBlood > 0);
+  ally.buildRig(0);
+  Game.render(); assert.ok(Game.batLayer.ctx.stats.colors.has('#771019'), 'blood is drawn on the actual held axe');
+  Game.clearBlood(); assert.equal(ally.axeBlood, 0);
+  ally.axeBlood = .8; Game.ko(ally, enemy, { pw: .5, noStagger: true });
+  const dropped = Game.droppedBats.find(b => b.kind === 'axe');
+  assert.ok(dropped && dropped.blood > 0, 'the axe can fall as a separate object');
+  Game.render(); Game.clearBlood(); assert.equal(dropped.blood, 0);
+  Game.clearAll(); assert.equal(Game.droppedBats.length, 0);
+});
+
+test('Hector call: a helper approaches a downed relative and helps them get up without attacking them', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.init({ sandbox: true });
+    const h = fighter(440, 1, 'hector'), helper = fighter(230, 1, 'salamanca');
+    disableAI(h); helper.familyId = h.familyId; helper.familyOwner = h;
+    h.toRagdoll(0, 0, true); h.fastGetup = false;
+    // Hold the patient down long enough for AI to reach them; grounded() is real physics.
+    for (let i = 0; i < Math.ceil(4 / dt) && helper.state !== 'assist_lift'; i++) {
+      if (h.rag) h.rag.t = 0;
+      Game.update(dt);
+    }
+    assert.equal(helper.state, 'assist_lift'); assert.equal(helper.assistTarget, h); assert.equal(h.assistedBy, helper);
+    const before = h.hp;
+    advanceUntil(() => ['hector_crawl', 'hector_remount', 'idle'].includes(h.state), Math.ceil(4 / dt), dt);
+    assert.equal(h.hp, before); assert.notEqual(h.state, 'ragdoll');
+    advanceUntil(() => helper.state === 'idle', Math.ceil(4 / dt), dt);
+    assert.equal(helper.assistTarget, null); assert.equal(h.assistedBy, null);
+    Game.render();
+  }
+});
+
+test('Hector call: brothers can actually follow Hector onto the bridge by rope', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.init({ sandbox: true });
+    const h = fighter(500, 1, 'hector'), helpers = [fighter(180, 1, 'salamanca'), fighter(260, 1, 'salamanca_axe')];
+    disableAI(h); h.onBridge = true; h.gy = BRIDGE_Y; h.chair.floor = BRIDGE_Y; h.chair.y = BRIDGE_Y; h.buildRig(0);
+    for (const helper of helpers) { helper.familyId = h.familyId; helper.familyOwner = h; }
+    const hanging = [0, 0];
+    for (let i = 0; i < Math.ceil(25 / dt) && helpers.some(f => !f.onBridge); i++) {
+      Game.update(dt); helpers.forEach((f, j) => { if (f.state === 'lamp_hang') hanging[j]++; });
+    }
+    for (let j = 0; j < helpers.length; j++) {
+      const helper = helpers[j];
+      assert.ok(hanging[j] > 30, 'there is a continuous climb rather than a teleport');
+      assert.equal(helper.onBridge, true); assert.equal(helper.gy, BRIDGE_Y);
+      assert.equal(helper.hp, 100); assert.equal(Game.findBestOpponent(helper), null);
+    }
+    Game.render();
+  }
+});
+
+test('Hector call: autonomous fights can trigger the complete call and allies engage real enemies', () => {
+  const counts = { started: 0, attempts: 0, completed: 0, interrupted: 0, arrived: 0, allyHits: 0, friendlyHits: 0 };
+  const interruptionPhases = {};
+  const takeHit = Fighter.prototype.takeHit;
+  try {
+    Fighter.prototype.takeHit = function (att, ...args) {
+      const before = this.hp; const result = takeHit.call(this, att, ...args);
+      if (att?.familyOwner && this.hp < before) {
+        if (Game.areAllies(this, att)) counts.friendlyHits++;
+        else counts.allyHits++;
+      }
+      return result;
+    };
+    for (const seed of [3, 11, 23, 41, 77, 109, 151, 209, 277, 331]) {
+      seedRandom(seed); Game.init({ sandbox: true });
+      const h = fighter(300, 1, 'hector'), enemy = fighter(670, -1, 'jane');
+      let called = false, arrived = false, inCall = false, lastPhase = null;
+      for (let i = 0; i < 45 * 60; i++) {
+        Game.update(1 / 60);
+        const active = Game.special?.owner === h;
+        if (active && !inCall) counts.attempts++;
+        if (!active && inCall) {
+          if (Game.pendingCalls.some(call => call.owner === h)) counts.completed++;
+          else { counts.interrupted++; interruptionPhases[lastPhase] = (interruptionPhases[lastPhase] || 0) + 1; }
+        }
+        inCall = active;
+        if (active) { called = true; lastPhase = Game.special.phase; }
+        if (Game.cars.some(c => c.owner === h && c.brothers.length === 2)) arrived = true;
+        if (h.hp <= 0 && enemy.hp <= 0 && !Game.special && !Game.pendingCalls.length) break;
+      }
+      if (called) counts.started++;
+      if (arrived) counts.arrived++;
+    }
+  } finally { Fighter.prototype.takeHit = takeHit; }
+  console.log('autonomous Hector call:', counts, 'interrupted phases:', interruptionPhases);
+  assert.ok(counts.started >= 3, 'AI can trigger the event in ordinary fights');
+  assert.ok(counts.completed >= 2 && counts.arrived >= 2, 'the calls complete and allies actually arrive');
+  assert.ok(counts.attempts <= counts.started * 3, 'interruptions must not repeatedly flash the cinematic');
+  assert.ok(counts.allyHits > 0, 'allies really fight'); assert.equal(counts.friendlyHits, 0);
+});
+
+test('Hector call: interrupting a helper always releases the downed relative', () => {
+  for (const interruption of ['punch', 'shove', 'rear kick', 'choke', 'cleanup']) {
+    Game.init({ sandbox: true });
+    const h = fighter(480, 1, 'hector'), helper = fighter(420, 1, 'salamanca'), enemy = fighter(350, 1, 'jane');
+    disableAI(h, helper, enemy); helper.familyId = h.familyId; helper.familyOwner = h;
+    h.toRagdoll(0, 0, true); tick(1.2);
+    assert.ok(h.rag?.grounded()); h.rag.t = 0;
+    helper.x = h.x - 65; helper.state = 'idle'; helper.buildRig(0);
+    assert.equal(helper.startAssist(h), true, interruption);
+    if (interruption === 'punch') helper.takeHit(enemy, punch);
+    if (interruption === 'shove') assert.equal(helper.receiveShove(enemy), true);
+    if (interruption === 'rear kick') {
+      enemy.x = helper.x - 65; enemy.dir = helper.dir;
+      assert.equal(helper.receiveRearKick(enemy), true);
+    }
+    if (interruption === 'choke') {
+      enemy.x = helper.x - helper.dir * 48; enemy.state = 'tactical_roll';
+      enemy.rollDirection = -helper.dir; enemy.rollTarget = helper; enemy.chokeCD = 0;
+      assert.equal(enemy.startChoke(helper), true);
+    }
+    if (interruption === 'cleanup') { helper.hp = 0; Game.clearBodies(); }
+    assert.equal(h.assistedBy, null, `${interruption}: patient was released`);
+    assert.equal(helper.assistTarget, null, `${interruption}: helper released the link`);
+    if (h.rag) h.rag.t = 4.3;
+    advanceUntil(() => h.state !== 'ragdoll', 600);
+  }
+});
+
+test('Hector: a real high tackle drops both body and chair from the bridge to the lower floor', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.init({ sandbox: true });
+    const h = fighter(490, 1, 'hector'), attacker = fighter(350, 1, 'jane'); disableAI(h, attacker);
+    for (const f of [h, attacker]) { f.onBridge = true; f.gy = BRIDGE_Y; f.cur = null; f.buildRig(0); }
+    h.updateWheelchair(0);
+    assert.equal(attacker.startHighTackle(h), true);
+    advanceUntil(() => h.state === 'ragdoll', Math.ceil(3 / dt), dt);
+    assert.equal(h.onBridge, false); assert.equal(h.chair.attached, false);
+    assert.ok(h.chair.y < Game.gy - 500 && h.chair.floor === Game.gy);
+    advanceUntil(() => Math.abs(h.chair.y - Game.gy) < 1, Math.ceil(15 / dt), dt);
+    assert.ok(Math.abs(h.chair.y - Game.gy) < 1, 'the detached chair follows gravity to the same floor');
+    if (h.hp > 0 && !['hector_crawl', 'hector_remount', 'idle'].includes(h.state))
+      advanceUntil(() => h.hp <= 0 || ['hector_crawl', 'hector_remount', 'idle'].includes(h.state), Math.ceil(15 / dt), dt);
+    if (h.hp > 0) {
+      advanceUntil(() => h.state === 'idle', Math.ceil(35 / dt), dt);
+      assert.equal(h.chair.attached, true); assert.equal(h.gy, Game.gy);
+    }
+    Game.render();
+  }
+});
+
+test('Hector call: an ineligible Hector cannot block another Hector from calling', () => {
+  Game.init({ sandbox: true });
+  const upper = fighter(460, 1, 'hector'), lower = fighter(280, 1, 'hector'), enemy = fighter(720, -1, 'jane');
+  disableAI(upper, lower, enemy);
+  upper.onBridge = true; upper.gy = BRIDGE_Y; upper.buildRig(0); upper.updateWheelchair(0);
+  upper.specialCombatT = lower.specialCombatT = 9;
+  assert.equal(Game.findBestOpponent(upper), null);
+  Game.update(1 / 60);
+  assert.equal(Game.special?.owner, lower); assert.equal(upper.specialUsed, false);
+  assert.notEqual(Game.findBestOpponent(lower), null);
+});
+
+test('Hector call: rotating a wide viewport keeps the frozen caller and restored camera inside the arena', () => {
+  const dimensions = [globalThis.innerWidth, globalThis.innerHeight];
+  try {
+    globalThis.innerWidth = 1920; globalThis.innerHeight = 720; Game.init({ sandbox: true });
+    const h = fighter(1100, -1, 'hector'), enemy = fighter(850, 1); disableAI(h, enemy);
+    h.specialCombatT = 9; assert.ok(Game.beginHectorSpecial(h));
+    advanceUntil(() => Game.special.phase === 'phone', 200);
+    globalThis.innerWidth = 390; globalThis.innerHeight = 844; Game.resize();
+    assert.equal(Game.W, 800); assert.ok(h.x <= h.maxX); assert.equal(h.chair.x, h.x);
+    assert.ok(h.rig.head.x < Game.W && h.rig.head.x > 0);
+    assert.ok(Math.abs(Game.special.savedCamera.x - Game.W / 2) < .01);
+    Game.render(); advanceUntil(() => !Game.special, 900);
+    assert.ok(Math.abs(Game.camera.x - Game.W / 2) < .01);
+    assert.ok(h.x <= h.maxX); assert.equal(h.state, 'idle');
+  } finally { [globalThis.innerWidth, globalThis.innerHeight] = dimensions; }
+});
+
+test('Hector call: the caller waits for room, and a hit after a completed call cannot cancel the arriving family', () => {
+  Game.init({ sandbox: true });
+  const h = fighter(400, 1, 'hector'), enemy = fighter(500, -1, 'jane'); disableAI(h, enemy);
+  h.specialCombatT = 9;
+  assert.equal(Game.beginHectorSpecial(h), false, 'a close exchange is not repeatedly interrupted by zooms');
+  enemy.x = 800; enemy.buildRig(0);
+  assert.equal(Game.beginHectorSpecial(h), true);
+  advanceUntil(() => Game.special?.phase === 'unzoom', 900);
+  assert.equal(Game.pendingCalls.length, 1); assert.equal(Game.special.callCompleted, true);
+  tick(.2); h.takeHit(enemy, punch); assert.equal(h.state, 'hit'); Game.update(1 / 60);
+  assert.equal(Game.special, null); assert.equal(h.state, 'hit'); assert.equal(h.specialUsed, true);
+  assert.equal(Game.pendingCalls.length, 1, 'the phone call already went through');
+  advanceUntil(() => Game.cars.length === 1, 600);
+  advanceUntil(() => Game.cars[0].brothers.length === 2, 600);
+  assert.ok(Game.cars[0].brothers.every(b => Game.areAllies(h, b)));
 });

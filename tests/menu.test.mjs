@@ -16,10 +16,10 @@ const module = { exports: {} };
 new Function('require', 'module', 'exports', outputFiles[0].text)(createRequire(import.meta.url), module, module.exports);
 const { default: SpawnMenu, CHARACTER_LIST } = module.exports;
 
-test('the Russian menu has seven portraits, three tabs and four cleanup actions', () => {
+test('the Russian menu has eight portraits, three tabs and four cleanup actions', () => {
   assert.deepEqual(CHARACTER_LIST.map(c => [c.key, c.label]), [
     ['walt', 'Уолт'], ['homelander', 'Патриот'], ['saul', 'Сол'],
-    ['tubtrooper', 'Табтрупер'], ['negan', 'Ниган'], ['jane', 'Патрик'], ['chester', 'Честер'],
+    ['tubtrooper', 'Табтрупер'], ['negan', 'Ниган'], ['jane', 'Патрик'], ['chester', 'Честер'], ['hector', 'Гектор'],
   ]);
   assert.ok(CHARACTER_LIST.every(c => /^#[0-9a-f]{6}$/i.test(c.color) && c.portrait.startsWith('/faces/')));
   assert.equal(CHARACTER_LIST.find(c => c.key === 'tubtrooper').portrait, '/faces/trooper-menu.png');
@@ -27,8 +27,8 @@ test('the Russian menu has seven portraits, three tabs and four cleanup actions'
   assert.match(html, /aria-label="Открыть меню"/);
   assert.match(html, /aria-expanded="false"/); assert.match(html, /\/icons\/menu\.png/);
   assert.match(html, /id="characterMenu"[^>]*aria-hidden="true"[^>]*inert=""/);
-  assert.equal((html.match(/class="characterCard(?: is-helmet)?"/g) || []).length, 7);
-  assert.equal((html.match(/aria-pressed="false"/g) || []).length, 7);
+  assert.equal((html.match(/class="characterCard(?: is-helmet)?"/g) || []).length, 8);
+  assert.equal((html.match(/aria-pressed="false"/g) || []).length, 8);
   for (const c of CHARACTER_LIST) assert.ok(html.includes(c.label) && html.includes(c.portrait));
   for (const [label, icon] of [['Персонажи', 'chars'], ['Предметы', 'entities'], ['Настройки', 'settings']]) {
     assert.ok(html.includes(label)); assert.ok(html.includes(`/icons/${icon}.png`));
@@ -71,4 +71,9 @@ test('the left-docked menu, transparent portraits and borderless responsive acti
   assert.match(await readFile(new URL('../index.html', import.meta.url), 'utf8'), /<html lang="ru">[\s\S]*<title>Dummy Fury — песочница<\/title>/);
   assert.ok((await readFile(new URL('../public/fonts/PressStart2P-Regular.ttf', import.meta.url))).length > 50000);
   assert.match(await readFile(new URL('../public/fonts/OFL-PressStart2P.txt', import.meta.url), 'utf8'), /SIL OPEN FONT LICENSE/i);
+  assert.ok((await readFile(new URL('../public/fonts/RussoOne-Regular.ttf', import.meta.url))).length > 30000);
+  assert.match(await readFile(new URL('../public/fonts/OFL-RussoOne.txt', import.meta.url), 'utf8'), /SIL OPEN FONT LICENSE/i);
+  const index = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(index, /\/fonts\/RussoOne-Regular\.ttf/);
+  assert.doesNotMatch(index, /fonts\.googleapis\.com/);
 });

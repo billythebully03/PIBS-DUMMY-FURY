@@ -12,6 +12,7 @@ export const CHARACTER_LIST: { key: SkinKey; label: string; color: string; portr
   { key: "negan", label: "Ниган", color: "#A7252D", portrait: "/faces/negan.png" },
   { key: "jane", label: "Патрик", color: "#68717E", portrait: "/faces/patrick.png" },
   { key: "chester", label: "Честер", color: "#BD2536", portrait: "/faces/chester.png" },
+  { key: "hector", label: "Гектор", color: "#B5A47D", portrait: "/faces/hector.png" },
 ];
 
 const TABS = [

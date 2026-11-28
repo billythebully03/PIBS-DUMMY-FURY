@@ -3,7 +3,7 @@
 // Чем легче — тем быстрее и проще сбить. Также отвечает за массу тела в регдолле,
 // чтобы тело не летало по всей карте.
 
-export type SkinKey = 'jane' | 'negan' | 'homelander' | 'walt' | 'saul' | 'chester' | 'tubtrooper';
+export type SkinKey = 'jane' | 'negan' | 'homelander' | 'walt' | 'saul' | 'chester' | 'tubtrooper' | 'hector';
 
 export interface CharacterStats {
   weight: number; // кг
@@ -24,6 +24,7 @@ export const CHARACTER_STATS: Record<SkinKey, CharacterStats> = {
   saul:       { weight: 70,  height: 175, hp: 90,  speedMul: 1.06, knockResist: 0.28, ragMass: 0.93 },
   chester:    { weight: 74, height: 178, hp: 100, speedMul: 1.04, knockResist: 0.34, ragMass: 0.98 },
   tubtrooper: { weight: 84, height: 181, hp: 100, speedMul: 0.98, knockResist: 0.43, ragMass: 1.1 },
+  hector:     { weight: 76, height: 172, hp: 100, speedMul: 0.82, knockResist: 0.30, ragMass: 1.0 },
 };
 
 export function statsFor(skin: string): CharacterStats {

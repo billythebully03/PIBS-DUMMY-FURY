@@ -139,7 +139,7 @@ export function updateDucks(game, dt, bridgeY, worldTop) {
       for (const f of game.fighters) {
         // A throw never hurts or rebounds from its owner, even after bouncing
         // back, and passes through dead bodies instead of treating them as walls.
-        if (f === d.owner || f.hp <= 0) continue;
+        if (f === d.owner || game.areAllies?.(f, d.owner) || f.hp <= 0) continue;
         if ((d.cooldowns.get(f.id) || 0) > d.age) continue;
         const contact = bodyContact(f, d); if (!contact) continue;
         const vn = d.vx * contact.nx + d.vy * contact.ny;
