@@ -137,7 +137,9 @@ export function updateDucks(game, dt, bridgeY, worldTop) {
         d.y = game.gy - RADIUS; d.floor = game.gy; bounce(d,0,-1,.58,.82);
       }
       for (const f of game.fighters) {
-        if (f === d.owner && d.age < .34) continue;
+        // A throw never hurts or rebounds from its owner, even after bouncing
+        // back, and passes through dead bodies instead of treating them as walls.
+        if (f === d.owner || f.hp <= 0) continue;
         if ((d.cooldowns.get(f.id) || 0) > d.age) continue;
         const contact = bodyContact(f, d); if (!contact) continue;
         const vn = d.vx * contact.nx + d.vy * contact.ny;

@@ -58,12 +58,12 @@ const source = await readFile(new URL('../src/game/engine.ts', import.meta.url),
 // the test-only exports out of the production entry point.
 const { outputFiles } = await build({
   stdin: {
-    contents: `${source}\nexport { Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y, laserCutGeometry, makeLaserPieces, updateGorePieces, goreSurfacePoint, gorePartCanvas, updateDucks, launchDuck };`,
+    contents: `${source}\nexport { Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, drawSkinHead, skinHeads, drawSpeech, fighterStillFalling, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y, laserCutGeometry, makeLaserPieces, updateGorePieces, goreSurfacePoint, gorePartCanvas, updateDucks, launchDuck };`,
     resolveDir: fileURLToPath(new URL('../src/game/', import.meta.url)), sourcefile: 'engine.ts', loader: 'ts',
   },
   bundle: true, write: false, platform: 'browser', format: 'esm', target: 'es2020',
 });
-const { startGame, Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y, laserCutGeometry, makeLaserPieces, updateGorePieces, goreSurfacePoint, gorePartCanvas, updateDucks, launchDuck } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`);
+const { startGame, Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, drawSkinHead, skinHeads, drawSpeech, fighterStillFalling, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y, laserCutGeometry, makeLaserPieces, updateGorePieces, goreSurfacePoint, gorePartCanvas, updateDucks, launchDuck } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`);
 const originalRandom = Math.random;
 const originalWarn = console.warn;
 let warnings = [];
@@ -271,13 +271,14 @@ test('a firing laser emits sparks at fighter, floor and wall impact points', () 
   } finally { fx.laserSpark = spark; Game.castRay = cast; }
 });
 
-test('Homelander glides with airborne feet and anatomically bent legs in both directions', () => {
+test('Homelander glides in combat with airborne feet and anatomically bent legs in both directions', () => {
   for (const dir of [1, -1]) {
     const f = fighter(dir === 1 ? 300 : 660, dir, 'homelander');
     f.state = 'run'; f.ctrl.mx = dir; f.ctrl.run = true;
+    const threat = { x: f.x + dir * 300 };
     const dash = f.fx.dash.bind(f.fx), groundDust = [];
     f.fx.dash = (x, y, d) => { groundDust.push(y); dash(x, y, d); };
-    for (let i = 0; i < 40; i++) f.update(1 / 60, null, [f]);
+    for (let i = 0; i < 40; i++) f.update(1 / 60, threat, [f]);
     f.fx.dash = dash;
     const r = f.rig;
     for (const suffix of ['N', 'F']) {
@@ -2361,6 +2362,7 @@ test('new: local face names and Chester selection, guitar impacts, breakage cap 
   }
   assert.equal(f.guitarDamage, 1, 'damage accumulates but is capped');
   assert.ok(f.guitarFlexVel > 0, 'actual impacts excite the flexible neck');
+  f.buildRig(1 / 60); // the attack takes the stowed weapon into the hand
   Game.render();
   assert.ok(Game.batLayer.ctx.stats.colors.has('#c71b2d'), 'the red guitar is drawn');
   assert.ok(Game.batLayer.ctx.stats.colors.has('#190c0c'), 'the damaged neck has visible cracks');
@@ -2591,73 +2593,73 @@ test('new: a fatal guitar hit does not trigger Negan\'s head-only finisher', () 
   assert.equal(Game.fx.gibs.length, 0);
 });
 
-test('camera mode pans even on small movements and never spawns from the canvas', () => {
+test('sandbox mouse and touch gestures separate placement from panning without accidental spawns', () => {
   const listeners = new Map(), classes = new Set();
   const original = {
     add: gameCanvas.addEventListener, remove: gameCanvas.removeEventListener,
     rect: gameCanvas.getBoundingClientRect, capture: gameCanvas.setPointerCapture,
     classList: gameCanvas.classList, cancelFrame: globalThis.cancelAnimationFrame,
     removeWindow: globalThis.removeEventListener,
-    addDoc: document.addEventListener, removeDoc: document.removeEventListener,
   };
   gameCanvas.addEventListener = (type, handler) => listeners.set(type, handler);
   gameCanvas.removeEventListener = (type, handler) => { if (listeners.get(type) === handler) listeners.delete(type); };
   gameCanvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 960, height: 540 });
   gameCanvas.setPointerCapture = () => {};
-  gameCanvas.classList = {
-    toggle(name, value) { if (value) classes.add(name); else classes.delete(name); },
-    remove(name) { classes.delete(name); },
-  };
-  globalThis.cancelAnimationFrame = () => {};
-  globalThis.removeEventListener = () => {};
-  document.addEventListener = () => {}; document.removeEventListener = () => {};
-  const send = (type, x, y, id = 1) => listeners.get(type)?.({ button: 0, pointerId: id, clientX: x, clientY: y });
+  gameCanvas.classList = { add: name => classes.add(name), remove: name => classes.delete(name) };
+  globalThis.cancelAnimationFrame = () => {}; globalThis.removeEventListener = () => {};
+  const send = (type, x, y, { button = 0, pointerType = 'mouse', id = 1 } = {}) =>
+    listeners.get(type)?.({ button, pointerType, pointerId: id, clientX: x, clientY: y, preventDefault() {} });
   let api;
   try {
-    api = startGame(); Game.autoSpawn = false; Game.fighters = [];
+    api = startGame();
+    assert.equal(Game.autoSpawn, false); assert.equal(Game.fighters.length, 0, 'the sandbox starts empty');
     send('pointerdown', 300, 100); send('pointerup', 300, 100);
-    assert.equal(Game.fighters.length, 1, 'ordinary mode keeps tap-to-spawn');
-    Game.resetCamera();
-    send('pointerdown', 300, 100); send('pointermove', 300, 145); send('pointerup', 300, 145);
-    assert.equal(Game.fighters.length, 1, 'a normal-mode drag still pans without spawning');
-    assert.ok(Game.camera.targetY < 270);
-    // A very fast gesture may arrive as down/up without an intermediate move.
-    send('pointerdown', 300, 100); send('pointerup', 300, 150);
-    assert.equal(Game.fighters.length, 1);
-
-    api.setCameraMode(true); assert.ok(classes.has('cameraMode'));
+    assert.equal(Game.fighters.length, 0, 'placing requires a selected character');
+    api.selectSkin('chester'); api.setMenuOpen(true);
     send('pointerdown', 300, 100); send('pointerup', 300, 100);
-    assert.equal(Game.fighters.length, 1, 'a tap in camera mode cannot spawn');
-    const before = Game.camera.targetY;
-    send('pointerdown', 300, 100); send('pointermove', 300, 102); send('pointerup', 300, 102);
-    assert.ok(Game.camera.targetY < before, 'small gestures pan without crossing a drag threshold');
-    assert.equal(Game.fighters.length, 1, 'short gestures cannot spawn');
-
-    // A second finger cannot replace the first pointer and cause a spawn.
-    send('pointerdown', 300, 100, 1); send('pointerdown', 320, 105, 2);
-    send('pointermove', 320, 140, 2); send('pointerup', 320, 140, 2);
-    send('pointerup', 300, 100, 1);
-    assert.equal(Game.fighters.length, 1);
-    api.spawnSkin('chester');
-    assert.equal(Game.fighters.length, 2, 'explicit spawn buttons still work in camera mode');
-    assert.equal(Game.fighters.at(-1).skin, 'chester');
-
-    // Changing modes during a press cancels it instead of reinterpreting it.
-    send('pointerdown', 300, 100); api.setCameraMode(false); send('pointerup', 300, 100);
-    assert.equal(Game.fighters.length, 2); assert.ok(!classes.has('cameraMode'));
+    assert.equal(Game.fighters.length, 0, 'the open picker cannot spawn from the arena');
+    api.setMenuOpen(false);
     send('pointerdown', 300, 100); send('pointerup', 300, 100);
-    assert.equal(Game.fighters.length, 3, 'turning the mode off restores tap-to-spawn');
-    send('pointerdown', 300, 100); send('lostpointercapture', 300, 100); send('pointerup', 300, 100);
-    assert.equal(Game.fighters.length, 3, 'losing pointer capture cancels the gesture');
-    api.setCameraMode(true); api.destroy(); api = null;
-    assert.ok(!classes.has('cameraMode')); assert.equal(listeners.size, 0);
+    assert.equal(Game.fighters.length, 1); assert.equal(Game.fighters[0].skin, 'chester');
+
+    const initial = Game.camera.targetY;
+    send('pointerdown', 600, 100); send('pointermove', 600, 150); send('pointerup', 600, 150);
+    assert.equal(Game.camera.targetY, initial, 'left dragging does not move the camera');
+    assert.equal(Game.fighters.length, 1, 'a drag is not reinterpreted as a click');
+    send('pointerdown', 600, 100, { button: 2 }); assert.ok(classes.has('panning'));
+    send('pointermove', 600, 145, { button: 2 }); send('pointerup', 600, 145, { button: 2 });
+    assert.ok(Game.camera.targetY < initial); assert.equal(Game.fighters.length, 1);
+    assert.ok(!classes.has('panning'));
+    send('pointerdown', 600, 100, { button: 2 }); send('pointerup', 600, 100, { button: 2 });
+    assert.equal(Game.fighters.length, 1, 'right click never creates a fighter');
+    let prevented = false, before = Game.camera.targetY;
+    listeners.get('wheel')({ deltaY: -120, deltaMode: 0, preventDefault() { prevented = true; } });
+    assert.ok(prevented && Game.camera.targetY < before, 'wheel pans vertically');
+
+    const touch = { pointerType: 'touch', id: 11 };
+    before = Game.camera.targetY;
+    send('pointerdown', 750, 100, touch); send('pointermove', 750, 145, touch); send('pointerup', 750, 145, touch);
+    assert.ok(Game.camera.targetY < before); assert.equal(Game.fighters.length, 1, 'a touch drag pans without placing');
+    send('pointerdown', 750, 300, touch); send('pointerup', 750, 300, touch);
+    assert.equal(Game.fighters.length, 2, 'a stationary touch places the selection');
+    send('pointerdown', 500, 100, touch); send('pointerdown', 520, 105, { pointerType: 'touch', id: 12 });
+    send('pointerup', 520, 105, { pointerType: 'touch', id: 12 }); send('pointerup', 500, 100, touch);
+    assert.equal(Game.fighters.length, 2, 'a second finger suppresses placement even if it lifts first');
+    send('pointerdown', 500, 300, touch); send('pointerup', 500, 300, touch);
+    assert.equal(Game.fighters.length, 3, 'single touch works again after all fingers lift');
+    send('pointerdown', 100, 300); send('lostpointercapture', 100, 300); send('pointerup', 100, 300);
+    assert.equal(Game.fighters.length, 3, 'lost capture cancels the gesture');
+    send('pointerdown', 100, 300); api.selectSkin('walt'); send('pointerup', 100, 300);
+    assert.equal(Game.fighters.length, 3, 'changing selection cancels an in-flight press');
+    send('pointerdown', 100, 300); send('pointerup', 100, 300);
+    assert.equal(Game.fighters.length, 4); assert.equal(Game.fighters.at(-1).skin, 'walt');
+    api.destroy(); api = null; assert.equal(listeners.size, 0); assert.equal(classes.size, 0);
   } finally {
     api?.destroy();
     gameCanvas.addEventListener = original.add; gameCanvas.removeEventListener = original.remove;
     gameCanvas.getBoundingClientRect = original.rect; gameCanvas.setPointerCapture = original.capture;
     gameCanvas.classList = original.classList; globalThis.cancelAnimationFrame = original.cancelFrame;
     globalThis.removeEventListener = original.removeWindow;
-    document.addEventListener = original.addDoc; document.removeEventListener = original.removeDoc;
   }
 });
 
@@ -3022,4 +3024,245 @@ test('head-impact blood splashes real severed fragments rather than the hidden o
     assert.ok(Math.hypot(surface.x - part.a.x, surface.y - part.a.y) < 280,
       'the splash stays in the vicinity of the impact');
   }
+});
+
+test('sandbox: placement uses the clicked world level and both falls land safely at 30, 60 and 120 FPS', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.init({ sandbox: true });
+    assert.equal(Game.fighters.length, 0); assert.equal(Game.autoSpawn, false);
+    tick(2, dt); assert.equal(Game.fighters.length, 0, 'an empty sandbox does not auto-spawn');
+    Game.camera.y = -700;
+    const upperY = Game.screenToWorldY(100), middleY = Game.screenToWorldY(500);
+    assert.ok(upperY < BRIDGE_Y && middleY > BRIDGE_Y, 'screen coordinates follow the moved camera');
+    const upper = Game.spawnAt(220, upperY, 'tubtrooper');
+    const middle = Game.spawnAt(480, middleY, 'walt');
+    const lower = Game.spawnAt(720, 300, 'chester');
+    assert.equal(upper.gy, BRIDGE_Y); assert.equal(upper.onBridge, true);
+    assert.equal(middle.gy, Game.gy); assert.equal(middle.onBridge, false);
+    assert.equal(lower.gy, Game.gy); assert.equal(lower.onBridge, false);
+    assert.ok(upper.gy - upper.spawnY >= WORLD_TOP + 180, 'helmet stays under the ceiling');
+    assert.ok(middle.gy - middle.spawnY >= BRIDGE_Y + 18 + 170, 'a lower spawn starts below the deck');
+    assert.equal(Game.spawnAt(220, upperY, 'walt'), null, 'an occupied spawn point is rejected');
+    assert.equal(Game.spawnAt(300, 100, 'not-a-skin'), null);
+    disableAI(upper, middle, lower); tick(3, dt);
+    for (const f of [upper, middle, lower]) {
+      assert.equal(f.state, 'idle'); assert.equal(f.y, 0); assert.equal(f.hp, 100);
+    }
+    assert.equal(upper.onBridge, true); assert.equal(upper.gy, BRIDGE_Y);
+    assert.equal(middle.onBridge, false); assert.equal(lower.onBridge, false);
+    assert.equal(Game.fighters.length, 3, 'there is no automatic replacement');
+  }
+});
+
+test('sandbox: the helmet is slightly larger than an ordinary head', () => {
+  const previousHelmet = skinHeads.tubtrooper, previousHead = skinHeads.jane;
+  const portrait = { complete: true, naturalWidth: 100 };
+  try {
+    skinHeads.tubtrooper = { img: portrait, aspect: .8, loaded: true };
+    skinHeads.jane = { img: portrait, aspect: .8, loaded: true };
+    const helmet = fighter(280, 1, 'tubtrooper'), person = fighter(680, 1, 'jane');
+    const dimensions = [], g = makeCanvas().getContext('2d');
+    g.drawImage = (...args) => dimensions.push({ width: args[3], height: args[4] });
+    drawSkinHead(g, helmet.rig, helmet); drawSkinHead(g, person.rig, person);
+    assert.equal(dimensions[0].height, 49); assert.equal(dimensions[1].height, 44);
+    assert.ok(dimensions[0].width > dimensions[1].width);
+  } finally {
+    if (previousHelmet) skinHeads.tubtrooper = previousHelmet; else delete skinHeads.tubtrooper;
+    if (previousHead) skinHeads.jane = previousHead; else delete skinHeads.jane;
+  }
+});
+
+test('sandbox: a duck passes through its owner forever and through corpses, but still hits living opponents', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    for (const scenario of ['owner', 'corpse', 'living']) {
+      Game.init({ sandbox: true });
+      const owner = fighter(110, 1, 'tubtrooper');
+      const body = scenario === 'owner' ? owner : fighter(480, -1, 'jane');
+      if (scenario === 'owner') { owner.x = 480; owner.buildRig(0); }
+      disableAI(owner, body);
+      if (scenario === 'corpse') { body.toRagdoll(0, 0, true); body.hp = 0; body.buildRig(0); }
+      Game.fighters = [body];
+      const origin = { x: body.rig.pel.x - 90, y: body.rig.pel.y - 10 };
+      const duck = launchDuck(Game, owner, body, origin);
+      duck.age = 1; duck.vx = 600; duck.vy = -100; duck.power = 1;
+      const hp = body.hp;
+      for (let i = 0; i < Math.round(.24 / dt); i++) updateDucks(Game, dt, BRIDGE_Y, WORLD_TOP);
+      if (scenario === 'living') {
+        assert.ok(duck.hits > 0 && body.hp < hp, `living body must be hit at ${dt}`);
+        assert.ok(duck.bounces > 0, 'a living collision still rebounds');
+      } else {
+        assert.equal(body.hp, hp); assert.equal(duck.hits, 0); assert.equal(duck.bounces, 0);
+        assert.equal(duck.vx, 600, `${scenario} cannot slow or reflect the duck at ${dt}`);
+        assert.ok(duck.x > body.rig.pel.x + 25, 'the duck continues through the whole body');
+      }
+    }
+  }
+});
+
+test('sandbox: ducks render over settled bodies but behind bodies that are still falling', () => {
+  Game.init({ sandbox: true });
+  const grounded = fighter(310, 1, 'jane'), falling = fighter(650, -1, 'walt');
+  grounded.toRagdoll(0, 0, true); grounded.hp = 0; grounded.rag.frozen = true; grounded.buildRig(0);
+  falling.toRagdoll(0, 0, true); falling.hp = 0; falling.rag.grounded = () => false; falling.buildRig(0);
+  assert.equal(fighterStillFalling(grounded), false); assert.equal(fighterStillFalling(falling), true);
+  Game.ducks = [{ x: 480, y: 300, angle: 0, facing: 1 }];
+  const events = [], ctx = Game.ctx, original = ctx.drawImage;
+  ctx.drawImage = (...args) => {
+    if (args[0] === Game.batLayer.canvas) events.push('bat');
+    if (args[0] === Game.bodyLayer.canvas) events.push('body');
+    original(...args);
+  };
+  try { Game.render(); } finally { ctx.drawImage = original; }
+  assert.deepEqual(events, ['bat', 'body', 'bat', 'bat', 'body'],
+    'settled body, duck, then the falling body (each body also has a shadow)');
+});
+
+test('sandbox: Tubtrooper makes room and may interrupt a charge to throw instead of diving', () => {
+  for (const dir of [1, -1]) {
+    Game.init({ sandbox: true });
+    const trooper = fighter(dir === 1 ? 350 : 610, dir, 'tubtrooper');
+    const enemy = fighter(trooper.x + dir * 230, -dir, 'jane'); disableAI(enemy);
+    const ai = trooper.autopilot;
+    ai.duckPlanTarget = enemy; ai.duckPlanT = 3; ai.duckMaintain = true; ai.duckIdeal = 380;
+    ai.lampCheck = ai.spaceCD = ai.farCD = 100; ai.attackWait = 0; trooper.duckCD = 0;
+    ai.update(1 / 60, trooper, enemy, Game.fighters);
+    assert.equal(trooper.ctrl.mx, -dir, 'backs away while still facing the target');
+    assert.equal(trooper.dir, dir); assert.equal(trooper.ctrl.noFace, true);
+
+    trooper.x = dir === 1 ? 220 : 740; trooper.buildRig(0);
+    enemy.x = trooper.x + dir * 400; enemy.buildRig(0);
+    trooper.state = 'run'; trooper.vx = dir * 350; trooper.duckCD = 0;
+    ai.startCharge(400); ai.attackWait = 0;
+    const saved = Math.random;
+    try {
+      Math.random = () => .1; // exercise the optional charge-to-throw branch
+      ai.update(1 / 60, trooper, enemy, Game.fighters);
+      assert.equal(ai.mode, 'engage'); assert.equal(trooper.ctrl.run, false);
+      trooper.update(1 / 60, enemy, Game.fighters);
+      assert.equal(trooper.state, 'idle', 'he must plant his feet before the wind-up');
+      ai.update(1 / 60, trooper, enemy, Game.fighters);
+      assert.equal(trooper.state, 'duck_throw'); assert.equal(trooper.dive, false);
+    } finally { Math.random = saved; }
+  }
+});
+
+test('sandbox: peaceful fighters use a relaxed stance, bend arms to run/crouch, and stow weapons', () => {
+  for (const skin of ['walt', 'homelander', 'saul', 'tubtrooper', 'negan', 'jane', 'chester']) {
+    Game.init({ sandbox: true });
+    const f = Game.spawnFighter(400, 1, 0, skin); f.reset(400, 1); disableAI(f);
+    for (let i = 0; i < 45; i++) f.update(1 / 60, null, [f]);
+    let p = f.targetPose();
+    assert.equal(f.peaceful, true); assert.ok(Math.abs(p.tl) < 5, `${skin} stands upright`);
+    assert.ok(Math.abs(p.a1) < 12 && p.e1 < 35 && p.e2 < 35, `${skin} has lowered, gently bent arms`);
+    assert.equal(f.rig.bd, undefined, `${skin} is not holding a weapon in the neutral rig`);
+    if (skin === 'homelander') assert.ok(f.hoverY < .1, 'he stands on the ground when peaceful');
+    f.ctrl.mx = 1;
+    for (let i = 0; i < 30; i++) f.update(1 / 60, null, [f]);
+    p = f.targetPose(); assert.ok(Math.abs(p.a1) < 25 && p.e1 < 35, `${skin} walks relaxed`);
+    f.ctrl.mx = 0; f.ctrl.crouch = true;
+    for (let i = 0; i < 30; i++) f.update(1 / 60, null, [f]);
+    assert.equal(f.crouchActive, true); assert.ok(f.targetPose().e1 >= 90, `${skin} bends arms to crouch`);
+    f.ctrl.crouch = false; f.ctrl.mx = 1; f.ctrl.run = true;
+    for (let i = 0; i < 30; i++) f.update(1 / 60, null, [f]);
+    assert.equal(f.state, 'run'); assert.ok(f.targetPose().e1 >= 80, `${skin} bends arms to run`);
+    if (skin === 'negan' || skin === 'chester') {
+      assert.equal(f.rig.bd, undefined, 'the weapon remains stowed while peacefully running');
+      const count = Game.batLayer.ctx.stats.drawImage, colors = new Set(Game.batLayer.ctx.stats.colors);
+      Game.render();
+      if (skin === 'negan') assert.ok(Game.batLayer.ctx.stats.drawImage > count, 'stowed bat is rendered');
+      else assert.ok(Game.batLayer.ctx.stats.colors.has('#c71b2d') || colors.has('#c71b2d'), 'stowed guitar is rendered');
+      f.ctrl.mx = 0; f.ctrl.run = false; f.state = 'idle';
+      const enemy = fighter(700, -1, 'walt'); disableAI(enemy);
+      f.update(1 / 60, enemy, [f, enemy]);
+      assert.ok(f.rig.bd, 'the weapon can be drawn again for combat');
+    }
+  }
+});
+
+test('sandbox: solo AI can stand, walk, crouch, run and jump without treating the jump as an attack', () => {
+  const cases = [
+    [.10, 'stand'], [.50, 'walk'], [.75, 'crouch'], [.90, 'run'], [.99, 'jump'],
+  ];
+  for (const [roll, action] of cases) {
+    Game.init({ sandbox: true });
+    const f = fighter(480, 1, 'walt'), ai = f.autopilot;
+    f.ambientRandom = () => roll; ai.wanderT = 0;
+    ai.update(1 / 60, f, null, [f]);
+    assert.equal(ai.wanderAction, action === 'jump' ? 'stand' : action);
+    if (action === 'stand') assert.equal(f.ctrl.mx, 0);
+    if (action === 'walk') assert.ok(f.ctrl.mx && !f.ctrl.run);
+    if (action === 'crouch') assert.equal(f.ctrl.crouch, true);
+    if (action === 'run') assert.ok(f.ctrl.mx && f.ctrl.run);
+    if (action === 'jump') {
+      assert.equal(f.ctrl.jump, true); assert.equal(f.ctrl.mx, 0);
+      f.update(1 / 60, null, [f]); assert.equal(f.state, 'air'); assert.equal(f.dive, false);
+    }
+  }
+});
+
+test('sandbox: short pixel speech tracks the head, uses accents, and distinguishes calm, down and rare reactions', () => {
+  Game.init({ sandbox: true });
+  const f = Game.spawnFighter(400, 1, 0, 'chester'); f.reset(400, 1); disableAI(f); f.update(1 / 60, null, [f]);
+  f.ambientRandom = () => .99; f.speechWait = 0; f.updateSpeech(1 / 60, null);
+  assert.equal(f.speech, "I've become so numb", 'Chester can hum a short recognisable line');
+  const g = makeCanvas().getContext('2d'); drawSpeech(g, f, Game.W);
+  assert.equal(g.stats.texts[0].text, f.speech); assert.equal(g.stats.texts[0].color, f.col.hex);
+  assert.match(g.stats.texts[0].font, /Press Start 2P/);
+  assert.ok(g.stats.colors.has('#fff') && g.stats.colors.has('#101014'), 'white block and black pixel outline');
+  const x = g.stats.texts[0].x; f.x += 120; f.buildRig(1 / 60); drawSpeech(g, f, Game.W);
+  assert.ok(g.stats.texts[1].x > x + 100, 'the bubble follows the moving head');
+  f.updateSpeech(3, null); assert.equal(f.speech, ''); assert.equal(f.speechTime, 0);
+  const textCount = g.stats.texts.length; drawSpeech(g, f, Game.W); assert.equal(g.stats.texts.length, textCount);
+
+  f.toRagdoll(0, 0, true); f.updateSpeech(1 / 60, null);
+  assert.ok(['Ouch!', 'Damn!', 'Ow!', 'Ugh!'].includes(f.speech), 'short exclamation on temporary knockdown');
+  const observer = fighter(520, -1, 'jane'); disableAI(observer);
+  observer.ambientRandom = () => .1; observer.speechWait = 0;
+  observer.updateSpeech(1 / 60, f);
+  assert.ok(['You okay?', 'Need a hand?', 'Take it easy.', 'That looked rough.'].includes(observer.speech));
+  observer.speech = ''; observer.speechTime = 0; observer.speechWait = 0;
+  observer.updateSpeech(1 / 60, f); assert.equal(observer.speech, '', 'only one decision per knockdown');
+  f.hp = 0; f.updateSpeech(1 / 60, null); assert.equal(f.speech, '', 'dead bodies do not speak');
+});
+
+test('sandbox: ambient speech and wandering do not consume the combat random stream', () => {
+  Game.init({ sandbox: true });
+  const f = fighter(480, 1, 'jane'); f.speechWait = 0; f.autopilot.wanderT = 0;
+  const saved = Math.random;
+  try {
+    Math.random = () => { throw new Error('ambient behaviour consumed combat RNG'); };
+    f.updateSpeech(1 / 60, null); f.autopilot.wander(1 / 60, f, 'idle');
+  } finally { Math.random = saved; }
+});
+
+test('sandbox: a majority of independent Tubtrooper plans create distance without eliminating melee', () => {
+  let retreat = 0, aggressive = 0;
+  for (let seed = 1; seed <= 100; seed++) {
+    seedRandom(seed * 7919); Game.init({ sandbox: true });
+    const f = fighter(300, 1, 'tubtrooper'), enemy = fighter(530, -1, 'walt');
+    disableAI(enemy); f.duckCD = 0; f.guardCD = 100;
+    const ai = f.autopilot; ai.attackWait = 0; ai.lampCheck = ai.spaceCD = ai.farCD = 100;
+    ai.update(1 / 60, f, enemy, Game.fighters);
+    if (f.ctrl.mx < 0) retreat++;
+    else if (!ai.duckMaintain) aggressive++;
+  }
+  assert.ok(retreat >= 65, `expected most plans to make space, got ${retreat}`);
+  assert.ok(aggressive >= 8, `some plans should still choose close combat, got ${aggressive}`);
+});
+
+test('sandbox: each settled severed piece is behind the duck while falling pieces stay in front', () => {
+  Game.init({ sandbox: true });
+  const f = fighter(480, 1, 'walt'); f.hp = 0; f.rig = spreadRig();
+  f.gorePieces = makeLaserPieces(f, { slope: 0, dir: 1 });
+  assert.ok(f.gorePieces.length >= 2);
+  for (const [index, piece] of f.gorePieces.entries()) piece.settled = index === 0;
+  Game.ducks = [{ x: 480, y: 300, angle: 0, facing: 1 }];
+  const events = [], ctx = Game.ctx, original = ctx.drawImage;
+  ctx.drawImage = (...args) => {
+    if (args[0] === Game.goreLayer.canvas) events.push('gore');
+    if (args[0] === Game.batLayer.canvas) events.push('duck');
+    original(...args);
+  };
+  try { Game.render(); } finally { ctx.drawImage = original; }
+  assert.deepEqual(events, ['gore', 'duck', 'gore']);
 });

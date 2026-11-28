@@ -1,55 +1,66 @@
 import { useState } from "react";
-import { ChevronDown } from "lucide-react";
+import type { CSSProperties } from "react";
+import type { SkinKey } from "../Gameplay/HEROES/CHARACTERS/characters";
 
-export type SkinKey = "jane" | "negan" | "homelander" | "walt" | "saul" | "chester" | "tubtrooper";
-
-export const CHARACTER_LIST: { key: SkinKey; label: string; color: string }[] = [
-  { key: "jane", label: "ПАТРИК ДЖЕЙН", color: "#68717E" },
-  { key: "negan", label: "НИГАН", color: "#A7252D" },
-  { key: "homelander", label: "ХОУМЛЕНДЕР", color: "#31527D" },
-  { key: "walt", label: "УОЛТЕР", color: "#718D55" },
-  { key: "saul", label: "СОЛ", color: "#D94B8D" },
-  { key: "chester", label: "ЧЕСТЕР", color: "#BD2536" },
-  { key: "tubtrooper", label: "ТАБТРУПЕР", color: "#E95338" },
+export const CHARACTER_LIST: { key: SkinKey; label: string; color: string; portrait: string }[] = [
+  { key: "walt", label: "Уолт", color: "#718D55", portrait: "/faces/walt.png" },
+  { key: "homelander", label: "Патриот", color: "#31527D", portrait: "/faces/homelander.png" },
+  { key: "saul", label: "Сол", color: "#D94B8D", portrait: "/faces/saul.png" },
+  // The supplied stormtrooper.png is opaque; use its transparent companion
+  // helmet in the picker, as the game does for its current portrait.
+  { key: "tubtrooper", label: "Табтрупер", color: "#E95338", portrait: "/faces/trooper.png" },
+  { key: "negan", label: "Ниган", color: "#A7252D", portrait: "/faces/negan.png" },
+  { key: "jane", label: "Патрик", color: "#68717E", portrait: "/faces/patrick.png" },
+  { key: "chester", label: "Честер", color: "#BD2536", portrait: "/faces/chester.png" },
 ];
 
 interface Props {
   onPick: (skin: SkinKey) => void;
+  onOpenChange: (open: boolean) => void;
 }
 
-// Стрелочка вниз рядом с кнопкой «Спавн бойца»: открывает меню выбора
-// конкретного персонажа (а не случайного).
-export default function SpawnMenu({ onPick }: Props) {
+export default function SpawnMenu({ onPick, onOpenChange }: Props) {
   const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<SkinKey | null>(null);
+
+  function changeOpen(next: boolean) {
+    setOpen(next);
+    onOpenChange(next);
+  }
+
   return (
-    <div className="spawnMenuWrap">
+    <div className={"characterPicker" + (open ? " is-open" : "")}>
       <button
-        className={"sbtn spawnArrow" + (open ? " activeToggle" : "")}
-        title="Выбрать конкретного персонажа"
-        aria-haspopup="menu"
+        className="pickerToggle"
+        type="button"
+        aria-label={open ? "Закрыть меню персонажей" : "Открыть меню персонажей"}
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        aria-controls="characterMenu"
+        onClick={() => changeOpen(!open)}
       >
-        <ChevronDown />
+        <img src={open ? "/icons/close.png" : "/icons/menu.png"} alt="" />
       </button>
-      {open && (
-        <div className="spawnMenu" role="menu">
-          {CHARACTER_LIST.map((c) => (
+      <div id="characterMenu" className="characterMenu" aria-label="Выбор персонажа" aria-hidden={!open} inert={!open}>
+        <div className="characterGrid">
+          {CHARACTER_LIST.map((character) => (
             <button
-              key={c.key}
-              className="spawnMenuItem"
-              role="menuitem"
+              key={character.key}
+              type="button"
+              className="characterCard"
+              style={{ "--accent": character.color } as CSSProperties}
+              aria-pressed={selected === character.key}
               onClick={() => {
-                onPick(c.key);
-                setOpen(false);
+                setSelected(character.key);
+                onPick(character.key);
+                changeOpen(false);
               }}
             >
-              <span className="spawnDot" style={{ background: c.color }} />
-              {c.label}
+              <span className="characterPortrait"><img src={character.portrait} alt="" draggable={false} /></span>
+              <span className="characterName">{character.label}</span>
             </button>
           ))}
         </div>
-      )}
+      </div>
     </div>
   );
 }
