@@ -4,4 +4,5 @@
 
 export const FX_NAMES = [
   'smoke', 'blood', 'spark', 'impact', 'landing', 'burnSurface', 'crack', 'fragment',
+  'bolt', 'wave', 'duck', 'gore',
 ] as const;
