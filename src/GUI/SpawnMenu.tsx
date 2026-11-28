@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 
-export type SkinKey = "jane" | "negan" | "homelander" | "walt" | "saul" | "chester";
+export type SkinKey = "jane" | "negan" | "homelander" | "walt" | "saul" | "chester" | "trooper";
 
 export const CHARACTER_LIST: { key: SkinKey; label: string; color: string }[] = [
   { key: "jane", label: "ПАТРИК ДЖЕЙН", color: "#68717E" },
@@ -10,6 +10,7 @@ export const CHARACTER_LIST: { key: SkinKey; label: string; color: string }[] = 
   { key: "walt", label: "УОЛТЕР", color: "#718D55" },
   { key: "saul", label: "СОЛ", color: "#D94B8D" },
   { key: "chester", label: "ЧЕСТЕР", color: "#BD2536" },
+  { key: "trooper", label: "ШТУРМОВИК", color: "#C9CDD4" },
 ];
 
 interface Props {

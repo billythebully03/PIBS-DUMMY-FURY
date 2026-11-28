@@ -7,5 +7,7 @@
 export const ANIMATION_FILES = [
   'neganGetup', // вставание с битой
   'homelanderHover', // парение и торможение
-  'common', // idle, бег, удары, нокдаун, победа
+  'trooperBlaster', // очередь из бластера (3 залпа по 3 пули), бросок уточкой
+  'chesterGuitarWave', // Честер отбегает и играет: звуковые волны, NPC хватаются за уши
+  'common', // idle, бег, удары, нокдаун, Победа
 ] as const;

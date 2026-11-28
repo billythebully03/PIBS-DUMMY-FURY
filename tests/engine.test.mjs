@@ -2339,6 +2339,7 @@ test('new: local face names and Chester selection, guitar impacts, breakage cap 
   assert.deepEqual(HEAD_URL, {
     jane: '/faces/patrick.png', negan: '/faces/negan.png', chester: '/faces/chester.png',
     homelander: '/faces/homelander.png', saul: '/faces/saul.png', walt: '/faces/walt.png',
+    trooper: '/faces/stormtrooper.png',
   });
   assert.match(await readFile(new URL('../public/faces/README.md', import.meta.url), 'utf8'), /chester\.png/);
   const selected = Game.spawnFighter(360, 1, 0, 'chester');
@@ -2649,4 +2650,118 @@ test('camera mode pans even on small movements and never spawns from the canvas'
     globalThis.removeEventListener = original.removeWindow;
     document.addEventListener = original.addDoc; document.removeEventListener = original.removeDoc;
   }
+});
+
+// Stormtrooper, guitar wave, rubber duck and severed-piece weapons.
+test('new: trooper selection, blaster burst fires nine bolts that damage the target', () => {
+  const selected = Game.spawnFighter(360, 1, 0, 'trooper');
+  assert.equal(selected.skin, 'trooper'); assert.match(selected.name, /ШТУРМОВИК/);
+  assert.ok(SK_.trooper.uArmF && SK_.trooper.lArmF && SK_.trooper.chest);
+  Game.fighters = [];
+  const t = fighter(300, 1, 'trooper'), v = fighter(560, -1, 'jane');
+  disableAI(t, v);
+  assert.equal(t.startAttack(5), true);
+  assert.equal(t.atk.blasterBurst, true);
+  let fired = 0;
+  for (let i = 0; i < 90 && t.state === 'attack'; i++) {
+    Game.update(1 / 60);
+    fired = Math.max(fired, t.burstFired);
+  }
+  assert.equal(fired, 9, 'three volleys of three bolts');
+  assert.ok(v.hp < 100, 'bolts actually hit the target');
+  const before = Game.batLayer.ctx.stats.drawImage;
+  Game.render();
+  assert.ok(Game.batLayer.ctx.stats.drawImage > before, 'the black E-11 blaster is drawn');
+});
+
+test('new: trooper throws the rubber duck, it bounces and settles, and he can pick it up again', () => {
+  const t = fighter(300, 1, 'trooper'), v = fighter(700, -1, 'jane');
+  disableAI(t, v);
+  assert.equal(t.duckState, 'belt');
+  assert.equal(t.startDuckThrow(), true);
+  advanceUntil(() => t.duckState === 'thrown', 60);
+  assert.ok(t.duck && t.duck.vx > 0, 'duck flies toward the opponent');
+  advanceUntil(() => t.duckState === 'ground', 600);
+  assert.ok(Math.abs(t.duck.y - (t.gy + 2 - 8)) < 2, 'duck rests on the floor');
+  // Walk back and pick it up through the AI pickup mode.
+  t.duck.x = t.x + 60;
+  t.autopilot.update = Object.getPrototypeOf(t.autopilot).update;
+  t.autopilot.setMode('duck_pickup');
+  advanceUntil(() => t.duckState === 'belt', 600);
+  assert.equal(t.duck, null);
+  Game.render();
+});
+
+test('new: Negan cracks the trooper helmet open instead of exploding the head', () => {
+  const negan = fighter(340, 1, 'negan'), victim = fighter(425, -1, 'trooper');
+  disableAI(negan, victim); victim.hp = 6;
+  assert.equal(negan.startAttack(0), true);
+  assert.equal(negan.atk.n, 'overhead-finisher');
+  advanceUntil(() => victim.hp <= 0, 150);
+  assert.equal(victim.helmetCracked, true, 'helmet is cracked open');
+  assert.equal(victim.headDestroyed, false, 'the head itself is not destroyed');
+  assert.equal(Game.fx.gibs.length, 0, 'no head fragments');
+  Game.render();
+});
+
+test('new: Chester steps back and plays the guitar, waves make NPCs cover ears and bleed', () => {
+  const c = fighter(300, 1, 'chester'), v = fighter(560, -1, 'jane');
+  disableAI(c, v);
+  assert.equal(c.startGuitarPlay(), true);
+  assert.equal(c.state, 'guitar_play');
+  tick(1.2);
+  assert.ok(Game.waves.length > 0, 'sound waves are emitted');
+  assert.ok(v.earCoverT > 0 || v.state === 'ragdoll' || v.hp < 100, 'the wave reaches the victim');
+  advanceUntil(() => c.state === 'idle', 480);
+  assert.ok(c.guitarCD > 0, 'guitar ability goes on cooldown');
+  Game.render();
+});
+
+test('new: a downed fighter can pick up a severed piece and wield it as a deforming weapon', () => {
+  const shooter = fighter(240, 1, 'homelander'), victim = fighter(510, -1, 'walt');
+  const picker = fighter(620, -1, 'jane');
+  disableAI(shooter, victim, picker); victim.hp = 3;
+  assert.equal(shooter.startAttack(3), true);
+  advanceUntil(() => victim.gorePieces !== null, 300);
+  for (const p of victim.gorePieces) { p.settled = true; p.vx = p.vy = p.va = 0; p.y = p.floor - 10; }
+  const piece = victim.gorePieces[1];
+  picker.x = piece.x + 30;
+  assert.equal(picker.pickupGore(piece), true);
+  assert.equal(picker.heldGore, piece);
+  assert.equal(piece.taken, true);
+  assert.equal(picker.startAttack(0), true);
+  assert.equal(picker.atk.gore, true);
+  picker.hp = 100; victim.hp = 100; victim.state = 'idle'; victim.invT = 0; victim.y = 0;
+  picker.x = victim.x - 80; picker.dir = 1;
+  assert.equal(picker.tryHit(picker.atk, [victim]), true);
+  assert.ok(Math.abs(piece.squashVel) > 0, 'the flesh weapon deforms on impact');
+  Game.render();
+});
+
+test('new: lamp riders sometimes slide down the rope instead of jumping', () => {
+  const lamp = Game.lamps[1], f = fighter(lamp.x, 1, 'jane');
+  disableAI(f);
+  assert.equal(f.startLampJump(lamp), true);
+  advanceUntil(() => f.state === 'lamp_hang', 200);
+  f.lampAction = 'slide'; f.lampClimb = 120; f.lampStamina = 9; f.lampBreakAt = Infinity; f.st = 0;
+  const startY = f.y;
+  advanceUntil(() => f.state !== 'lamp_hang', 300);
+  assert.ok(f.y < startY + 40, 'the rider descends toward the floor');
+  assert.equal(lamp.occupant, null);
+});
+
+test('new: laser-cut pieces fall with weight, bounce elastically and settle', () => {
+  const shooter = fighter(240, 1, 'homelander'), victim = fighter(510, -1, 'walt');
+  disableAI(shooter, victim); victim.hp = 3;
+  assert.equal(shooter.startAttack(3), true);
+  advanceUntil(() => victim.gorePieces !== null, 300);
+  const pieces = victim.gorePieces;
+  assert.equal(pieces.length, 3);
+  assert.ok(pieces.every(p => p.mass > 0 && p.kind), 'each piece has weight and a body-part kind');
+  const startY = pieces.map(p => p.y);
+  tick(2.5);
+  assert.ok(pieces.every(p => p.settled), 'pieces come to rest on the floor');
+  assert.ok(pieces.some((p, i) => p.y > startY[i]), 'pieces fell under gravity');
+  assert.ok(pieces.every(p => p.y + Math.max(5, Math.min(34, p.canvas.height * .38)) <= p.floor + 1));
+  Game.render();
 });
