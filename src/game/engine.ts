@@ -3,6 +3,8 @@ import { Audience } from './audience';
 import { BloodField } from './blood';
 import { drawDuck, launchDuck, updateDucks, DUCK_RELEASE, DUCK_THROW_DURATION } from './duck';
 import { laserCutGeometry, splitArticulated, updateArticulated } from './severed';
+import { drawWheelchairBack, drawWheelchairFront } from './wheelchair';
+import { drawPhone, drawHeldAxe, drawDroppedAxe, drawFamilyDesert, drawMercedes } from './salamanca';
 
 /* ============================ UTILS ============================ */
 const TAU=Math.PI*2, rad=d=>d*Math.PI/180;
@@ -21,6 +23,7 @@ const RUN_SPD=520, RUN_ACC=1250;
 const BOX_GAP=.1, OVEREXTEND_DUR=1.12, FLANK_DUR=.34;
 const CHOKE_OFFSET=48, CHOKE_DPS=2.2, COUNTER_RELEASE=.43, COUNTER_DUR=.86;
 const SHOVE_DUR=.58, SHOVE_IMPACT=.25, SHOVE_REACH=105;
+const ROLL_DUR=.68, REAR_KICK_DUR=.58, REAR_KICK_IMPACT=.25;
 const BLEED_DPS=2, BLEED_AFTER_DEATH=3;
 const STAGGER_KNOCKDOWN_CHANCE=.4, STAGGER_KO_CHANCE=.4;
 const LAMP_PULL_DUR=.7;
@@ -35,7 +38,10 @@ const WSTATS={
   walt:{weight:80,height:178,hp:95,speedMul:1,knockResist:.42,ragMass:1.07},
   saul:{weight:70,height:175,hp:90,speedMul:1.06,knockResist:.28,ragMass:.93},
   chester:{weight:74,height:178,hp:100,speedMul:1.04,knockResist:.34,ragMass:.98},
-  tubtrooper:{weight:84,height:181,hp:100,speedMul:.98,knockResist:.43,ragMass:1.1}
+  tubtrooper:{weight:84,height:181,hp:100,speedMul:.98,knockResist:.43,ragMass:1.1},
+  hector:{weight:76,height:172,hp:100,speedMul:.82,knockResist:.3,ragMass:1},
+  salamanca:{weight:86,height:185,hp:100,speedMul:.98,knockResist:.5,ragMass:1.12},
+  salamanca_axe:{weight:86,height:185,hp:100,speedMul:.98,knockResist:.5,ragMass:1.12}
 };
 const wstat=skin=>WSTATS[skin]||WSTATS.jane;
 const knockScaleFor=skin=>1-wstat(skin).knockResist*.55;
@@ -172,6 +178,33 @@ function aimArmWorld(R,s,x,y,preferUp=false){
   R['e'+s]={x:R.sh.x+J['e'+s].x*d,y:R.sh.y+J['e'+s].y};
   R['w'+s]={x:R.sh.x+J['w'+s].x*d,y:R.sh.y+J['w'+s].y};
 }
+// Rotate the actual articulated body through a full grounded somersault.
+// Re-anchor its lowest joint to the floor, so neither head nor knees pass
+// through it while the fighter travels independently in world space.
+function rotateRollRig(R,f){
+  const u=ease(clamp((f.st-.09)/.49,0,1)),angle=f.dir*TAU*u;
+  const c=Math.cos(angle),s=Math.sin(angle),pivot={...R.pel};
+  for(const k of JN){
+    const p=R[k],x=p.x-pivot.x,y=p.y-pivot.y;
+    p.x=pivot.x+x*c-y*s;p.y=pivot.y+x*s+y*c;
+  }
+  for(const k of ['fdN','fdF']){
+    const p=R[k],x=p.x,y=p.y;p.x=x*c-y*s;p.y=x*s+y*c;
+  }
+  let bottom=-Infinity;
+  for(const k in JR)bottom=Math.max(bottom,R[k].y+JR[k]);
+  // The portrait extends farther than the head joint's collision radius.
+  // Include the rotated image rectangle so an upside-down face does not sink
+  // into the floor even though the physical joint itself is above it.
+  const h=f.skin==='tubtrooper'?49:44;
+  const w=h*clamp(skinHeads[f.skin]?.aspect||.8,.55,1.35);
+  const a=Math.atan2(R.head.y-R.neck.y,R.head.x-R.neck.x)+Math.PI/2;
+  const headBottom=R.head.y+Math.abs(Math.sin(a))*w/2+
+    Math.max((-h*.6-1)*Math.cos(a),(h*.4-1)*Math.cos(a));
+  bottom=Math.max(bottom,headBottom);
+  const correction=bottom-(f.gy-f.y);
+  for(const k of JN)R[k].y-=correction;
+}
 function guardWobblePose(p,f){
   const k=clamp(f.guardFlinch/.2,0,1),phase=f.guardShakePhase+f.t*42;
   if(!k)return p;
@@ -187,6 +220,45 @@ function poseGuardArms(R,f){
   aimArmWorld(R,'N',R.head.x+R.dir*(50-4*k+sx),R.head.y+10+3*k+sy);
   aimArmWorld(R,'F',R.head.x+R.dir*(46-3*k-sx*.7),R.head.y+1+2*k-sy*.8);
   R.cN=R.cF=0;R.bd=null;
+}
+function poseWheelchairArms(R,f){
+  const c=f.chair;if(!c||!c.attached)return;
+  const moving=Math.abs(f.vx)>9;
+  for(const [side,phase] of [['N',0],['F',.65]]){
+    let x,y;
+    if(moving){
+      // Each hand follows the upper part of the large push rim. Wheel angle
+      // comes from actual displacement, so acceleration and braking match it.
+      const a=c.angle*(c.dir||1)+phase,dx=19*Math.sin(a);
+      x=c.x+c.dir*(-17+dx);y=c.y-39-Math.sqrt(Math.max(0,31*31-dx*dx));
+    }else{x=c.x+c.dir*(side==='N'?8:-16);y=c.y-82;}
+    aimArmWorld(R,side,x,y);R['c'+side]=0;
+  }
+  R.bd=null;
+}
+function poseHectorCrawlArms(R,f){
+  const phase=f.st*6;
+  for(const [side,off] of [['N',0],['F',Math.PI]]){
+    const wave=Math.sin(phase+off),reach=12+wave*14,lift=Math.max(0,-wave)*9;
+    aimArmWorld(R,side,R.sh.x+f.dir*reach,f.gy-7-lift);R['c'+side]=0;
+  }
+}
+function poseHectorPhone(R,f,s){
+  if(!s||s.owner!==f||!s.reach)return;
+  const p=R.pel,h=R.head,d=R.dir,hand=R.wF;
+  const pocket={x:p.x-d*14,y:p.y-5},ear={x:h.x-d*6,y:h.y+3};
+  const x=lerp(lerp(hand.x,pocket.x,s.reach),ear.x,s.lift);
+  const y=lerp(lerp(hand.y,pocket.y,s.reach),ear.y,s.lift);
+  aimArmWorld(R,'F',x,y,true);R.cF=0;
+}
+function poseHectorRemountArms(R,f){
+  const c=f.chair;if(!c)return;
+  const lift=ease(clamp(f.st/1.25,0,1));
+  for(const [side,offset] of [['N',12],['F',-20]]){
+    const x=lerp(R.sh.x+f.dir*(side==='N'?14:-5),c.x+c.dir*offset,lift);
+    const y=lerp(f.gy-8,c.y-76,lift);
+    aimArmWorld(R,side,x,y);R['c'+side]=0;
+  }
 }
 function poseLampArms(R,f){
   const lamp=f.lampRef||f.lampGoal;if(!lamp||lamp.detached)return;
@@ -296,6 +368,16 @@ const LAMP_PULL=P({H:66,tl:-18,hd:-8,px:-6,a1:95,e1:35,c1:0,a2:85,e2:35,c2:0,f1x
 // below keeps the grip and struggling hands attached to the animated neck.
 const OVEREXTEND_POSE=P({H:70,tl:58,hd:22,px:12,a1:72,e1:20,a2:64,e2:30,f1x:42,f2x:-24,mo:.65,bg:0});
 const GUARD_POSE=P({H:77,tl:-5,hd:-4,px:-3,f1x:26,f2x:-22,mo:.1,bg:0});
+const HECTOR_SEATED=P({H:55,tl:7,hd:4,px:0,a1:20,e1:35,c1:0,a2:15,e2:40,c2:0,
+  f1x:43,f1h:1,fa1:0,f2x:39,f2h:1,fa2:0,bg:0});
+const HECTOR_CRAWL=P({H:19,tl:76,hd:45,px:0,a1:62,e1:30,c1:0,a2:52,e2:45,c2:0,
+  f1x:-68,f1h:0,fa1:0,f2x:-60,f2h:0,fa2:0,mo:.35,bg:0});
+function seatedHectorPose(p,f){
+  // The legs remain bent on the footplates in every chair action, including
+  // punches and impacts; only the upper body uses the ordinary combat pose.
+  return Object.assign({},p,{H:55+Math.sin(f.t*2.3+f.seed)*.55,px:clamp(p.px,-5,5),
+    f1x:43,f1h:1,fa1:0,f2x:39,f2h:1,fa2:0,bg:0});
+}
 const GUARD_RECOIL=P({H:74,tl:-25,hd:-16,px:-8,a1:145,e1:42,c1:0,a2:128,e2:46,c2:0,f1x:32,f1h:7,f2x:-16,f2h:3,mo:.4,bg:0});
 // Both arms first draw back with bent elbows, then extend together in one quick shove.
 const SHOVE_KF=KF([
@@ -304,6 +386,17 @@ const SHOVE_KF=KF([
   [.25,{H:76,tl:18,hd:8,px:7,a1:90,e1:-3,c1:0,a2:88,e2:4,c2:0,f1x:36,f2x:-26,bg:0}],
   [.34,{H:77,tl:16,hd:7,px:6,a1:90,e1:-3,c1:0,a2:88,e2:4,c2:0,f1x:36,f2x:-26,bg:0}],
   [SHOVE_DUR,{bg:0}]
+]);
+const ROLL_TUCK=P({H:42,tl:42,hd:20,px:3,a1:80,e1:65,c1:0,a2:70,e2:70,c2:0,
+  f1x:26,f1h:20,f2x:-7,f2h:22,mo:.3,bg:0});
+const REAR_KICK_KF=KF([
+  [0,ROLL_TUCK],
+  [.12,{H:72,tl:-12,hd:-4,px:-5,a1:48,e1:65,a2:35,e2:70,f1x:20,f1h:10,f2x:-18,bg:0}],
+  [.25,{H:76,tl:-15,hd:-3,px:-6,a1:55,e1:40,a2:35,e2:55,
+    f1x:84,f1h:63,fa1:4,f2x:-14,f2h:0,mo:.4,bg:0}],
+  [.32,{H:76,tl:-15,hd:-3,px:-6,a1:55,e1:40,a2:35,e2:55,
+    f1x:84,f1h:63,fa1:4,f2x:-14,f2h:0,mo:.4,bg:0}],
+  [REAR_KICK_DUR,{bg:0}]
 ]);
 const FLANK_POSE=P({H:76,tl:22,hd:9,px:4,a1:55,e1:40,c1:0,a2:45,e2:55,c2:0,f1x:36,f1h:8,f2x:-26,mo:.2,bg:0});
 const CHOKE_HOLD_POSE=P({H:84,tl:6,hd:2,a1:70,e1:55,c1:0,a2:64,e2:65,c2:0,f1x:24,f2x:-20,mo:.3,bg:0});
@@ -390,11 +483,15 @@ const ATK_HL=[
   ATK[4]
 ];
 const ATK_GUITAR=ATK_BAT.map(a=>Object.assign({},a,{guitar:true}));
-const atkSetFor=skin=>skin==='negan'?ATK_BAT:skin==='chester'?ATK_GUITAR:skin==='homelander'?ATK_HL:ATK;
+const ATK_AXE=ATK_BAT.map(a=>Object.assign({},a,{axe:true}));
+// Hector fights with his hands: never select the ordinary standing knee kick.
+const ATK_HECTOR=[ATK[0],ATK[1],ATK[3],ATK[0],ATK[0]];
+const atkSetFor=skin=>skin==='salamanca_axe'?ATK_AXE:skin==='hector'?ATK_HECTOR:skin==='negan'?ATK_BAT:skin==='chester'?ATK_GUITAR:skin==='homelander'?ATK_HL:ATK;
 /* ---- Dive kick (running leap) and back-hop poses ---- */
 const KICK_POSE=P({H:66,tl:-52,hd:-16,px:-8,a1:-50,e1:25,a2:-35,e2:30,f1x:82,f1h:56,f2x:56,f2h:32,mo:.7});
 /* ============================ PIXEL-ART CHARACTER SKINS ============================ */
-const SKINS = ['jane', 'negan', 'homelander', 'walt', 'saul', 'chester', 'tubtrooper'];
+const AUTO_SKINS = ['jane', 'negan', 'homelander', 'walt', 'saul', 'chester', 'tubtrooper'];
+const SKINS = [...AUTO_SKINS, 'hector', 'salamanca', 'salamanca_axe'];
 const SKIN_META = {
   jane:       { label: 'ПАТРИК ДЖЕЙН', color: '#68717E' },
   negan:      { label: 'НИГАН', color: '#A7252D' },
@@ -402,11 +499,14 @@ const SKIN_META = {
   walt:       { label: 'УОЛТЕР', color: '#718D55' },
   saul:       { label: 'СОЛ', color: '#D94B8D' },
   chester:    { label: 'ЧЕСТЕР', color: '#BD2536' },
-  tubtrooper: { label: 'ТАБТРУПЕР', color: '#E95338' }
+  tubtrooper: { label: 'ТАБТРУПЕР', color: '#E95338' },
+  hector:     { label: 'ГЕКТОР САЛАМАНКА', color: '#B5A47D' },
+  salamanca:  { label: 'САЛАМАНКА', color: '#A4A7A5' },
+  salamanca_axe:{ label: 'САЛАМАНКА', color: '#465253' }
 };
 let skinCursor = 0;
 function pickSkin() {
-  const skin = SKINS[skinCursor % SKINS.length];
+  const skin = AUTO_SKINS[skinCursor % AUTO_SKINS.length];
   skinCursor++;
   return skin;
 }
@@ -416,7 +516,8 @@ function pickSkin() {
 const HEAD_URL = {
   jane:'/faces/patrick.png', negan:'/faces/negan.png', chester:'/faces/chester.png',
   homelander:'/faces/homelander.png', saul:'/faces/saul.png', walt:'/faces/walt.png',
-  tubtrooper:'/faces/stormtrooper.png'
+  tubtrooper:'/faces/stormtrooper.png', hector:'/faces/hector.png',
+  salamanca:'/faces/salamanca.png', salamanca_axe:'/faces/salamanca.png'
 };
 const HEAD_FALLBACK = {
   jane:'https://i.ibb.co/NnNTL5KG/IMG-4282.png',
@@ -469,6 +570,26 @@ const hand = (f, hi, gr, o) => [[2, 11, 6, 7, o], [3, 12, 4, 5, f], [3, 12, 4, 1
 const shoe = (so, base, hi, cuff, b) => [[1, 1, 11, 6, so], [0, 3, 13, 5, so], [6, 1, 5, 4, cuff], [1, 3, 10, 3, base], [1, 3, 4, 2, b ? base : hi], [0, 6, 13, 2, so]];
 const sleeve = o => box(1, 0, 7, 11, o);
 
+function salamancaSuit(jacket,highlight,dark,shirt,shirtLight){
+  const O='#161719',skin='#b7815e',light='#d4a080',shade='#8c5e47',shoe='#402c21',sole='#24170f',metal='#c8cbbe';
+  return {
+    neck:[[0,0,6,7,O],[1,0,4,4,skin],[2,0,2,3,light],[1,4,4,3,shirt]],
+    chest:[...box(0,0,13,16,O),[1,1,11,14,jacket],[1,1,4,14,shirt],[2,1,2,3,skin],
+      [1,3,1,12,shirtLight],[4,1,2,13,dark],[5,2,1,11,highlight],[7,1,1,14,highlight],
+      [10,1,1,14,dark],[2,5,1,1,O],[2,9,1,1,O],[8,5,3,1,dark]],
+    abdomen:[...box(0,0,12,13,O),[1,1,10,11,jacket],[1,1,3,11,shirt],[4,1,1,11,dark],
+      [6,1,1,10,highlight],[9,1,1,10,dark],[2,3,1,1,O],[2,7,1,1,O]],
+    pelvis:[...box(0,0,12,11,O),[1,1,10,9,jacket],[1,1,10,2,dark],[2,3,1,6,highlight],[9,2,2,7,dark]],
+    uArm:b=>limb(O,8,15,b?dark:jacket,highlight,dark),
+    lArm:b=>[...sleeve(O),[2,1,5,8,b?dark:jacket],[3,1,1,8,highlight],
+      [2,9,5,2,shirt],[5,9,1,2,shirtLight],...hand(b?shade:skin,light,shade,O)],
+    thigh:b=>limb(O,9,17,b?dark:jacket,highlight,dark),
+    shin:b=>limb(O,8,17,b?dark:jacket,highlight,dark),
+    // Dark-brown loafers with a raised toe and a small metal circle.
+    boot:b=>[[1,1,11,6,sole],[0,2,13,6,sole],[1,3,10,3,b?'#332116':shoe],
+      [1,2,4,2,b?shoe:'#71513b'],[1,1,2,2,metal],[2,1,1,1,'#eff0e6'],[0,6,13,2,sole]]
+  };
+}
 const DEF = {
   jane: (() => {
     const B = '#50555E', St = '#646A75', D = '#3B3F46', K = '#43474F', V = '#2C2F35', Vh = '#383C43', BT = '#CED4DE', SH = '#DCE6F2', SHs = '#B5C5D8', O = '#17191C', BL = '#1E2024';
@@ -564,6 +685,29 @@ const DEF = {
       boot:b=>shoe(O,b?'#121316':'#202124','#45464a',KD,b)
     };
   })(),
+  // Sand-coloured shirt and vest with a white undershirt, light trousers and
+  // brown shoes, following the supplied seated Hector references.
+  hector: (() => {
+    const O='#43382d', V='#c7b78e', VH='#e2d5b2', VD='#8e7b59';
+    const W='#eee9d9', WS='#beb7a5', P='#8b7d67', PH='#a99a7d', PD='#5e5548';
+    const skin='#c89470', light='#deb08d', shade='#aa785d', shoeBrown='#46352b';
+    return {
+      neck:[[0,0,6,7,O],[1,0,4,4,skin],[2,0,2,3,light],[1,4,4,3,W]],
+      chest:[...box(0,0,13,16,O),[1,1,11,14,V],[1,1,4,14,W],[2,1,2,3,skin],
+        [4,1,2,13,VD],[5,3,1,11,VH],[7,1,1,14,VH],[10,1,1,14,VD],
+        [2,5,1,1,WS],[2,8,1,1,WS],[2,11,1,1,WS],[8,5,3,2,VD],[8,5,3,1,VH]],
+      abdomen:[...box(0,0,12,13,O),[1,1,10,11,V],[1,1,3,11,W],[4,1,1,11,VD],
+        [6,1,1,10,VH],[9,1,1,10,VD],[2,2,1,1,WS],[2,6,1,1,WS],[2,10,1,1,WS]],
+      pelvis:[...box(0,0,12,11,O),[1,1,10,9,P],[1,1,10,2,PD],[2,3,1,6,PH],[9,2,2,7,PD]],
+      uArm:b=>[...limb(O,8,15,b?shade:skin,light,shade),[1,1,6,5,b?VD:V],[2,1,2,4,VH],[1,6,6,1,VD]],
+      lArm:b=>[...sleeve(O),[2,1,5,10,b?shade:skin],[3,1,1,9,light],[6,2,1,8,shade],...hand(b?shade:skin,light,shade,O)],
+      thigh:b=>limb(O,9,17,b?PD:P,b?P:PH,PD),
+      shin:b=>limb(O,8,17,b?PD:P,b?P:PH,PD),
+      boot:b=>shoe('#241b17',b?'#352820':shoeBrown,'#705544',P,b)
+    };
+  })(),
+  salamanca:salamancaSuit('#919694','#c3c6c1','#555c5b','#852c3a','#be5360'),
+  salamanca_axe:salamancaSuit('#3c4243','#737a79','#222829','#226c82','#58a3b2'),
   // Bare torso, red swimming trunks, drawstring and bare feet: the playful
   // bath-time stormtrooper rather than his usual armour.
   tubtrooper: (() => {
@@ -682,8 +826,10 @@ function drawGuitarShape(g,damage=0,flex=0){
   }
   g.restore();
 }
+function isWeaponSkin(skin){return skin==='negan'||skin==='chester'||skin==='salamanca_axe';}
 function drawBat(g,f){
   const R=f.rig; if(!R||!R.bd||f.batLost||f.hp<=0)return;
+  if(f.skin==='salamanca_axe'){drawHeldAxe(g,f);return;}
   const w=R.wN,v=R.bd;
   g.save();g.imageSmoothingEnabled=false;
   g.translate(w.x-v.x*16,w.y-v.y*16);g.rotate(Math.atan2(v.y,v.x));
@@ -694,10 +840,11 @@ function drawBat(g,f){
 }
 function stowsBat(f){
   const relaxed=f.peaceful&&!f.dive&&['spawn','idle','run','hop','air'].includes(f.state);
-  return relaxed||f.boxing||(f.bleed&&f.bleed.pressing)||['guard','guard_recoil','shove','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull'].includes(f.state);
+  return relaxed||f.boxing||(f.bleed&&f.bleed.pressing)||['guard','guard_recoil','shove','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','tactical_roll','rear_kick','assist_lift'].includes(f.state);
 }
 function drawStowedBat(g,f){
   const R=f.rig;if(!R||f.batLost||f.hp<=0)return;
+  if(f.skin==='salamanca_axe'){drawHeldAxe(g,f,true);return;}
   const dx=R.pel.x-R.sh.x,dy=R.pel.y-R.sh.y;
   g.save();g.imageSmoothingEnabled=false;
   g.translate(R.sh.x-R.dir*13,R.sh.y-8);g.rotate(Math.atan2(dy,dx));
@@ -706,6 +853,7 @@ function drawStowedBat(g,f){
   else g.drawImage(BAT_SPR,-4,-13.5,78,27);g.restore();
 }
 function drawDroppedBat(g,b){
+  if(b.kind==='axe'){drawDroppedAxe(g,b);return;}
   const gy=b.gy||468;
   g.save();g.imageSmoothingEnabled=false;
   const shA=clamp(1-(gy-b.y)/140,.15,1)*.34;
@@ -1544,7 +1692,10 @@ const RIP={
   walt:      {cloth:'#526B3D', torso:'#E0A67F', arm:'#E0A67F', leg:null},
   saul:      {cloth:'#17191F', torso:'#EF5B9A', arm:'#EF5B9A', leg:'#B58C73'},
   chester:   {cloth:'#191a1d', torso:'#D89B72', arm:null, leg:'#B58C73'},
-  tubtrooper:{cloth:'#d12e21', torso:'#d99f76', arm:null, leg:null}
+  tubtrooper:{cloth:'#d12e21', torso:'#d99f76', arm:null, leg:null},
+  hector:   {cloth:'#c7b78e', torso:'#eee9d9', arm:'#c89470', leg:'#c89470'},
+  salamanca:{cloth:'#919694',torso:'#852c3a',arm:'#852c3a',leg:'#b7815e'},
+  salamanca_axe:{cloth:'#3c4243',torso:'#226c82',arm:'#226c82',leg:'#b7815e'}
 };
 function addLaserRip(f,mark){
   if(!mark||mark.seg==='head'||!BURN_MAP[mark.seg])return false;
@@ -1948,7 +2099,7 @@ class Ragdoll{
     R.fdN=footDirRag(P.kN,P.aN,f.dir);R.fdF=footDirRag(P.kF,P.aF,f.dir);
     R.cN=.35;R.cF=.35;R.mo=.5;R.ey=f.hp<=0?1:.75;R.bd=null;
     // While alive, Lucille stays in Negan's near hand (1-handed); upon death he lets go of it.
-    if((f.skin==='negan'||f.skin==='chester')&&f.hp>0&&!f.batLost){
+    if(isWeaponSkin(f.skin)&&f.hp>0&&!f.batLost){
       let dx=P.wN.x-P.eN.x,dy=P.wN.y-P.eN.y;const l=Math.hypot(dx,dy)||1;
       R.bd=clampBatFloor(P.wN.x,P.wN.y,dx/l,dy/l,f.gy);
     }
@@ -1957,6 +2108,7 @@ class Ragdoll{
 }
 /* ============================ FIGHTER ============================ */
 let NEXT_ID=1;
+function areAllies(a,b){return !!(a&&b&&a!==b&&a.familyId&&a.familyId===b.familyId);}
 function distSeg(px,py,ax,ay,bx,by){
   const sx=bx-ax,sy=by-ay,l2=sx*sx+sy*sy||1;const t=clamp(((px-ax)*sx+(py-ay)*sy)/l2,0,1);
   return Math.hypot(px-(ax+sx*t),py-(ay+sy*t));
@@ -1999,13 +2151,15 @@ class Fighter{
       ambientSeed:(Math.floor(this.seed*429496729)>>>0)||1,
       lz:null,lzSnd:false,burns:[],dive:false,diveT:0,diveHit:false,kickExt:0,bodyJump:false,fastGetup:false,
       hoverY:0,hlBrake:0,hlBrakeDir:1,hlBrakeFrom:null,hlLiftFx:false,hopDur:.38,
-      batLost:false,guitarDamage:0,guitarFlex:0,guitarFlexVel:0,dizzyAlpha:0,dizzyPh:Math.random()*TAU,
+      batLost:false,axeBlood:0,guitarDamage:0,guitarFlex:0,guitarFlexVel:0,dizzyAlpha:0,dizzyPh:Math.random()*TAU,
       boxing:false,boxCD:0,guardCD:0,guardDur:0,guardFlinch:0,guardShakePhase:0,guardShakeX:0,guardShakeY:0,guardMoves:false,guardPhase:0,dodgedBy:null,
       crouchActive:false,crouchTime:0,runStopFrom:null,
       overextendFor:null,overextendStamp:0,flankTarget:null,flankFrom:0,
       chokeCD:0,chokeCooldownPending:false,chokeTarget:null,chokedBy:null,chokeDuration:0,chokeCounterAt:Infinity,chokeReleaseAt:Infinity,
       counterBase:null,counterReleased:false,fallDamage:null,
-      staggerDir:0,staggerDur:0,shoveWillFall:false,
+      staggerDir:0,staggerDur:0,shoveWillFall:false,rearPush:false,
+      rollCD:0,rollTarget:null,rollFollow:null,rollStartX:0,rollDirection:1,rollFromRun:false,rollNoticed:false,
+      rollBlindT:0,rollBlindDir:1,rollBlindBy:null,rearKickDone:false,
       shoveCD:0,shoveTarget:null,shoveDone:false,
       lampGoal:null,lampRef:null,lampAction:'pullup',lampStamina:0,lampClimb:0,
       onBridge:false,fallPeak:0,fallReactT:0,bridgeTarget:null,tackleCheck:0,
@@ -2015,10 +2169,14 @@ class Fighter{
       headDestroyed:false,laserSlice:null,gorePieces:null,
       bleed:null,collapseFrom:null,blinkT:rnd(2.2,5.5),blink:0,coughT:rnd(1,2.6)
     });
+    this.chair=this.skin==='hector'?{x,y:this.gy,floor:this.gy,dir,angle:0,vx:0,vy:0,attached:true}:null;
+    this.familyId=this.skin==='hector'?`hector-${this.id}`:null;this.familyOwner=null;
+    this.assistTarget=null;this.assistedBy=null;this.assistStarted=false;
+    this.specialUsed=false;this.specialCombatT=0;
   }
   spawn(delay){this.state='spawn';this.sp=0;this.spT=delay||.05;this.visible=false;this.y=this.spawnY;this.vy=0;this.vx=0;this.st=0;this.cur=null;this.hoverY=0;}
-  canBeHit(){return this.hp>0&&this.state!=='ragdoll'&&this.state!=='getup'&&this.state!=='spawn'&&this.state!=='win'&&this.invT<=0;}
-  faceOpp(o){if(this.ctrl.noFace)return;if(this.skin==='homelander'&&this.hlBrake>.42)return;if(o&&this.y<2&&Math.abs(o.x-this.x)>10)this.dir=o.x>this.x?1:-1;}
+  canBeHit(){return this.hp>0&&!['hector_crawl','hector_remount'].includes(this.state)&&this.state!=='ragdoll'&&this.state!=='getup'&&this.state!=='spawn'&&this.state!=='win'&&this.invT<=0;}
+  faceOpp(o){if(this.ctrl.noFace||(this.rollBlindT>0&&this.rollBlindBy===o))return;if(this.skin==='homelander'&&this.hlBrake>.42)return;if(o&&this.y<2&&Math.abs(o.x-this.x)>10)this.dir=o.x>this.x?1:-1;}
   // Solo wandering has its own deterministic stream and cannot perturb combat RNG.
   ambientRandom(){this.ambientSeed=(Math.imul(this.ambientSeed,1664525)+1013904223)>>>0;return this.ambientSeed/4294967296;}
   ambientBetween(a,b){return a+this.ambientRandom()*(b-a);}
@@ -2046,7 +2204,7 @@ class Fighter{
   }
   startDuckThrow(target){
     if(this.skin!=='tubtrooper'||this.state!=='idle'||this.hp<=0||this.y>5||this.duckCD>0||
-       !target||target.hp<=0||!target.rig||target===this||!target.canBeHit()||
+       !target||target.hp<=0||!target.rig||target===this||areAllies(this,target)||!target.canBeHit()||
        (this.bleed&&this.bleed.pressing))return false;
     const dx=target.x-this.x,vertical=Math.abs((this.gy-this.y)-(target.gy-target.y));
     if(Math.abs(dx)<185||Math.abs(dx)>800||vertical>150)return false;
@@ -2070,14 +2228,14 @@ class Fighter{
   }
   startShove(v){
     if(this.state!=='idle'||this.hp<=0||this.y>5||this.shoveCD>0||(this.bleed&&this.bleed.pressing)||!v||v===this||
-       !Game.fighters.includes(this)||!Game.fighters.includes(v)||!v.canBeHit()||v.y>5||
+       !Game.fighters.includes(this)||!Game.fighters.includes(v)||areAllies(this,v)||!v.canBeHit()||v.y>5||
        v.state==='lamp_jump'||Math.abs(v.gy-this.gy)>100||Math.abs(v.x-this.x)>SHOVE_REACH)return false;
     this.dir=v.x>=this.x?1:-1;this.state='shove';this.st=0;this.vx=0;
     this.shoveTarget=v;this.shoveDone=false;this.shoveCD=rnd(3,4.5);this.hlBrake=0;
     Snd.whoosh();return true;
   }
   receiveShove(att){
-    if(!att||!this.canBeHit()||this.y>5||this.state==='lamp_jump')return false;
+    if(!att||areAllies(this,att)||!this.canBeHit()||this.y>5||this.state==='lamp_jump')return false;
     if(this.state==='push_stagger'||this.state==='stagger_fall'){
       this.toRagdoll(this.staggerDir*130,120);Snd.thud();return true;
     }
@@ -2086,13 +2244,70 @@ class Fighter{
       if(this.fx&&this.rig)this.fx.puff(this.rig.sh.x,this.rig.sh.y,3,.5);
       Snd.thud();return true;
     }
-    this.breakChoke();this.boxing=false;this.lampPullTarget=null;this.shoveTarget=null;
+    this.breakChoke();this.breakAssist();this.boxing=false;this.lampPullTarget=null;this.shoveTarget=null;
     this.bodyJump=false;this.dive=false;this.kickExt=0;
-    this.staggerDir=att.dir;this.dir=-this.staggerDir;
+    this.staggerDir=att.dir;this.dir=-this.staggerDir;this.rearPush=false;
     this.staggerDur=rnd(.75,1.1);this.shoveWillFall=Math.random()<.42;
     this.state='push_stagger';this.st=0;this.vx=this.staggerDir*145;this.vy=0;this.y=0;this.invT=0;this.lz=null;
     if(this.fx&&this.rig)this.fx.puff(this.rig.sh.x,this.rig.sh.y+25,3,.7);
     Snd.thud();return true;
+  }
+  startTacticalRoll(v,fromRun=false,follow=null){
+    if(this.skin==='hector'||!['idle','run'].includes(this.state)||this.hp<=0||this.y>5||this.rollCD>0||
+       (this.bleed&&this.bleed.pressing)||!v||v===this||areAllies(this,v)||!Game.fighters.includes(v)||
+       !v.canBeHit()||v.y>5||Math.abs(v.gy-this.gy)>30||
+       ['lamp_jump','lamp_hang','choke','choked','counter_throw','counter_carried'].includes(v.state))return false;
+    const dx=v.x-this.x,dist=Math.abs(dx),toward=dx>=0?1:-1;
+    if(dist<70||dist>(fromRun?310:165)||v.dir!==-toward||
+       (fromRun&&(this.state!=='run'||Math.abs(this.vx)<200)))return false;
+    const choice=follow==='choke'||follow==='kick'?follow:
+      (this.chokeCD<=0&&this.ambientRandom()<.3?'choke':'kick');
+    const chosen=choice==='choke'&&this.chokeCD>0?'kick':choice;
+    const offset=chosen==='choke'?CHOKE_OFFSET:88,goal=v.x+toward*offset;
+    if(goal<this.minX+4||goal>this.maxX-4)return false;
+    this.rollTarget=v;this.rollFollow=chosen;this.rollStartX=this.x;this.rollDirection=toward;
+    this.rollFromRun=fromRun;this.rollNoticed=false;this.dir=toward;
+    this.state='tactical_roll';this.st=0;this.vy=0;this.y=0;this.hoverY=0;this.hlBrake=0;
+    this.rollCD=this.ambientBetween(5,8);this.comboT=9;
+    Snd.whoosh();return true;
+  }
+  startRearKick(v){
+    if(this.state!=='tactical_roll'||this.rollTarget!==v||!v||!Game.fighters.includes(v)||
+       !v.canBeHit()||v.y>5||Math.abs(v.gy-this.gy)>30||v.dir!==-this.rollDirection)return false;
+    const behind=(v.x-this.x)*v.dir;
+    if(behind<35||behind>125)return false;
+    this.dir=v.dir;this.state='rear_kick';this.st=0;this.vx=0;this.rearKickDone=false;
+    return true;
+  }
+  receiveRearKick(att){
+    if(!att||areAllies(this,att)||!this.canBeHit()||this.y>5||this.dir!==att.dir||
+       (this.x-att.x)*att.dir<25||Math.abs(this.gy-att.gy)>30)return false;
+    const damage=7;this.hp=Math.max(0,this.hp-damage);
+    const p=this.rig?.pel||{x:this.x,y:this.gy-85};
+    Game.hitFX(att,this,{pw:.65},p.x,p.y);injure(this,'torso',.55);
+    if(this.hp<=0){Game.ko(this,att,{pw:.65,noStagger:true,lvx:210,lvy:180});return true;}
+    this.breakChoke();this.breakAssist();this.boxing=false;this.lampPullTarget=null;this.shoveTarget=null;this.duckTarget=null;this.rollTarget=null;
+    this.bodyJump=false;this.dive=false;this.kickExt=0;this.lz=null;
+    this.rearPush=true;this.staggerDir=att.dir;this.dir=att.dir;
+    this.staggerDur=rnd(.9,1.25);this.shoveWillFall=Math.random()<.12;
+    this.state='push_stagger';this.st=0;this.vx=att.dir*180;this.vy=0;this.y=0;this.invT=0;
+    Snd.thud();return true;
+  }
+  startAssist(v){
+    if(!this.familyOwner||this.state!=='idle'||this.hp<=0||!v||!areAllies(this,v)||
+       v.hp<=0||v.state!=='ragdoll'||!v.rag||!v.rag.grounded()||v.assistedBy||
+       Math.abs(v.gy-this.gy)>30||Math.abs(v.x-this.x)>95)return false;
+    this.assistTarget=v;v.assistedBy=this;this.assistStarted=false;
+    this.state='assist_lift';this.st=0;this.vx=0;this.dir=v.x>=this.x?1:-1;return true;
+  }
+  breakAssist(){
+    const v=this.assistTarget;this.assistTarget=null;
+    if(v&&v.assistedBy===this)v.assistedBy=null;
+    const helper=this.assistedBy;this.assistedBy=null;
+    if(helper&&helper.assistTarget===this){
+      helper.assistTarget=null;
+      if(helper.state==='assist_lift'){helper.state='idle';helper.st=0;}
+    }
   }
   canStagger(att){
     return !!(att&&this.rig&&this.y<5&&this.hp>=0&&
@@ -2105,7 +2320,7 @@ class Fighter{
     this.vy=0;this.y=0;this.boxing=false;this.invT=0;this.lz=null;
   }
   startLampJump(lamp){
-    if(this.state!=='idle'||this.hp<=0||this.y>5||!lamp||!Game.lamps.includes(lamp)||
+    if(this.skin==='hector'||this.state!=='idle'||this.hp<=0||this.y>5||!lamp||!Game.lamps.includes(lamp)||
        this.onBridge||lamp.detached||!lamp.canGrab()||Math.abs(lamp.x-this.x)>42)return false;
     this.lampGoal=lamp;
     this.state='lamp_jump';this.st=0;this.y=.5;this.vy=840;
@@ -2146,7 +2361,7 @@ class Fighter{
     return {climb:up,x:clamp(grip.x-dir*27-base.sh.x,this.minX,this.maxX)};
   }
   startLampDescent(lamp){
-    if(this.state!=='idle'||this.hp<=0||!this.onBridge||this.y>5||
+    if(this.skin==='hector'||this.state!=='idle'||this.hp<=0||!this.onBridge||this.y>5||
        !lamp||!Game.lamps.includes(lamp)||lamp.detached)return false;
     const plan=this.bridgeRopeApproach(lamp);
     if(!plan||Math.abs(this.x-plan.x)>16||!lamp.canDescendAt(plan.climb))return false;
@@ -2158,6 +2373,24 @@ class Fighter{
     this.lampStamina=Infinity;this.lampBreakAt=Infinity;this.lampHangStamp++;
     this.state='lamp_hang';this.st=.22;this.vx=0;this.vy=0;this.hoverY=0;
     this.fallPeak=0;this.fallReactT=0;this.cur=null;lamp.riders.add(this);
+    return true;
+  }
+  reconsiderLampDirection(action){
+    const lamp=this.lampRef;
+    if(this.state!=='lamp_hang'||!lamp||lamp.detached||!lamp.riders.has(this)||
+       !['climb','descend'].includes(this.lampAction)||
+       !['climb','descend'].includes(action)||action===this.lampAction)return false;
+    // Do not create a head-on encounter. Riders moving away from one another
+    // may reverse independently; everybody still keeps the 90-unit gap below.
+    for(const rider of lamp.riders){
+      if(rider===this)continue;
+      if(action==='climb'&&rider.lampClimb>this.lampClimb&&rider.lampAction==='descend')return false;
+      if(action==='descend'&&rider.lampClimb<this.lampClimb&&rider.lampAction==='climb')return false;
+    }
+    this.lampAction=action;
+    // A climber who changed their mind needs enough time to finish the new
+    // journey; a controlled descent remains safe and does not exhaust them.
+    this.lampStamina=action==='descend'?Infinity:Math.max(this.lampStamina,9);
     return true;
   }
   clearLamp(){
@@ -2252,7 +2485,7 @@ class Fighter{
       this.fallDamage={amount,source:source||this.fallDamage?.source||{dir:this.dir},severe:true};
   }
   startHighTackle(v){
-    if(this.hp<=0||!v||v.hp<=0||!v.rig||!this.rig||
+    if(this.skin==='hector'||this.hp<=0||!v||areAllies(this,v)||v.hp<=0||!v.rig||!this.rig||
        !(this.onBridge||(this.state==='lamp_hang'&&this.y>350)))return false;
     const dx=v.x-this.x,dy=v.rig.pel.y-this.rig.pel.y;
     if(Math.abs(dx)<45||Math.abs(dx)>220||Math.abs(dy)>125)return false;
@@ -2263,7 +2496,7 @@ class Fighter{
     this.fallPeak=Math.max(this.fallPeak,this.y);Snd.whoosh();return true;
   }
   startLampPull(v){
-    if(this.state!=='idle'||this.hp<=0||this.y>5||!v||!Game.fighters.includes(v)||
+    if(this.state!=='idle'||this.hp<=0||this.y>5||!v||areAllies(this,v)||!Game.fighters.includes(v)||
        v.state!=='lamp_hang'||!v.lampRef||!v.rig||Math.abs(v.x-this.x)>80||
        this.gy-Math.max(v.rig.aN.y,v.rig.aF.y)>210)return false;
     this.dir=v.x>=this.x?1:-1;this.state='lamp_pull';this.st=0;this.vx=0;
@@ -2274,7 +2507,7 @@ class Fighter{
     this.overextendFor=dodger;this.overextendStamp++;this.dodgedBy=null;this.invT=0;
   }
   startFlank(v){
-    if(this.state!=='idle'||this.hp<=0||this.chokeCD>0||!v||v.hp<=0||
+    if(this.skin==='hector'||this.state!=='idle'||this.hp<=0||this.chokeCD>0||!v||areAllies(this,v)||v.hp<=0||
       v.state!=='overextend'||v.overextendFor!==this||v.chokedBy||Math.abs(v.x-this.x)>180)return false;
     const behind=v.x-v.dir*CHOKE_OFFSET;
     if(behind<this.minX+10||behind>this.maxX-10)return false;
@@ -2282,18 +2515,23 @@ class Fighter{
     this.dir=v.x>=this.x?1:-1;this.chokeCD=1;this.hlBrake=0;return true;
   }
   startChoke(v){
-    if(this.state!=='flank'||this.flankTarget!==v||!v||v.hp<=0||this.hp<=0||
-      !Game.fighters.includes(v)||!Game.fighters.includes(this)||
-      v.state!=='overextend'||v.overextendFor!==this||v.chokedBy||this.chokeTarget)return false;
-    this.dir=v.dir;this.x=clamp(v.x-this.dir*CHOKE_OFFSET,this.minX,this.maxX);
+    if(!v||areAllies(this,v)||v.hp<=0||this.hp<=0||!Game.fighters.includes(v)||!Game.fighters.includes(this)||
+       v.chokedBy||this.chokeTarget)return false;
+    const fromFlank=this.state==='flank'&&this.flankTarget===v&&v.state==='overextend'&&v.overextendFor===this;
+    const fromRoll=this.state==='tactical_roll'&&this.rollTarget===v&&this.chokeCD<=0&&
+      v.canBeHit()&&v.y<=5&&Math.abs(v.gy-this.gy)<30&&v.dir===-this.rollDirection&&
+      Math.abs((v.x-this.x)*v.dir-CHOKE_OFFSET)<20&&
+      !['choke','choked','counter_throw','counter_carried','lamp_hang'].includes(v.state);
+    if(!fromFlank&&!fromRoll)return false;
+    this.rollTarget=null;this.dir=v.dir;this.x=clamp(v.x-this.dir*CHOKE_OFFSET,this.minX,this.maxX);
     this.state='choke';this.st=0;this.vx=0;this.vy=0;this.y=0;this.hoverY=0;this.boxing=false;
     // Keep the old timer during the hold; double its remaining value on release.
     this.flankTarget=null;this.chokeTarget=v;this.chokeCD=rnd(5,7);this.chokeCooldownPending=true;
     this.chokeDuration=rnd(2.2,2.9);
     // The counter mistake is private state, not a visual tell.
-    this.chokeCounterAt=Math.random()<.33?rnd(.55,1.05):Infinity;
+    this.chokeCounterAt=v.skin!=='hector'&&Math.random()<.33?rnd(.55,1.05):Infinity;
     this.chokeReleaseAt=Math.random()<.12?rnd(.8,1.55):Infinity;
-    v.chokedBy=this;v.overextendFor=null;v.state='choked';v.st=0;v.vx=0;v.vy=0;v.y=0;v.hoverY=0;
+    v.breakAssist();v.chokedBy=this;v.overextendFor=null;v.state='choked';v.st=0;v.vx=0;v.vy=0;v.y=0;v.hoverY=0;
     v.boxing=false;v.invT=0;v.lz=null;v.dive=false;
     Snd.whoosh();return true;
   }
@@ -2332,20 +2570,22 @@ class Fighter{
     if(this.fx)this.fx.puff(this.rig.sh.x,this.rig.sh.y,4,.8);
     Snd.whoosh();
   }
-  startJump(){this.vy=770;this.y=.5;this.state='air';this.st=0;this.hlBrake=0;this.fx&&this.fx.landing(this.x,this.gy,.5);}
+  startJump(){if(this.skin==='hector'){this.startWheelRam();return;}this.vy=770;this.y=.5;this.state='air';this.st=0;this.hlBrake=0;this.fx&&this.fx.landing(this.x,this.gy,.5);}
   startBodyJump(){
-    if(this.state!=='run'||this.hp<=0||this.y>5||Math.abs(this.vx)<260)return false;
+    if(this.skin==='hector'||this.state!=='run'||this.hp<=0||this.y>5||Math.abs(this.vx)<260)return false;
     // A normal running jump over a body: no flying kick or forced tumble.
     this.state='air';this.st=0;this.y=.5;this.vy=770;this.bodyJump=true;this.dive=false;this.hlBrake=0;
     Snd.hop();if(this.fx)this.fx.landing(this.x,this.gy,.45);return true;
   }
   startDash(w){
+    if(this.skin==='hector'){this.startWheelDodge(w*this.dir);return;}
     this.state='dash';this.st=0;this.dashF=w>0;this.dashW=w*this.dir;this.dashT=w>0?.24:.27;this.dashCD=.6;this.dashDust=0;this.hlBrake=0;
     if(w<0)this.invT=.22;Snd.whoosh();
   }
   // Dodge: remember which incoming attack was evaded, but only a missed swing
   // can create the brief overextension opening.
   startHop(){
+    if(this.skin==='hector'){this.startWheelDodge(-this.dir);return;}
     for(const e of Game.fighters){
       if(e===this||e.hp<=0||e.state!=='attack'||!e.atk||e.atk.air||e.atk.laser||e.st>e.atk.he)continue;
       const dx=(this.x-e.x)*e.dir;
@@ -2361,8 +2601,50 @@ class Fighter{
     this.state='hop';this.st=0;this.vy=450;this.y=.5;this.vx=-this.dir*500;this.invT=.38;this.dashCD=.6;
     Snd.hop();if(this.fx){this.fx.landing(this.x,this.gy,.5);this.fx.dash(this.x,this.gy,-this.dir);}
   }
+  startWheelDodge(direction){
+    if(!this.chair?.attached)return false;
+    this.state='wheel_dodge';this.st=0;this.y=0;this.vy=0;
+    this.vx=direction*260;this.invT=.2;this.dashCD=.8;Snd.whoosh();return true;
+  }
+  startWheelRam(){
+    if(!this.chair?.attached||this.hp<=0)return false;
+    this.state='wheel_ram';this.st=0;this.y=0;this.vy=0;
+    this.vx=this.dir*Math.max(250,Math.min(390,Math.abs(this.vx)));
+    Snd.whoosh();return true;
+  }
+  wheelCollision(v){
+    if(!v||areAllies(this,v)||!v.canBeHit()||Math.abs(v.gy-this.gy)>35)return false;
+    const d=this.dir;
+    v.takeHit(this,{dmg:7,zone:'torso',pw:.55,stun:.42,kb:180,noStagger:true});
+    if(this.fx)this.fx.puff(this.x+d*45,this.gy-36,4,.7);
+    Snd.thud();
+    // A collision can throw him from the chair, but never turns into a jump.
+    if(Math.random()<.22){this.fastGetup=false;this.toRagdoll(d*140,100);}
+    else{this.state='wheel_bump';this.st=0;this.vx=-d*80;this.y=0;this.vy=0;}
+    return true;
+  }
+  detachWheelchair(vx=0){
+    const c=this.chair;if(!c||!c.attached)return;
+    c.x=this.x;c.y=this.gy-this.y;c.floor=this.gy;c.dir=this.dir;
+    c.vx=clamp((this.vx||0)*.25+vx*.08,-120,120);
+    c.vy=this.y>1?-(this.vy||0)*.35:0;c.attached=false;
+  }
+  updateWheelchair(dt){
+    const c=this.chair;if(!c)return;
+    if(c.attached){
+      const dx=this.x-c.x;c.angle+=dx/36;c.x=this.x;c.y=this.gy-this.y;c.floor=this.gy;c.dir=this.dir;
+      c.vx=0;c.vy=0;return;
+    }
+    const old=c.x;c.x=clamp(c.x+c.vx*dt,this.minX,this.maxX);
+    if(c.x===this.minX||c.x===this.maxX)c.vx=0;
+    c.angle+=(c.x-old)/36;c.vx*=Math.exp(-dt*3.8);
+    if(Math.abs(c.vx)<.2)c.vx=0;
+    c.vy+=1600*dt;c.y+=c.vy*dt;
+    if(c.y>=c.floor){c.y=c.floor;c.vy=0;}
+  }
   // Running leap: flying kick (or Superman hands-first flying tackle for Homelander, same logic).
   startDive(){
+    if(this.skin==='hector'){this.startWheelRam();return;}
     this.state='air';this.dive=true;this.diveT=0;this.diveHit=false;this.kickExt=0;this.st=0;this.hlBrake=0;
     this.vy=560;this.y=.5;this.vx=this.dir*Math.max(Math.abs(this.vx),430);
     Snd.whoosh();
@@ -2468,7 +2750,7 @@ class Fighter{
   tryHit(a,opponents){
     let hitAny=false;
     for(const o of opponents){
-      if(!o||o===this||!o.canBeHit())continue;
+      if(!o||o===this||areAllies(this,o)||!o.canBeHit())continue;
       const dx=(o.x-this.x)*this.dir;if(dx<-20||dx>a.reach+14)continue;
       const height=this.y+(Game.gy-this.gy),otherHeight=o.y+(Game.gy-o.gy);
       const lo=height+a.y[0],hi=height+a.y[1],ov=Math.min(hi,otherHeight+200)-Math.max(lo,otherHeight+55);if(ov<20)continue;
@@ -2482,6 +2764,7 @@ class Fighter{
     return hitAny;
   }
   takeHit(att,a,point){
+    if(areAllies(this,att))return;
     // A guarded ordinary punch is absorbed in place. A blow that would launch
     // or knock out the defender breaks the guard and forces a short back-hop,
     // but cannot itself put the defender into a ragdoll or below one HP.
@@ -2492,7 +2775,8 @@ class Fighter{
       this.flinchGuard();
       if(a.launch||a.dmg>=this.hp){
         this.hp-=Math.min(a.dmg*.2,Math.max(0,this.hp-1));
-        this.state='guard_recoil';this.st=0;this.vx=-this.dir*180;this.y=.5;this.vy=230;
+        this.state=this.skin==='hector'?'wheel_bump':'guard_recoil';this.st=0;this.vx=-this.dir*180;
+        this.y=this.skin==='hector'?0:.5;this.vy=this.skin==='hector'?0:230;
       }
       return;
     }
@@ -2501,8 +2785,8 @@ class Fighter{
       (this.state==='attack'&&this.atk&&this.atk.air);
     const wasRunning=this.state==='run'&&!wasAirborne;
     const wasStaggering=this.state==='push_stagger'||this.state==='stagger_fall';
-    this.lampPullTarget=null;this.shoveTarget=null;this.duckTarget=null;this.bodyJump=false;
-    this.breakChoke();this.boxing=false;
+    this.lampPullTarget=null;this.shoveTarget=null;this.duckTarget=null;this.rollTarget=null;this.bodyJump=false;
+    this.breakChoke();this.breakAssist();this.boxing=false;
     this.hp=Math.max(0,this.hp-a.dmg);
     const impact=point&&typeof point.x==='number'?point:null;
     const px=impact?impact.x:this.x-att.dir*10;
@@ -2546,14 +2830,14 @@ class Fighter{
     }
   }
   takeDuckHit(duck,damage,dir,speed){
-    if(this.hp<=0)return;
+    if(this.hp<=0||areAllies(this,duck?.owner))return;
     const wasAirborne=this.y>6||this.state==='lamp_hang'||this.state==='bridge_leap';
     const wasRagdoll=this.state==='ragdoll'&&this.rag;
     // One independent 50/50 decision per damaging collision, not every frame
     // while the duck overlaps a body.
     const willFall=Math.random()<.5;
     this.hp=Math.max(0,this.hp-damage);this.duckTarget=null;
-    this.breakChoke();this.boxing=false;this.shoveTarget=null;this.lampPullTarget=null;
+    this.breakChoke();this.breakAssist();this.boxing=false;this.shoveTarget=null;this.lampPullTarget=null;
     if(this.fx)this.fx.puff(duck.x,duck.y,3,.45);
     Snd.duck();Game.shake=Math.max(Game.shake,2);Game.hs=Math.max(Game.hs,.015);
     injure(this,'torso',.3);
@@ -2562,7 +2846,7 @@ class Fighter{
     if(wasRagdoll){
       this.rag.wake();
       for(const k of RK)this.rag.p[k].px-=dir*clamp(speed*.12,20,95)*HSTEP;
-    }else if(willFall||wasAirborne){
+    }else if(willFall||wasAirborne||(this.skin==='hector'&&this.chair&&!this.chair.attached)){
       this.toRagdoll(dir*clamp(speed*.25,100,220),wasAirborne?0:150);
     }else{
       this.clearLamp();this.state='push_stagger';this.st=0;this.staggerDir=dir;
@@ -2570,6 +2854,7 @@ class Fighter{
     }
   }
   handDamage(a,vic){
+    if(this.skin==='salamanca_axe'&&a.axe)this.axeBlood=Math.min(1,this.axeBlood+.35);
     if(this.skin==='chester'&&a.guitar){
       // Every successful hit bends the neck briefly and accumulates visible,
       // capped damage. The remaining guitar stays held and usable.
@@ -2579,9 +2864,10 @@ class Fighter{
   }
   toRagdoll(vx,vy,gentle=false){
     this.prepareHighFall();
-    this.bridgeTarget=null;this.clearLamp();this.lampPullTarget=null;this.shoveTarget=null;this.duckTarget=null;
-    this.breakChoke();this.boxing=false;
+    this.bridgeTarget=null;this.clearLamp();this.lampPullTarget=null;this.shoveTarget=null;this.duckTarget=null;this.rollTarget=null;
+    this.breakChoke();this.breakAssist();this.boxing=false;
     if(!this.rig)return;
+    if(this.skin==='hector')this.detachWheelchair(vx);
     const high=!!this.fallDamage?.severe;
     const inheritedVy=high?Math.min(vy,this.vy):vy;
     this.rag=new Ragdoll(this.rig,this);this.rag.highFall=high;
@@ -2611,7 +2897,9 @@ class Fighter{
   }
   startGetup(){
     const R=this.rag.toRig(this);this.blendFrom=R;
-    this.x=clamp(this.rag.p.pel.x,this.minX,this.maxX);this.rag=null;this.state='getup';this.st=0;this.blend=.3;this.cur=null;
+    this.x=clamp(this.rag.p.pel.x,this.minX,this.maxX);this.rag=null;
+    this.state=this.skin==='hector'&&this.chair&&!this.chair.attached?'hector_crawl':'getup';
+    this.st=0;this.blend=.3;this.cur=null;
     this.hoverY=0;this.hlLiftFx=false;this.fallPeak=0;
   }
   /* ---------------- Homelander's eye laser ---------------- */
@@ -2667,12 +2955,13 @@ class Fighter{
     }
   }
   takeLaser(att,pt,first){
+    if(areAllies(this,att))return;
     const mark=this.addBurn(pt.x,pt.y);
     if(this.state==='spawn'||this.invT>0)return;
     addLaserRip(this,mark);
     if(this.hp<=0)return;
     this.lampPullTarget=null;this.shoveTarget=null;
-    this.breakChoke();this.boxing=false;
+    this.breakChoke();this.breakAssist();this.boxing=false;
     this.hp=Math.max(0,this.hp-(first?3.5:1.6));
     if(this.fx&&first)this.fx.blood(pt.x,pt.y,att.dir,6,.5);
     if(this.hp<=0){
@@ -2829,10 +3118,12 @@ class Fighter{
   }
   update(dt,targetOpp,allFighters){
     this.t+=dt;this.st+=dt;const c=this.ctrl;
+    if(this.skin==='hector'&&targetOpp&&targetOpp.hp>0)this.specialCombatT+=dt;
     if(this.skin==='chester'){this.guitarFlexVel+=(-38*this.guitarFlex-9*this.guitarFlexVel)*dt;this.guitarFlex=clamp(this.guitarFlex+this.guitarFlexVel*dt,-.25,.32);}
     const isHL=this.skin==='homelander';
     this.peaceful=this.hp>0&&!targetOpp;
-    this.dashCD=Math.max(0,this.dashCD-dt);
+    this.dashCD=Math.max(0,this.dashCD-dt);this.rollCD=Math.max(0,this.rollCD-dt);
+    this.rollBlindT=Math.max(0,this.rollBlindT-dt);if(this.rollBlindT<=0)this.rollBlindBy=null;
     this.boxCD=Math.max(0,this.boxCD-dt);this.guardCD=Math.max(0,this.guardCD-dt);this.shoveCD=Math.max(0,this.shoveCD-dt);
     if(this.skin==='tubtrooper')this.duckCD=Math.max(0,this.duckCD-dt);
     this.chokeCD=Math.max(0,this.chokeCD-dt);
@@ -2892,7 +3183,7 @@ class Fighter{
       }else{
         this.vx+=(tgtVx-this.vx)*Math.min(1,dt*14);
       }
-      if((!isHL||this.peaceful)&&Math.abs(this.vx)>8){
+      if(this.skin!=='hector'&&(!isHL||this.peaceful)&&Math.abs(this.vx)>8){
         this.walkPh+=(this.vx*this.dir>=0?1:-1)*Math.abs(this.vx)*dt*.08;
         const sg=Math.sin(this.walkPh)>0?1:-1;
         if(sg!==this.lastSign){
@@ -2922,7 +3213,7 @@ class Fighter{
         this.state='idle';this.st=0;break;
       }
       this.dir=c.mx>0?1:-1;
-      const tgt=this.dir*RUN_SPD*(this.hp<30?.9:1)*this.bloodStrength(),A=RUN_ACC*dt;
+      const tgt=this.dir*(this.skin==='hector'?360:RUN_SPD)*(this.hp<30?.9:1)*this.bloodStrength(),A=(this.skin==='hector'?850:RUN_ACC)*dt;
       this.vx+=clamp(tgt-this.vx,-A,A);
       const rs=clamp(Math.abs(this.vx)/RUN_SPD,0,1);
       if(isHL&&!this.peaceful){
@@ -2930,7 +3221,7 @@ class Fighter{
           if(Math.random()<dt*13)this.fx.smoke(this.x-this.dir*26,this.gy-96+rnd(-14,14),-this.dir*rnd(115,190),rnd(-8,8),rnd(3,6),rnd(7,13),rnd(.14,.24),.24);
           if(Math.random()<dt*10)this.fx.dash(this.x-this.dir*8,this.gy,this.dir);
         }
-      }else{
+      }else if(this.skin!=='hector'){
         this.walkPh+=(9+rs*13)*dt;
         const sg=Math.sin(this.walkPh)>0?1:-1;
         if(sg!==this.lastSign){
@@ -2941,7 +3232,7 @@ class Fighter{
       }
       if(c.jump){this.startDive();break;}
       for(const o of allFighters){
-        if(o===this||Math.abs(o.gy-this.gy)>100)continue;
+        if(o===this||areAllies(this,o)||Math.abs(o.gy-this.gy)>100)continue;
         const dx=(o.x-this.x)*this.dir;
         if(!o.gorePieces&&o.state==='ragdoll'&&o.rag?.grounded()&&dx>0&&dx<85){
           // Notice a prone body and brake instead of repeatedly falling over it.
@@ -2950,8 +3241,24 @@ class Fighter{
         }
         if(o.hp<=0||o.y>40||o.state==='ragdoll'||o.state==='spawn')continue;
         if(o.state==='getup'&&o.st<1.35)continue; // still lying low
-        if(dx>-10&&dx<62&&Math.abs(this.vx)>260){this.trip(o);break;}
+        if(dx>-10&&dx<62&&Math.abs(this.vx)>260){
+          if(this.skin==='hector')this.wheelCollision(o);else this.trip(o);break;
+        }
       }
+      break;}
+     case 'wheel_ram':{
+      this.vx*=Math.exp(-dt*.35);
+      for(const o of allFighters){
+        if(o===this||areAllies(this,o)||!o.canBeHit()||o.y>40||Math.abs(o.gy-this.gy)>35)continue;
+        const dx=(o.x-this.x)*this.dir;
+        if(dx>-8&&dx<65&&this.wheelCollision(o))break;
+      }
+      if(this.state==='wheel_ram'&&this.st>=.7){this.state='wheel_bump';this.st=0;}
+      break;}
+     case 'wheel_bump':
+     case 'wheel_dodge':{
+      this.vx*=Math.exp(-dt*7);
+      if(this.st>=.38){this.state='idle';this.st=0;this.vx*=.25;}
       break;}
      case 'hop':{
       if(isHL){
@@ -2974,7 +3281,7 @@ class Fighter{
         this.vx*=Math.exp(-dt*.25);
         if(!this.diveHit){
           for(const o of allFighters){
-            if(o===this||o.hp<=0||!o.canBeHit())continue;
+            if(o===this||areAllies(this,o)||o.hp<=0||!o.canBeHit())continue;
             const dx=(o.x-this.x)*this.dir;
             if(dx>-24&&dx<84&&this.y<175&&this.y>6){this.diveHit=true;this.kickHit(o);break;}
           }
@@ -3055,6 +3362,38 @@ class Fighter{
         if(this.st>=a.dur){this.comboStep=(this.ak<3&&!a.air)?this.ak+1:0;this.comboT=0;this.state=this.y>0?'air':'idle';this.st=0;this.lz=null;this.lastAttackEnd=this.t;}
       }
       break;}
+     case 'tactical_roll':{
+      const v=this.rollTarget,u=clamp(this.st/ROLL_DUR,0,1);
+      if(!v||!allFighters.includes(v)||v.hp<=0||Math.abs(v.gy-this.gy)>30){
+        this.rollTarget=null;this.state='idle';this.st=0;this.vx*=.2;break;
+      }
+      const offset=this.rollFollow==='choke'?CHOKE_OFFSET:88;
+      const goal=clamp(v.x+this.rollDirection*offset,this.minX,this.maxX);
+      const progress=this.rollFromRun?1-Math.pow(1-u,1.25):ease(u);
+      const desired=lerp(this.rollStartX,goal,progress);
+      this.vx=this.rollDirection*clamp((desired-this.x)*this.rollDirection/Math.max(dt,.001),0,760);
+      if(!this.rollNoticed&&Math.abs(v.x-this.x)<60&&v.dir===-this.rollDirection){
+        // A short reaction delay, not permanent target lock: the victim can
+        // still finish an attack or defend and will turn normally afterwards.
+        this.rollNoticed=true;v.rollBlindBy=this;v.rollBlindDir=v.dir;v.rollBlindT=.7;
+      }
+      if(this.st>=ROLL_DUR){
+        this.x=clamp(this.x+this.vx*dt,this.minX,this.maxX);this.vx=0;
+        if(this.rollFollow==='choke'&&this.startChoke(v))break;
+        if(this.startRearKick(v))break;
+        this.rollTarget=null;this.state='idle';this.st=0;this.comboT=9;
+      }
+      break;}
+     case 'rear_kick':{
+      this.vx*=Math.exp(-dt*12);
+      const v=this.rollTarget;
+      if(!this.rearKickDone&&this.st>=REAR_KICK_IMPACT){
+        this.rearKickDone=true;
+        if(v&&allFighters.includes(v)&&v.hp>0&&v.dir===this.dir&&
+           (v.x-this.x)*this.dir>=25&&(v.x-this.x)*this.dir<=125)v.receiveRearKick(this);
+      }
+      if(this.st>=REAR_KICK_DUR){this.rollTarget=null;this.state='idle';this.st=0;this.comboT=9;}
+      break;}
      case 'shove':{
       this.vx=0;
       if(!this.shoveDone&&this.st>=SHOVE_IMPACT){
@@ -3069,8 +3408,8 @@ class Fighter{
       break;}
      case 'guard':{
       // Some fighters shuffle both ways without lowering the guard.
-      const target=this.guardMoves?this.dir*48*Math.sin(this.st*4.8+this.guardPhase):0;
-      this.vx+=(target-this.vx)*Math.min(1,dt*9);
+      const target=this.guardMoves?this.dir*32*Math.sin(this.st*3.2+this.guardPhase):0;
+      this.vx+=(target-this.vx)*Math.min(1,dt*6);
       this.walkPh+=this.vx*this.dir*dt*.1;
       if(this.st>=this.guardDur){this.state='idle';this.st=0;}
       break;}
@@ -3174,11 +3513,54 @@ class Fighter{
       }
       // Keep the original get-up timings, but do not stand in midair after
       // falling from a lamp; the retained ragdoll physics determines contact.
-      if(this.hp>0&&r.grounded()){
+      if(this.hp>0&&r.grounded()&&!this.assistedBy){
         const stunScale=r.stunScale||1;
         if(this.fastGetup){ if((r.t>.35&&r.settle>.08)||r.t>1.2)this.startGetup(); }
         else if(r.t>.9*stunScale&&r.settle>.35)this.startGetup();
         else if(r.t>4.2*stunScale)this.startGetup();
+      }
+      break;}
+     case 'hector_phone':{
+      this.vx=0;this.vy=0;this.y=0;break;}
+     case 'car_exit':{
+      this.vy=0;this.y=0;
+      const delta=this.carExitX-this.x;
+      this.vx=clamp(delta*4,-135,135);
+      if(this.st>=.85){this.state='idle';this.st=0;this.vx=0;this.invT=.25;}
+      break;}
+     case 'assist_lift':{
+      this.vx=0;const v=this.assistTarget;
+      if(!v||!allFighters.includes(v)||v.hp<=0||!areAllies(this,v)||v.assistedBy!==this||
+         Math.abs(v.gy-this.gy)>30||Math.abs(v.x-this.x)>120||
+         !['ragdoll','getup','hector_crawl','hector_remount'].includes(v.state)){
+        this.breakAssist();this.state='idle';this.st=0;break;
+      }
+      if(!this.assistStarted&&this.st>=.55){
+        this.assistStarted=true;
+        if(v.state==='ragdoll'&&v.rag&&v.rag.grounded()){v.fastGetup=true;v.startGetup();}
+      }
+      if(this.st>=1.4){this.breakAssist();this.state='idle';this.st=0;}
+      break;}
+     case 'hector_crawl':{
+      const c=this.chair;
+      if(!c){this.vx=0;break;}
+      const delta=c.x-this.x,sameFloor=Math.abs(c.floor-this.gy)<5&&Math.abs(c.y-this.gy)<5;
+      if(Math.abs(delta)<=5&&sameFloor&&Math.abs(c.vx)<12){
+        // Only the final few pixels are aligned; distant recovery always
+        // travels across the floor using the arms rather than teleporting.
+        this.x=c.x;this.dir=c.dir;this.vx=0;this.state='hector_remount';this.st=0;this.cur=null;
+      }else if(Math.abs(delta)>5){
+        this.dir=delta>0?1:-1;
+        const stroke=.55+.45*Math.max(0,Math.sin(this.st*6));
+        this.vx=this.dir*Math.min(38*stroke,Math.abs(delta)/Math.max(dt,.001));
+      }else this.vx=0;
+      break;}
+     case 'hector_remount':{
+      this.vx=0;
+      if(!this.chair||Math.abs(this.chair.floor-this.gy)>5){this.state='hector_crawl';this.st=0;break;}
+      if(this.st>=1.25){
+        this.chair.attached=true;this.chair.vx=0;this.chair.vy=0;
+        this.x=this.chair.x;this.dir=this.chair.dir;this.state='idle';this.st=0;this.invT=.45;this.comboT=9;
       }
       break;}
      case 'getup':{
@@ -3199,7 +3581,7 @@ class Fighter{
       this.hoverY=0;
     }else if(this.state==='spawn'){
       this.hoverY=this.peaceful||this.sp<3?0:HL_HOVER*ease(clamp(1-this.spT/.45,0,1));
-    }else if(['stagger_fall','push_stagger','shove','lamp_jump','lamp_hang','lamp_pull','bleed_collapse'].includes(this.state)){
+    }else if(['stagger_fall','push_stagger','shove','lamp_jump','lamp_hang','lamp_pull','bleed_collapse','tactical_roll','rear_kick'].includes(this.state)){
       this.hoverY=0;
     }else if(this.state==='getup'){
       if(this.peaceful||this.st<1.76){this.hoverY=0;}
@@ -3223,6 +3605,7 @@ class Fighter{
       this.dizzyAlpha=Math.max(0,this.dizzyAlpha-dt*2.4);
     }
     if(this.dizzyAlpha>0)this.dizzyPh+=dt*4.4;
+    if(this.chair)this.updateWheelchair(dt);
     this.buildRig(dt);
     if(this.laserSlice&&!this.gorePieces){
       this.laserSlice.progress=Math.min(1,this.laserSlice.progress+dt/this.laserSlice.duration);
@@ -3302,7 +3685,15 @@ class Fighter{
      case 'spawn':{
       if(this.sp<3){const p=Object.assign({},T_POSE);if(this.sp===2){p.H+=Math.sin(this.st*38)*1.2*(this.spT/.55);p.tl+=Math.sin(this.st*30)*2*(this.spT/.55);}p.ey=0;return p;}
       return mix(T_POSE,isHL?HL_IDLE:D,ease(1-this.spT/.45));}
-     case 'getup':return sampleKF((this.skin==='negan'||this.skin==='chester')?GETUP_NEGAN:isHL?GETUP_HL:GETUP,this.st);
+     case 'getup':return sampleKF(isWeaponSkin(this.skin)?GETUP_NEGAN:isHL?GETUP_HL:GETUP,this.st);
+     case 'hector_phone':return HECTOR_SEATED;
+     case 'car_exit':return mix(P({H:48,tl:38,hd:15,a1:48,e1:70,a2:35,e2:70,f1x:20,f2x:-18}),D,ease(clamp(this.st/.85,0,1)));
+     case 'assist_lift':{
+      const lean=Math.sin(Math.PI*clamp(this.st/1.4,0,1));
+      return P({H:lerp(83,58,lean),tl:lerp(9,56,lean),hd:lerp(3,25,lean),px:7*lean,
+        a1:65,e1:38,c1:0,a2:55,e2:45,c2:0,f1x:26,f2x:-24,bg:0});}
+     case 'hector_crawl':return HECTOR_CRAWL;
+     case 'hector_remount':return mix(HECTOR_CRAWL,HECTOR_SEATED,ease(clamp(this.st/1.25,0,1)));
      case 'lamp_jump':return LAMP_REACH;
      case 'lamp_hang':{
       const p=Object.assign({},LAMP_HANG),lamp=this.lampRef;
@@ -3319,13 +3710,27 @@ class Fighter{
      case 'stagger_fall':
      case 'push_stagger':{
       const u=clamp(this.st/this.staggerDur,0,1),step=Math.sin(this.st*19);
+      if(this.state==='push_stagger'&&this.rearPush){
+        const lean=Math.sin(Math.PI*u)*.7+(this.shoveWillFall?u*.3:0);
+        return P({H:lerp(80,68,lean),tl:lerp(8,52,lean)+step*4,hd:lerp(4,20,lean),px:lerp(0,12,lean),
+          a1:65+step*12,e1:55,c1:0,a2:48-step*10,e2:65,c2:0,
+          f1x:24+step*23,f1h:Math.max(0,step)*16,f2x:-18-step*20,f2h:Math.max(0,-step)*14,mo:.8,bg:0});
+      }
       const lean=this.state==='push_stagger'&&!this.shoveWillFall?Math.sin(Math.PI*u)*.7:u;
       return P({H:lerp(80,67,lean),tl:lerp(-16,-55,lean)+step*4,hd:lerp(-14,-38,lean),px:lerp(-5,-14,lean),
         a1:68+step*8,e1:55,c1:0,a2:54-step*8,e2:62,c2:0,
         f1x:22+step*21,f1h:Math.max(0,step)*15,f2x:-22-step*18,f2h:Math.max(0,-step)*13,mo:.8,bg:0});}
+     case 'tactical_roll':{
+      const tuck=ease(clamp(this.st/.1,0,1));
+      return mix(D,ROLL_TUCK,tuck);}
+     case 'rear_kick':return sampleKF(REAR_KICK_KF,this.st);
      case 'shove':return sampleKF(SHOVE_KF,this.st);
      case 'guard':{
-      const p=Object.assign({},GUARD_POSE),w=clamp(Math.abs(this.vx)/48,0,1),step=Math.sin(this.walkPh)*w;
+      const p=Object.assign({},GUARD_POSE),w=clamp(Math.abs(this.vx)/32,0,1),step=Math.sin(this.walkPh)*w;
+      // Even a planted guard breathes; the head and both raised hands follow
+      // this small upper-body movement rather than freezing in a static pose.
+      const breath=Math.sin(this.t*2.6+this.seed);
+      p.H+=breath*.8;p.tl+=breath*1.2;p.hd+=breath*.65;
       p.f1x+=step*12;p.f2x-=step*12;p.f1h=Math.max(0,step)*7;p.f2h=Math.max(0,-step)*7;
       return p;}
      case 'guard_recoil':return GUARD_RECOIL;
@@ -3460,13 +3865,24 @@ class Fighter{
       this.x=clamp(this.rig.pel.x,this.minX,this.maxX);return;
     }
     const tp=this.targetPose();
-    const hard=['getup','spawn','counter_throw','lamp_hang','shove'].includes(this.state);
+    const hard=['getup','spawn','counter_throw','lamp_hang','shove','tactical_roll','rear_kick','hector_crawl','hector_remount'].includes(this.state);
     const k=hard?1:(this.state==='attack'||this.state==='hit')?1-Math.exp(-dt*45):1-Math.exp(-dt*24);
     this.cur=(this.cur&&!hard)?mix(this.cur,tp,k):Object.assign({},tp);
-    const hasBat=(this.skin==='negan'||this.skin==='chester')&&this.hp>0&&!this.batLost&&!stowsBat(this);
+    const hasBat=isWeaponSkin(this.skin)&&this.hp>0&&!this.batLost&&!stowsBat(this);
     const guarding=this.state==='guard'||this.state==='guard_recoil';
-    const pose=guarding?guardWobblePose(this.cur,this):this.cur;
+    let pose=guarding?guardWobblePose(this.cur,this):this.cur;
+    if(this.skin==='hector'&&this.chair?.attached)pose=seatedHectorPose(pose,this);
     let R=computeRig(pose,this.x,this.gy,this.y+(this.hoverY||0),this.dir,hasBat);
+    if(this.state==='tactical_roll')rotateRollRig(R,this);
+    if(this.skin==='hector'&&['idle','run','wheel_ram','wheel_dodge','wheel_bump','hector_phone'].includes(this.state))poseWheelchairArms(R,this);
+    if(this.state==='hector_phone')poseHectorPhone(R,this,Game.special);
+    if(this.state==='hector_crawl')poseHectorCrawlArms(R,this);
+    if(this.state==='hector_remount')poseHectorRemountArms(R,this);
+    if(this.state==='assist_lift'&&this.assistTarget?.rig){
+      const p=this.assistTarget.rig.sh;
+      aimArmWorld(R,'N',p.x+R.dir*6,p.y+5);aimArmWorld(R,'F',p.x-R.dir*5,p.y+9);
+      R.cN=R.cF=0;
+    }
     if(guarding)poseGuardArms(R,this);
     if(this.state==='lamp_jump'||this.state==='lamp_hang')poseLampArms(R,this);
     if(this.state==='lamp_pull')poseLampPullArms(R,this.lampPullTarget);
@@ -3477,7 +3893,7 @@ class Fighter{
       const p=surfacePoint(R,this.bleed.mark);
       if(p){aimArmWorld(R,this.bleed.arm,p.x,p.y);R['c'+this.bleed.arm]=0;R.bd=null;}
     }
-    if(this.state==='getup'&&this.blend>0&&this.blendFrom)R=blendRig(this.blendFrom,R,ease(1-this.blend/.3));
+    if(['getup','hector_crawl'].includes(this.state)&&this.blend>0&&this.blendFrom)R=blendRig(this.blendFrom,R,ease(1-this.blend/.3));
     this.rig=R;
   }
 }
@@ -3513,9 +3929,11 @@ class AutoCombat{
     this.spaceCD=rnd(2,4);this.spaceDuration=0;
     this.openingSeen=Object.create(null);this.openingTarget=null;this.bridgeTackleCD=0;
     this.bridgeDescentWait=8;this.bridgeDescentLamp=null;this.bridgeDescentDir=1;
+    this.ropeDecisionStamp=-1;this.ropeDecisionT=0;this.ropeReversals=0;
+    this.bridgeAlertSeen=new WeakMap();this.bridgeAlert=null;
     this.wanderAction='stand';this.wanderT=1.5;this.wanderDir=1;
     this.duckPlanTarget=null;this.duckPlanT=0;this.duckMaintain=false;this.duckIdeal=340;
-    this.chargeDuckDecided=false;
+    this.chargeDuckDecided=false;this.chargeRollDecided=false;this.rollCheck=2.5;
   }
   setMode(m){this.mode=m;this.modeT=0;}
   wander(dt,f,st){
@@ -3528,6 +3946,7 @@ class AutoCombat{
       this.wanderT=this.wanderAction==='run'?f.ambientBetween(.6,1.3):f.ambientBetween(1.5,4);
       this.wanderDir=f.ambientRandom()<.5?-1:1;
     }
+    if(f.skin==='hector'&&['crouch','jump'].includes(this.wanderAction)){this.wanderAction='stand';return;}
     if(this.wanderAction==='crouch'){c.crouch=true;return;}
     if(this.wanderAction==='jump'){
       if(st==='idle'){c.jump=true;this.wanderAction='stand';this.wanderT=f.ambientBetween(2,4);}
@@ -3568,8 +3987,91 @@ class AutoCombat{
     }
     return true;
   }
+  reconsiderRope(dt,f){
+    if(f.familyOwner?.hp>0&&f.familyOwner.onBridge&&f.lampAction==='climb')return;
+    if(this.ropeDecisionStamp!==f.lampHangStamp){
+      this.ropeDecisionStamp=f.lampHangStamp;this.ropeReversals=0;
+      this.ropeDecisionT=f.ambientBetween(1.4,2.8);
+    }
+    if(!['climb','descend'].includes(f.lampAction)||this.ropeReversals>=1)return;
+    this.ropeDecisionT-=dt;
+    if(this.ropeDecisionT>0)return;
+    this.ropeDecisionT=f.ambientBetween(2.1,3.5);
+    const lamp=f.lampRef;
+    // Leave room to make a visible change of mind, rather than cancelling
+    // the very last step at either end of the rope.
+    if(!lamp||f.lampClimb<125||f.gy-f.y<BRIDGE_Y+145)return;
+    if(f.ambientRandom()<.22&&f.reconsiderLampDirection(f.lampAction==='climb'?'descend':'climb'))
+      this.ropeReversals++;
+  }
+  noticeApproachingClimber(dt,f){
+    let alert=this.bridgeAlert;
+    if(alert&&(!alert.climber||alert.climber.hp<=0||alert.climber.state!=='lamp_hang'||
+       alert.climber.lampAction!=='climb'||alert.climber.lampHangStamp!==alert.stamp||alert.remaining<=0))
+      alert=this.bridgeAlert=null;
+    if(!alert){
+      // This is awareness of the rope, not sight or target acquisition: the
+      // normal visibility filter still hides all fighters below the deck.
+      const climbers=Game.lamps.flatMap(l=>[...l.riders]).filter(r=>r!==f&&r.hp>0&&
+        !areAllies(f,r)&&r.state==='lamp_hang'&&r.lampAction==='climb'&&r.gy-r.y>BRIDGE_Y+4&&
+        r.gy-r.y<BRIDGE_Y+360&&this.bridgeAlertSeen.get(r)!==r.lampHangStamp);
+      climbers.sort((a,b)=>Math.abs(a.x-f.x)-Math.abs(b.x-f.x));
+      const climber=climbers[0];if(!climber)return false;
+      this.bridgeAlertSeen.set(climber,climber.lampHangStamp);
+      const r=f.ambientRandom();
+      // Ignoring the noise remains possible. Leaving is deliberately unusual.
+      const response=r<.35?'ignore':r<.68?'watch':r<.91?'guard':'retreat';
+      if(response==='ignore')return false;
+      alert=this.bridgeAlert={climber,stamp:climber.lampHangStamp,response,remaining:f.ambientBetween(.8,1.5),guardTried:false};
+    }
+    alert.remaining-=dt;
+    const toward=alert.climber.x>=f.x?1:-1,dist=Math.abs(alert.climber.x-f.x);
+    f.ctrl.noFace=true;f.dir=toward;
+    if(alert.response==='guard'&&!alert.guardTried){
+      alert.guardTried=true;
+      if(dist<260&&f.state==='idle'&&f.startGuard(alert.climber))return true;
+    }
+    if(alert.response==='retreat'){
+      const room=toward>0?f.x-f.minX:f.maxX-f.x;
+      if(room>45)f.ctrl.mx=-toward;
+    }
+    // Watching or guarding never sends the fighter towards the rope.
+    return true;
+  }
+  helpFamily(f,o){
+    if(!f.familyOwner||!['idle','run'].includes(f.state))return false;
+    if(o&&o.hp>0&&!['ragdoll','getup','spawn'].includes(o.state)&&Math.abs(o.x-f.x)<150&&Math.abs(o.gy-f.gy)<40)return false;
+    const fallen=Game.fighters.filter(v=>areAllies(f,v)&&v.hp>0&&v.state==='ragdoll'&&v.rag&&
+      v.rag.grounded()&&!v.assistedBy&&Math.abs(v.gy-f.gy)<30).sort((a,b)=>Math.abs(a.x-f.x)-Math.abs(b.x-f.x))[0];
+    if(!fallen)return false;
+    const dx=fallen.x-f.x;
+    if(Math.abs(dx)>75){f.ctrl.mx=dx>0?1:-1;f.ctrl.noFace=true;f.dir=f.ctrl.mx;return true;}
+    if(f.state==='idle'&&f.startAssist(fallen))return true;
+    return true;
+  }
+  rallyToHector(f,o){
+    const owner=f.familyOwner;
+    if(!owner||owner.hp<=0||!owner.onBridge||!['idle','run'].includes(f.state))return false;
+    if(o&&o.hp>0&&!o.onBridge&&Math.abs(o.gy-f.gy)<40&&Math.abs(o.x-f.x)<115)return false;
+    if(f.onBridge){
+      if(!o&&Math.abs(owner.x-f.x)>190){f.ctrl.mx=owner.x>f.x?1:-1;f.ctrl.noFace=true;f.dir=f.ctrl.mx;}
+      return !o;
+    }
+    if(f.gy!==Game.gy)return false;
+    let lamp=this.lampTarget;
+    if(!lamp||lamp.detached||!Game.lamps.includes(lamp)||!lamp.canGrab()){
+      lamp=Game.lamps.filter(l=>!l.detached&&l.canGrab()).sort((a,b)=>
+        (Math.abs(a.x-f.x)+.35*Math.abs(a.anchorX-owner.x))-(Math.abs(b.x-f.x)+.35*Math.abs(b.anchorX-owner.x)))[0];
+      this.lampTarget=lamp||null;
+    }
+    if(!lamp)return true;
+    const d=lamp.x-f.x;f.ctrl.noFace=true;
+    if(Math.abs(d)>20){f.ctrl.mx=d>0?1:-1;f.dir=f.ctrl.mx;return true;}
+    if(f.state==='idle'&&f.startLampJump(lamp))this.lampTarget=null;
+    return true;
+  }
   planVault(f,body){
-    if(!safeToVault(body,1.25))return false;
+    if(f.skin==='hector'||!safeToVault(body,1.25))return false;
     const side=f.x>=body.x?1:-1;
     const start=clamp(body.x+side*210,f.minX,f.maxX);
     const landing=body.x-side*180;
@@ -3579,7 +4081,7 @@ class AutoCombat{
     return true;
   }
   startCharge(dist){
-    this.setMode('charge');this.chargeDuckDecided=false;
+    this.setMode('charge');this.chargeDuckDecided=false;this.chargeRollDecided=false;
     const r=Math.random();
     // 10%: never jumps and runs into the enemy; 12%: jumps too early; 10%: too late; otherwise a good timing
     let jd=r<.10?-1:r<.22?rnd(350,440):r<.32?rnd(30,70):rnd(190,300);
@@ -3589,7 +4091,7 @@ class AutoCombat{
   update(dt,f,o,all){
     const c=f.ctrl;
     c.mx=0;c.jump=false;c.punch=false;c.run=false;c.laser=false;c.hop=false;c.noFace=false;c.crouch=false;
-    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.lampCheck-=dt;this.spaceCD-=dt;this.bridgeTackleCD-=dt;this.duckPlanT-=dt;this.modeT+=dt;
+    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.lampCheck-=dt;this.spaceCD-=dt;this.bridgeTackleCD-=dt;this.duckPlanT-=dt;this.rollCheck-=dt;this.modeT+=dt;
     this.pendingShoveT=Math.max(0,this.pendingShoveT-dt);
     if(f.hp<=0){this.mode='engage';this.openingTarget=null;this.lampTarget=null;return;}
     const st=f.state;
@@ -3602,6 +4104,15 @@ class AutoCombat{
       this.pendingShove=null;this.vaultTarget=null;this.downTarget=null;this.downDecided=false;
       if(!['ragdoll','stagger_fall','push_stagger','bleed_collapse'].includes(st))f.faceOpp(o);
       return;
+    }
+    if(st==='lamp_hang'){
+      c.noFace=true;this.reconsiderRope(dt,f);return;
+    }
+    if(['hector_crawl','hector_remount','wheel_ram','wheel_bump','wheel_dodge','assist_lift','hector_phone','car_exit'].includes(st)){c.noFace=true;return;}
+    if(this.helpFamily(f,o)||this.rallyToHector(f,o))return;
+    if(f.rollBlindT>0&&f.rollBlindBy&&['tactical_roll','rear_kick'].includes(f.rollBlindBy.state)&&
+       ['idle','run'].includes(st)){
+      c.noFace=true;f.dir=f.rollBlindDir;return;
     }
     // Once airborne keep the running-jump momentum; interruption or landing
     // ends the plan without ever converting it into a flying kick.
@@ -3638,7 +4149,8 @@ class AutoCombat{
     if(this.mode==='bridge_descend'&&(!f.onBridge||o)){
       this.bridgeDescentLamp=null;this.bridgeDescentWait=Math.max(4,this.bridgeDescentWait);this.setMode('engage');
     }
-    if(f.onBridge&&!o&&['idle','run'].includes(st)&&this.descendFromBridge(dt,f))return;
+    if(f.onBridge&&!o&&['idle','run'].includes(st)&&this.noticeApproachingClimber(dt,f))return;
+    if(f.skin!=='hector'&&f.onBridge&&!o&&['idle','run'].includes(st)&&this.descendFromBridge(dt,f))return;
     // Corpses are not valid combat targets, but they are still real obstacles
     // to inspect or jump over when there is no immediate living opponent.
     if(!o){
@@ -3652,13 +4164,14 @@ class AutoCombat{
       this.duckPlanTarget=null;this.wander(dt,f,st);return;
     }
     const dx=o.x-f.x,dist=Math.abs(dx),toward=dx>=0?1:-1;
-    if(['guard','guard_recoil','shove','overextend','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','duck_throw'].includes(st)){
+    if(['guard','guard_recoil','shove','overextend','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','duck_throw','tactical_roll','rear_kick'].includes(st)){
       c.noFace=true;return;
     }
     // Navigate between floors before ordinary 1-D combat. A pursuer can use
     // the same rope once the first fighter is high enough, or another rope.
     const highTarget=o.onBridge||(o.state==='lamp_hang'&&o.lampClimb>120);
     if(!f.onBridge&&f.gy===Game.gy&&highTarget&&['idle','run'].includes(st)){
+      if(f.skin==='hector'){this.wander(dt,f,st);return;}
       if(this.mode!=='vertical_chase'){
         this.lampTarget=null;this.setMode('vertical_chase');
       }
@@ -3818,6 +4331,10 @@ class AutoCombat{
           this.setMode('engage');return;
         }
       }
+      if(!this.chargeRollDecided&&st==='run'&&dist>=120&&dist<=300&&Math.abs(f.vx)>=200){
+        this.chargeRollDecided=true;
+        if(f.ambientRandom()<.62&&f.startTacticalRoll(o,true))return;
+      }
       c.mx=toward;c.run=true;
       if(st==='run'&&this.jumpDist>0&&dist<=this.jumpDist&&Math.abs(f.vx)>=RUN_SPD*(dist>260?.88:.5)){
         c.jump=true;this.setMode('engage');
@@ -3867,6 +4384,12 @@ class AutoCombat{
       return;
     }
     this.downDecided=false;this.downTarget=null;
+    // A planted fighter may roll too, but a planned running charge is the
+    // more common entry. Decisions are occasional, not re-rolled per frame.
+    if(this.rollCheck<=0&&dist>=75&&dist<=160&&f.rollCD<=0){
+      this.rollCheck=f.ambientBetween(3.5,6);
+      if(f.ambientRandom()<.08&&f.startTacticalRoll(o,false))return;
+    }
     // Break up stationary exchanges: sometimes step or hop away and keep a
     // little space, without changing any attack or guard cooldowns.
     if(this.spaceCD<=0&&dist<165&&o.y<10&&o.state!=='attack'&&Math.random()<dt*.5){
@@ -4195,6 +4718,11 @@ function fighterStillFalling(f){
     f.state==='bridge_leap'||(f.state==='air'&&f.vy<0)||
     (f.state==='spawn'&&f.sp===1);
 }
+function drawCinematicBars(g,W,H,s){
+  if(!s||s.bars<=0)return;
+  const height=H*.115*clamp(s.bars,0,1);
+  g.fillStyle='#050404';g.fillRect(0,0,W,height);g.fillRect(0,H-height,W,height);
+}
 /* ============================ SANDBOX GAME ENGINE ============================ */
 // The bridge blocks an observer's view of anyone below the deck. Climbers
 // become visible once their feet actually reach bridge height, not before.
@@ -4207,7 +4735,7 @@ const Game={
   W:960,H:540,gy:468,S:1,cv:null,
   shake:0,hs:0,ts:1,tsT:0,time:0,paused:false,
   fighters:[],lamps:[],detachedLamps:0,
-  droppedBats:[],ducks:[],camera:null,audience:null,
+  droppedBats:[],ducks:[],cars:[],pendingCalls:[],special:null,camera:null,audience:null,
   autoSpawn:true,shiftCrouch:false,
   respawnTimer:0,
   koCount:0,
@@ -4216,7 +4744,7 @@ const Game={
     this.cv=document.querySelector('#gameCv');
     this.ctx=this.cv.getContext('2d');
     this.ctx.imageSmoothingEnabled=false;
-    this.fighters=[];this.droppedBats=[];this.ducks=[];this.lamps=[];this.detachedLamps=0;
+    this.fighters=[];this.droppedBats=[];this.ducks=[];this.cars=[];this.pendingCalls=[];this.special=null;this.lamps=[];this.detachedLamps=0;
     this.koCount=0;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;this.time=0;this.paused=false;this.respawnTimer=0;this.autoSpawn=!sandbox;this.shiftCrouch=false;
     this.camera={x:this.W/2,y:270,targetY:270,zoom:1,vignette:0};this.audience=null;
     skinCursor=0;
@@ -4251,6 +4779,22 @@ const Game={
     if(this.fx){this.fx.floorY=this.gy;this.fx.bloodField.resize(this.W,this.gy);}
     this.buildBG();
     for(const f of this.fighters){f.minX=70;f.maxX=this.W-70;}
+    // A phone cutaway freezes normal physics, so the usual next-frame boundary
+    // correction cannot keep its subject on screen after rotating a device.
+    const scene=this.special,owner=scene?.owner;
+    if(owner?.state==='hector_phone'){
+      owner.x=clamp(owner.x,owner.minX,owner.maxX);
+      if(owner.chair?.attached){owner.chair.x=owner.x;owner.chair.y=owner.gy-owner.y;}
+      const saved=scene.savedCamera,halfW=this.W/(2*saved.zoom),halfH=VIEW_H/(2*saved.zoom);
+      saved.x=clamp(saved.x,halfW,this.W-halfW);
+      saved.y=clamp(saved.y,WORLD_TOP+halfH,VIEW_H-halfH);
+      saved.targetY=clamp(saved.targetY,WORLD_TOP+VIEW_H/2,VIEW_H/2);
+      owner.buildRig(0);
+    }
+    for(const car of this.cars){
+      car.target=clamp(car.target,195,this.W-195);
+      if(car.phase==='parked')car.x=clamp(car.x,195,this.W-195);
+    }
   },
   buildBG(){
     this.bg=makeBG(this.W,540,this.gy,this.S);this.upperBG=makeUpperBG(this.W,this.S);this.vig=makeVignette(this.W,540,this.S);
@@ -4294,6 +4838,135 @@ const Game={
     if(this.fx)this.fx.spark(lamp.x,lamp.y,5,'255,195,100');
     for(const rider of riders)rider.releaseLamp('break');
     Snd.thud();return true;
+  },
+  canHectorCall(f){
+    if(!f||f.skin!=='hector'||f.hp<=0||f.specialUsed||f.specialCombatT<9||
+       f.state!=='idle'||!f.chair?.attached||!this.fighters.includes(f)||!this.findBestOpponent(f))return false;
+    // Don't repeatedly start a cinematic in the middle of a close-range
+    // exchange: wait for a little breathing room or a knocked-down opponent.
+    return !this.fighters.some(o=>o!==f&&!areAllies(f,o)&&o.hp>0&&
+      o.state!=='ragdoll'&&!(o.state==='getup'&&o.st<1.5)&&
+      Math.abs(o.x-f.x)<220&&Math.abs((o.gy-o.y)-(f.gy-f.y))<140);
+  },
+  beginHectorSpecial(f){
+    if(this.special||!this.canHectorCall(f))return false;
+    const c=this.camera;
+    this.special={owner:f,phase:'zoom',t:0,bars:0,reach:0,lift:0,phoneVisible:false,callCompleted:false,
+      caller:f.ambientRandom()<.5?0:1,axeIndex:f.ambientRandom()<.5?0:1,
+      savedCamera:{x:c.x,y:c.y,zoom:c.zoom,targetY:c.targetY}};
+    f.specialUsed=true;f.state='hector_phone';f.st=0;f.vx=0;f.vy=0;f.y=0;
+    return true;
+  },
+  cancelHectorSpecial(){
+    const s=this.special;if(!s)return;
+    const f=s.owner,c=this.camera;
+    if(f&&f.hp>0&&f.state==='hector_phone'){f.state='idle';f.st=0;}
+    if(c&&s.savedCamera)Object.assign(c,s.savedCamera);
+    this.special=null;
+  },
+  advanceHectorSpecial(dt){
+    const s=this.special;if(!s)return 1;
+    const f=s.owner,c=this.camera;
+    if(!f||!this.fighters.includes(f)||f.hp<=0){this.cancelHectorSpecial();return 1;}
+    // During the slow-in/slow-out an opponent can still interrupt the call.
+    // Do not replace a hit or ragdoll with an idle pose and a false summon.
+    if(f.state!=='hector_phone'){
+      // Before the call connects it may be retried later. Once completed, the
+      // family still arrives even if Hector is hit while the camera pulls out.
+      if(!s.callCompleted){f.specialUsed=false;f.specialCombatT=Math.max(0,f.specialCombatT-6);}
+      this.cancelHectorSpecial();return 1;
+    }
+    s.t+=dt;
+    const focusZoom=2.15,halfW=this.W/(focusZoom*2),halfH=VIEW_H/(focusZoom*2);
+    const focusX=clamp(f.x,halfW,this.W-halfW),focusY=clamp(f.gy-f.y-93,WORLD_TOP+halfH,540-halfH);
+    let world=0;
+    if(s.phase==='zoom'){
+      const u=ease(clamp(s.t/1.1,0,1));
+      s.bars=u;world=1-ease(clamp(s.t/.65,0,1));
+      c.x=lerp(s.savedCamera.x,focusX,u);c.y=lerp(s.savedCamera.y,focusY,u);c.zoom=lerp(s.savedCamera.zoom,focusZoom,u);
+      if(s.t>=1.1){s.phase='phone';s.t=0;}
+    }else if(s.phase==='phone'){
+      s.bars=1;s.reach=ease(clamp((s.t-.55)/.38,0,1));
+      s.lift=ease(clamp((s.t-.95)/.6,0,1));s.phoneVisible=s.t>=.84;
+      if(s.t>=4){s.phase='desert';s.t=0;}
+    }else if(s.phase==='desert'){
+      s.bars=1;s.reach=1;s.lift=1;s.phoneVisible=true;
+      if(s.t>=2.5){s.phase='return';s.t=0;}
+    }else if(s.phase==='return'){
+      s.bars=1;s.lift=1-ease(clamp((s.t-.35)/.65,0,1));
+      s.reach=1-ease(clamp((s.t-1)/.38,0,1));s.phoneVisible=s.t<1.13;
+      if(s.t>=1.75){
+        s.callCompleted=true;
+        this.pendingCalls.push({owner:f,delay:5.5,caller:s.caller,axeIndex:s.axeIndex});
+        s.phase='unzoom';s.t=0;s.reach=0;s.lift=0;s.phoneVisible=false;
+      }
+    }else if(s.phase==='unzoom'){
+      const u=ease(clamp(s.t/1.25,0,1));s.bars=1-u;world=u;
+      c.x=lerp(focusX,s.savedCamera.x,u);c.y=lerp(focusY,s.savedCamera.y,u);c.zoom=lerp(focusZoom,s.savedCamera.zoom,u);
+      if(s.t>=1.25){
+        f.state='idle';f.st=0;f.vx=0;Object.assign(c,s.savedCamera);
+        this.special=null;world=1;
+      }
+    }
+    if(f.state==='hector_phone')f.buildRig(0);
+    return world;
+  },
+  spawnFamilyCar(call){
+    const owner=call.owner;if(!owner||!this.fighters.includes(owner))return null;
+    const dir=owner.x<this.W/2?-1:1;
+    const target=clamp(owner.x-dir*270,195,this.W-195);
+    const car={owner,dir,x:dir>0?-210:this.W+210,y:this.gy,target,speed:0,wheelAngle:0,
+      phase:'approach',t:0,doors:0,hits:new Set(),axeIndex:call.axeIndex,caller:call.caller,brothers:[]};
+    this.cars.push(car);return car;
+  },
+  carImpact(v,car){
+    if(!v||v.hp<=0||v===car.owner||areAllies(v,car.owner)||v.state==='spawn')return false;
+    const source={x:car.x-car.dir*190,dir:car.dir,skin:'car'};
+    v.hp=Math.max(0,v.hp-15);v.breakChoke();v.breakAssist();
+    v.boxing=false;v.shoveTarget=null;v.duckTarget=null;v.rollTarget=null;
+    const p=v.rig?.pel||{x:v.x,y:v.gy-60};
+    this.hitFX(source,v,{pw:.7},p.x,p.y);injure(v,'torso',.65);
+    if(v.hp<=0)this.ko(v,source,{pw:.7,noStagger:true,lvx:250,lvy:220});
+    else v.toRagdoll(car.dir*260,220);
+    Snd.thud();return true;
+  },
+  exitFamilyCar(car){
+    for(let i=0;i<2;i++){
+      const skin=i===car.axeIndex?'salamanca_axe':'salamanca';
+      const x=clamp(car.x+car.dir*(i===0?95:-95),80,this.W-80);
+      const f=this.spawnFighter(x,car.dir,0,skin);
+      f.reset(x,car.dir);f.visible=true;f.gy=this.gy;f.y=0;f.vy=0;
+      f.familyId=car.owner.familyId;f.familyOwner=car.owner;f.state='car_exit';f.st=0;f.invT=.85;
+      f.carExitX=clamp(x+car.dir*(i===0?38:-38),f.minX,f.maxX);
+      f.buildRig(0);car.brothers.push(f);
+    }
+  },
+  updateFamilyVehicles(dt){
+    for(const call of this.pendingCalls)call.delay-=dt;
+    const ready=this.pendingCalls.filter(call=>call.delay<=0);this.pendingCalls=this.pendingCalls.filter(call=>call.delay>0);
+    for(const call of ready)this.spawnFamilyCar(call);
+    for(const car of this.cars){
+      car.t+=dt;
+      if(car.phase==='approach'){
+        const remain=Math.max(0,(car.target-car.x)*car.dir);
+        const desired=Math.min(510,Math.sqrt(2*650*remain));
+        car.speed+=clamp(desired-car.speed,-650*dt,500*dt);
+        const step=Math.min(remain,Math.max(0,car.speed)*dt),oldFront=car.x+car.dir*188;
+        car.x+=car.dir*step;car.wheelAngle+=car.dir*step/25;
+        const front=car.x+car.dir*188,lo=Math.min(oldFront,front)-32,hi=Math.max(oldFront,front)+32;
+        for(const f of this.fighters){
+          if(car.hits.has(f)||f.hp<=0||f===car.owner||areAllies(f,car.owner)||
+             f.gy!==this.gy||f.y>65||f.x<lo||f.x>hi)continue;
+          if(this.carImpact(f,car))car.hits.add(f);
+        }
+        if(remain<=step+.01){car.x=car.target;car.speed=0;car.phase='doors';car.t=0;}
+      }else if(car.phase==='doors'){
+        car.doors=ease(clamp(car.t/.45,0,1));
+        if(car.t>=.5){this.exitFamilyCar(car);car.phase='parked';car.t=0;}
+      }else if(car.phase==='parked'){
+        car.doors=1-ease(clamp((car.t-1)/.6,0,1));
+      }
+    }
   },
   spawnFighter(x,dir,delay,skin,options={}){
     const dead=this.fighters.filter(f=>f.hp<=0);
@@ -4362,13 +5035,15 @@ const Game={
     const c=this.camera;return c?(x-this.W/2)/c.zoom+c.x:x;
   },
   clearBodies(){
-    for(const f of this.fighters)if(f.hp<=0){f.clearLamp();f.breakChoke();}
+    if(this.special?.owner?.hp<=0)this.cancelHectorSpecial();
+    for(const f of this.fighters)if(f.hp<=0){f.clearLamp();f.breakChoke();f.breakAssist();}
     this.fighters=this.fighters.filter(f=>f.hp>0);
     this.fx.gibs=[];this.droppedBats=[];this.goreKey=null;
   },
   clearAll(){
-    for(const f of this.fighters){f.clearLamp();f.breakChoke();}
-    this.fighters=[];this.droppedBats=[];this.ducks=[];
+    this.cancelHectorSpecial();
+    for(const f of this.fighters){f.clearLamp();f.breakChoke();f.breakAssist();}
+    this.fighters=[];this.droppedBats=[];this.ducks=[];this.cars=[];this.pendingCalls=[];
     this.fx.clearBlood();
     for(const key of ['sm','sp','gibs','laserSparks','fl','rg'])this.fx[key]=[];
     this.goreKey=null;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;
@@ -4389,13 +5064,15 @@ const Game={
     this.fx.clearBlood();
     for(const f of this.fighters){
       if(f.hp>0)f.wounds=newWounds();
-      f.bloodStains=[];f.footBlood={N:0,F:0};f.jointBlood={kN:0,kF:0,eN:0,eF:0};f.bloodFootfall=null;
+      f.bloodStains=[];f.footBlood={N:0,F:0};f.jointBlood={kN:0,kF:0,eN:0,eF:0};f.bloodFootfall=null;f.axeBlood=0;
     }
+    for(const b of this.droppedBats)b.blood=0;
   },
   // Ray against the arena: stops at the first fighter body, the floor, a wall post or the ceiling.
+  areAllies(a,b){return areAllies(a,b);},
   castRay(x,y,ux,uy,self){
     const W=this.W,gy=this.gy;
-    const others=this.fighters.filter(g=>g!==self&&g.rig&&g.state!=='spawn'&&g.visible);
+    const others=this.fighters.filter(g=>g!==self&&!areAllies(g,self)&&g.rig&&g.state!=='spawn'&&g.visible);
     let px=x,py=y,previousY=y;
     for(let t=4;t<3400;t+=4){
       px=x+ux*t;py=y+uy*t;
@@ -4443,15 +5120,15 @@ const Game={
     a=a||{};
     const delayed=!a.bleedOut&&!a.noStagger&&!a.preserveRagdoll&&!a.keepRag&&
       (a.launch||a.pw>=.4)&&v.canStagger(att)&&Math.random()<STAGGER_KO_CHANCE;
-    v.breakChoke();v.boxing=false;v.shoveTarget=null;v.duckTarget=null;v.hp=0;
-    if((v.skin==='negan'||v.skin==='chester')&&!v.batLost){
+    v.breakChoke();v.breakAssist();v.boxing=false;v.shoveTarget=null;v.duckTarget=null;v.hp=0;
+    if(isWeaponSkin(v.skin)&&!v.batLost){
       const R=v.rig;
       const bx=R&&R.bd?R.wN.x+R.bd.x*24:v.x+v.dir*26;
       const by=R&&R.bd?R.wN.y+R.bd.y*24:v.gy-v.y-96;
       const ang=R&&R.bd?Math.atan2(R.bd.y,R.bd.x):-.8*v.dir;
       v.batLost=true;
       this.droppedBats.push({
-        x:bx,y:by,gy:v.gy,flip:v.dir,kind:v.skin==='chester'?'guitar':'bat',damage:v.guitarDamage||0,
+        x:bx,y:by,gy:v.gy,flip:v.dir,kind:v.skin==='salamanca_axe'?'axe':v.skin==='chester'?'guitar':'bat',damage:v.guitarDamage||0,blood:v.axeBlood||0,
         vx:a.bleedOut?(v.vx||0)*.2:att.dir*rnd(130,250)+(v.vx||0)*.35,
         vy:a.bleedOut?-40:-rnd(190,310),
         ang,
@@ -4488,7 +5165,7 @@ const Game={
   findBestOpponent(f){
     let best=null,bestScore=1e9;
     for(const o of this.fighters){
-      if(o===f||o.hp<=0||!canSeeFighter(f,o))continue;
+      if(o===f||areAllies(f,o)||o.hp<=0||!canSeeFighter(f,o))continue;
       const dist=Math.abs(o.x-f.x);
       const vertical=f.rig&&o.rig?Math.abs(f.rig.pel.y-o.rig.pel.y):Math.abs((f.gy-f.y)-(o.gy-o.y));
       const downPenalty=(o.state==='ragdoll'||o.state==='getup'||o.state==='spawn')?280:0;
@@ -4499,14 +5176,17 @@ const Game={
   },
   update(dt){
     if(this.paused)return;
-    const rdt=dt;this.time+=rdt;
-    if(this.hs>0){this.hs-=rdt;dt*=.05;}
-    if(this.tsT>0){this.tsT-=rdt;dt*=this.ts;if(this.tsT<=0)this.ts=1;}
-    this.shake*=Math.exp(-rdt*9);
+    const rdt=dt,worldScale=this.special?this.advanceHectorSpecial(rdt):1;
+    if(worldScale<=.00001)return;
+    dt*=worldScale;const worldReal=rdt*worldScale;this.time+=worldReal;
+    this.updateFamilyVehicles(worldReal);
+    if(this.hs>0){this.hs-=worldReal;dt*=.05;}
+    if(this.tsT>0){this.tsT-=worldReal;dt*=this.ts;if(this.tsT<=0)this.ts=1;}
+    this.shake*=Math.exp(-worldReal*9);
     const alive=this.fighters.filter(f=>f.hp>0);
     const keyboardFighter=this.shiftCrouch?alive[0]:null;
     if(this.autoSpawn&&alive.length<2){
-      this.respawnTimer-=rdt;
+      this.respawnTimer-=worldReal;
       if(this.respawnTimer<=0){
         this.respawnTimer=2.2;
         if(alive.length===0){
@@ -4521,7 +5201,7 @@ const Game={
     for(const lamp of this.lamps)lamp.update(dt,this);
     // Owners/throwers update before the restrained fighter, independent of
     // spawn order, then the holder's hands are aligned to the current neck.
-    const dependent=f=>['choked','counter_carried'].includes(f.state);
+    const dependent=f=>['choked','counter_carried'].includes(f.state)||!!f.assistedBy;
     const order=[...this.fighters.filter(f=>!dependent(f)),...this.fighters.filter(dependent)];
     for(const f of order){
       const opp=f.hp>0?this.findBestOpponent(f):null;
@@ -4530,7 +5210,7 @@ const Game={
         // releasing it returns the fighter to the normal autonomous AI.
         const c=f.ctrl;c.mx=0;c.jump=false;c.punch=false;c.run=false;c.hop=false;c.laser=false;c.noFace=false;c.crouch=true;
       }else if(f.hp>0){
-        const visible=f.onBridge?this.fighters.filter(o=>o===f||canSeeFighter(f,o)):this.fighters;
+        const visible=this.fighters.filter(o=>o===f||(!areAllies(f,o)&&(!f.onBridge||canSeeFighter(f,o))));
         f.autopilot.update(dt,f,opp,visible);
       }else{
         const c=f.ctrl;c.mx=0;c.jump=false;c.punch=false;c.run=false;c.hop=false;c.laser=false;c.noFace=false;c.crouch=false;
@@ -4539,6 +5219,12 @@ const Game={
     }
     for(const f of this.fighters){
       if(f.state==='choke'&&f.chokeTarget&&f.chokeTarget.rig)f.buildRig(0);
+    }
+    if(!this.special){
+      // Another Hector may be out of sight or unable to call; don't let him
+      // prevent a different eligible fighter from using his own ability.
+      const caller=this.fighters.find(f=>this.canHectorCall(f));
+      if(caller)this.beginHectorSpecial(caller);
     }
     updateDucks(this,dt,BRIDGE_Y,WORLD_TOP);
     for(const b of this.droppedBats){
@@ -4568,11 +5254,11 @@ const Game={
     }
     for(let i=0;i<alive.length;i++){
       const A=alive[i];
-      if(A.hp<=0||A.y>=60||['ragdoll','spawn','run','counter_carried'].includes(A.state))continue;
+      if(A.hp<=0||A.y>=60||['ragdoll','spawn','run','counter_carried','tactical_roll','hector_crawl','hector_remount'].includes(A.state))continue;
       for(let j=i+1;j<alive.length;j++){
         const B=alive[j];
-        if(B.hp<=0||B.y>=60||Math.abs((A.gy-A.y)-(B.gy-B.y))>100||['ragdoll','spawn','run','counter_carried'].includes(B.state))continue;
-        if(A.chokeTarget===B||B.chokeTarget===A||A.flankTarget===B||B.flankTarget===A||A.lampPullTarget===B||B.lampPullTarget===A)continue;
+        if(B.hp<=0||B.y>=60||Math.abs((A.gy-A.y)-(B.gy-B.y))>100||['ragdoll','spawn','run','counter_carried','tactical_roll','hector_crawl','hector_remount'].includes(B.state))continue;
+        if(A.chokeTarget===B||B.chokeTarget===A||A.flankTarget===B||B.flankTarget===A||A.lampPullTarget===B||B.lampPullTarget===A||A.assistTarget===B||B.assistTarget===A)continue;
         const dx=B.x-A.x,m=54;
         if(Math.abs(dx)<m){
           const s=dx>=0?1:-1,push=(m-Math.abs(dx))/2;
@@ -4587,14 +5273,18 @@ const Game={
       }
     }
     this.fx.update(dt);
-    if(this.audience)this.audience.update(rdt);
-    this.updateCamera(rdt);
+    if(this.audience)this.audience.update(worldReal);
+    if(!this.special)this.updateCamera(worldReal);
   },
   render(){
     const ctx=this.ctx,S=this.S,W=this.W,H=540;
     ctx.setTransform(1,0,0,1,0,0);ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';ctx.filter='none';ctx.clearRect(0,0,this.cv.width,this.cv.height);
     ctx.setTransform(S,0,0,S,0,0);
     ctx.imageSmoothingEnabled=false;
+    if(this.special?.phase==='desert'){
+      drawFamilyDesert(ctx,W,H,skinHeads.salamanca?.img,this.special);
+      drawCinematicBars(ctx,W,H,this.special);return;
+    }
     ctx.save();
     const shakeX=this.shake>.3?Math.sin(this.time*61)*this.shake:0,shakeY=this.shake>.3?Math.sin(this.time*79+1)*this.shake:0;
     ctx.translate(shakeX,shakeY);
@@ -4639,6 +5329,19 @@ const Game={
       ctx.drawImage(this.batLayer.canvas,0,viewY,W,H);
     }
 
+    if(this.cars.length){
+      clearPixelLayer(this.bodyLayer);
+      for(const car of this.cars)drawMercedes(this.bodyLayer.ctx,car);
+      ctx.drawImage(this.bodyLayer.canvas,0,viewY,W,H);
+    }
+    // A fallen chair persists at its own physical position, even when Hector
+    // has become a ragdoll or a severed body, until its owner is cleaned up.
+    const looseChairs=this.fighters.filter(f=>f.chair&&!f.chair.attached&&f.visible);
+    if(looseChairs.length){
+      clearPixelLayer(this.bodyLayer);
+      for(const f of looseChairs){drawWheelchairBack(this.bodyLayer.ctx,f.chair);drawWheelchairFront(this.bodyLayer.ctx,f.chair);}
+      ctx.drawImage(this.bodyLayer.canvas,0,viewY,W,H);
+    }
     const severed=this.fighters.filter(f=>f.gorePieces&&f.rig);
     // A duck is visible over resting remains, but falling bodies/fragments
     // pass in front of it. Keep the old cache for settled gore.
@@ -4655,7 +5358,7 @@ const Game={
       ctx.drawImage(this.goreLayer.canvas,0,viewY,W,H);
     }else this.goreKey=null;
 
-    const dependent=f=>['choked','counter_carried'].includes(f.state);
+    const dependent=f=>['choked','counter_carried'].includes(f.state)||!!f.assistedBy;
     const baseOrder=[...this.fighters.filter(f=>f.hp<=0),
       ...this.fighters.filter(f=>f.hp>0&&!dependent(f)),
       ...this.fighters.filter(f=>f.hp>0&&dependent(f))];
@@ -4692,13 +5395,17 @@ const Game={
         ctx.drawImage(layer.canvas,0,layer.offsetY,W,H);
       };
       paintLayer(this.batLayer,q=>drawFighterShadow(q,f),false);
-      if((f.skin==='negan'||f.skin==='chester')&&!f.batLost&&f.hp>0&&stowsBat(f))paintLayer(this.batLayer,q=>drawStowedBat(q,f));
+      if(f.chair?.attached)paintLayer(this.bodyLayer,q=>drawWheelchairBack(q,f.chair),false);
+      if(isWeaponSkin(f.skin)&&!f.batLost&&f.hp>0&&stowsBat(f))paintLayer(this.batLayer,q=>drawStowedBat(q,f));
       paintLayer(this.bodyLayer,q=>{drawFighterBody(q,f);if(f.laserSlice)drawSliceProgress(q,f);});
       paintLayer(this.headLayer,q=>drawFighterHead(q,f));
+      if(f.chair?.attached)paintLayer(this.frontLayer,q=>drawWheelchairFront(q,f.chair),false);
+      if(this.special?.owner===f&&this.special.phoneVisible&&f.rig.wF)
+        paintLayer(this.frontLayer,q=>drawPhone(q,f.rig.wF.x,f.rig.wF.y,f.dir,.8),false);
       if(f.state==='duck_throw'&&!f.duckReleased&&f.st>=.12&&f.rig.wF){
         paintLayer(this.batLayer,q=>drawDuck(q,f.rig.wF.x-f.dir*5,f.rig.wF.y-8,0,f.dir),false);
       }
-      if((f.skin==='negan'||f.skin==='chester')&&!f.batLost&&f.hp>0&&f.rig.bd){
+      if(isWeaponSkin(f.skin)&&!f.batLost&&f.hp>0&&f.rig.bd){
         paintLayer(this.batLayer,q=>drawBat(q,f));
       }
       paintLayer(this.frontLayer,q=>{drawFighterFrontArm(q,f);if(f.laserSlice)drawSliceProgress(q,f);});
@@ -4752,6 +5459,7 @@ const Game={
     ctx.restore(); // Camera transform; vignettes stay fixed to the screen.
     ctx.imageSmoothingEnabled=true;
     ctx.drawImage(this.vig,0,0,W,H);
+    drawCinematicBars(ctx,W,H,this.special);
     ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';ctx.filter='none';ctx.setTransform(S,0,0,S,0,0);
   }
 };
@@ -4838,6 +5546,12 @@ export function startGame(){
   addEventListener('resize',onResize);
   addEventListener('keydown',onKeyDown);addEventListener('keyup',onKeyUp);addEventListener('blur',onBlur);
   let raf=0,last=performance.now(),running=true;
+  // Canvas backgrounds are cached; repaint them once the local title font is
+  // ready, without advancing physics or changing the visible paused frame.
+  if(document.fonts?.load)document.fonts.load("900 56px 'Russo One'").then(()=>{
+    if(!running||Game.cv!==cv)return;
+    Game.buildBG();if(!Game.paused)Game.render();
+  }).catch(()=>{});
   const frame=ts=>{
     if(!running)return;
     raf=requestAnimationFrame(frame);

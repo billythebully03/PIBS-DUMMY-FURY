@@ -2,9 +2,9 @@
 // Каждый персонаж: вес, рост, хп (см. PibsPhy6/WeightPhysic), цвет HUD,
 // ссылка на портрет головы. Пиксельная одежда рисуется в движке по skin-ключу.
 
-export type SkinKey = 'jane' | 'negan' | 'homelander' | 'walt' | 'saul' | 'chester' | 'tubtrooper';
+export type SkinKey = 'jane' | 'negan' | 'homelander' | 'walt' | 'saul' | 'chester' | 'tubtrooper' | 'hector';
 
-export const SKINS: SkinKey[] = ['jane', 'negan', 'homelander', 'walt', 'saul', 'chester', 'tubtrooper'];
+export const SKINS: SkinKey[] = ['jane', 'negan', 'homelander', 'walt', 'saul', 'chester', 'tubtrooper', 'hector'];
 
 export const SKIN_META: Record<SkinKey, { label: string; color: string }> = {
   jane:       { label: 'ПАТРИК ДЖЕЙН', color: '#68717E' },
@@ -14,6 +14,7 @@ export const SKIN_META: Record<SkinKey, { label: string; color: string }> = {
   saul:       { label: 'СОЛ', color: '#D94B8D' },
   chester:    { label: 'ЧЕСТЕР', color: '#BD2536' },
   tubtrooper: { label: 'ТАБТРУПЕР', color: '#E95338' },
+  hector:     { label: 'ГЕКТОР САЛАМАНКА', color: '#B5A47D' },
 };
 
 export const HEAD_URL: Record<SkinKey, string> = {
@@ -24,4 +25,5 @@ export const HEAD_URL: Record<SkinKey, string> = {
   saul: '/faces/saul.png',
   chester: '/faces/chester.png',
   tubtrooper: '/faces/stormtrooper.png',
+  hector: '/faces/hector.png',
 };
