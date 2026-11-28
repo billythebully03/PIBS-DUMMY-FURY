@@ -24,20 +24,8 @@ const SHOVE_DUR=.58, SHOVE_IMPACT=.25, SHOVE_REACH=105;
 const BLEED_DPS=2, BLEED_AFTER_DEATH=3;
 const STAGGER_KNOCKDOWN_CHANCE=.4, STAGGER_KO_CHANCE=.4;
 const LAMP_PULL_DUR=.7;
-// Short ambient lines are deliberately separate from combat AI and have a
-// long cooldown so a quiet sandbox feels alive without becoming a chat log.
-const CHESTER_HUMS=['In the end...','I tried so hard','I\'ve become so numb'];
-const CASUAL_LINES={
-  walt:['A quiet moment.','Time to think.','Nice and easy.','Looks peaceful.'],
-  homelander:['Lovely day.','All under control.','Looking good.','Nice and quiet.'],
-  saul:['No worries.','Better call Saul.','What a day.','Taking a break.'],
-  tubtrooper:['All clear.','Nice and easy.','Where is my duck?','Just chilling.'],
-  negan:['Well, well.','Not a bad day.','Taking it easy.','Nice and quiet.'],
-  jane:['Interesting.','Lovely day.','Just observing.','Take it easy.'],
-  chester:['Just humming.',...CHESTER_HUMS],
-};
-const DOWN_LINES=['Ouch!','Damn!','Ow!','Ugh!'];
-const CHECK_LINES=['You okay?','Need a hand?','Take it easy.','That looked rough.'];
+// A bridge tackle is an occasional decision, not a per-frame fall lottery.
+const BRIDGE_TACKLE_CHANCE=.04;
 // PibsPhy6/WeightPhysic: вес/рост/хп и множители. Тяжелее = медленнее и
 // сложнее сбить с ног; легче = быстрее и проще сбить. Масса в регдолле.
 const WSTATS={
@@ -2008,7 +1996,6 @@ class Fighter{
       connected:false,lastHitTarget:null,lastAttackEnd:-Infinity,lastSign:1,rag:null,hitZone:'head',
       poolT:0,sp:0,spT:0,dashW:0,dashF:true,dashT:0,
       hitDone:false,queued:false,lungeDone:false,wh:false,dustT:0,peaceful:false,tie:null,cape:null,pvx:0,pvy:0,corpseFade:0,
-      speech:'',speechTime:0,speechWait:5+(this.seed%1)*6,speechWasDown:false,spokenDownTarget:null,
       ambientSeed:(Math.floor(this.seed*429496729)>>>0)||1,
       lz:null,lzSnd:false,burns:[],dive:false,diveT:0,diveHit:false,kickExt:0,bodyJump:false,fastGetup:false,
       hoverY:0,hlBrake:0,hlBrakeDir:1,hlBrakeFrom:null,hlLiftFx:false,hopDur:.38,
@@ -2032,33 +2019,9 @@ class Fighter{
   spawn(delay){this.state='spawn';this.sp=0;this.spT=delay||.05;this.visible=false;this.y=this.spawnY;this.vy=0;this.vx=0;this.st=0;this.cur=null;this.hoverY=0;}
   canBeHit(){return this.hp>0&&this.state!=='ragdoll'&&this.state!=='getup'&&this.state!=='spawn'&&this.state!=='win'&&this.invT<=0;}
   faceOpp(o){if(this.ctrl.noFace)return;if(this.skin==='homelander'&&this.hlBrake>.42)return;if(o&&this.y<2&&Math.abs(o.x-this.x)>10)this.dir=o.x>this.x?1:-1;}
-  // Ambient choices use their own deterministic stream; dialogue and solo
-  // wandering must not change the random decisions in an ongoing fight.
+  // Solo wandering has its own deterministic stream and cannot perturb combat RNG.
   ambientRandom(){this.ambientSeed=(Math.imul(this.ambientSeed,1664525)+1013904223)>>>0;return this.ambientSeed/4294967296;}
   ambientBetween(a,b){return a+this.ambientRandom()*(b-a);}
-  ambientLine(lines){return lines[Math.floor(this.ambientRandom()*lines.length)];}
-  speak(text,duration=2.4){this.speech=text;this.speechTime=duration;}
-  updateSpeech(dt,target){
-    if(this.speechTime>0){this.speechTime=Math.max(0,this.speechTime-dt);if(!this.speechTime)this.speech='';}
-    this.speechWait-=dt;
-    if(this.hp<=0){this.speech='';this.speechTime=0;return;}
-    const down=this.state==='ragdoll';
-    if(down&&!this.speechWasDown){
-      this.speak(this.ambientLine(DOWN_LINES),1.5);this.speechWait=this.ambientBetween(5,9);
-    }
-    this.speechWasDown=down;
-    if(down)return;
-    const unconscious=target&&target.hp>0&&target.state==='ragdoll'&&Math.abs(target.x-this.x)<280;
-    if(!unconscious)this.spokenDownTarget=null;
-    else if(this.spokenDownTarget!==target&&this.speechWait<=0&&!this.speechTime){
-      this.spokenDownTarget=target;this.speechWait=this.ambientBetween(9,16);
-      if(this.ambientRandom()<.3)this.speak(this.ambientLine(CHECK_LINES),2.3);
-    }
-    if(!target&&['idle','run'].includes(this.state)&&this.speechWait<=0&&!this.speechTime){
-      this.speak(this.ambientLine(CASUAL_LINES[this.skin]||CASUAL_LINES.jane),2.8);
-      this.speechWait=this.ambientBetween(11,20);
-    }
-  }
   bloodStrength(){
     if(!this.bleed)return 1;
     const weakness=clamp((this.bleed.lost+Math.max(0,30-this.hp)*.55)/32,0,1);
@@ -2171,6 +2134,32 @@ class Fighter{
     this.lampBreakAt=Math.random()<.02?rnd(.8,2.4):Infinity;
     return true;
   }
+  // Find a grip high enough that the feet start exactly on the bridge.
+  // Both walking and grabbing use this same moving-rope position.
+  bridgeRopeApproach(lamp,dir=this.dir){
+    if(!lamp||lamp.detached)return null;
+    const base=computeRig(LAMP_HANG,0,Game.gy,0,dir,false);
+    const gripY=BRIDGE_Y+(base.sh.y-Game.gy)-53;
+    const up=lamp.length-30-(gripY-lamp.anchorY)/Math.cos(lamp.theta);
+    if(up<0||up>lamp.length-32)return null;
+    const grip=lamp.point(30+up);
+    return {climb:up,x:clamp(grip.x-dir*27-base.sh.x,this.minX,this.maxX)};
+  }
+  startLampDescent(lamp){
+    if(this.state!=='idle'||this.hp<=0||!this.onBridge||this.y>5||
+       !lamp||!Game.lamps.includes(lamp)||lamp.detached)return false;
+    const plan=this.bridgeRopeApproach(lamp);
+    if(!plan||Math.abs(this.x-plan.x)>16||!lamp.canDescendAt(plan.climb))return false;
+    // Transfer floor references without teleporting: the initial hanging
+    // position is still at bridge height and then moves down continuously.
+    this.gy=Game.gy;this.y=Game.gy-BRIDGE_Y;this.onBridge=false;
+    this.lampRef=lamp;this.lampGoal=null;this.lampAction='descend';
+    this.lampClimb=plan.climb;this.lampGrabGap=53;this.lampGrabSide=-this.dir*27;
+    this.lampStamina=Infinity;this.lampBreakAt=Infinity;this.lampHangStamp++;
+    this.state='lamp_hang';this.st=.22;this.vx=0;this.vy=0;this.hoverY=0;
+    this.fallPeak=0;this.fallReactT=0;this.cur=null;lamp.riders.add(this);
+    return true;
+  }
   clearLamp(){
     const lamp=this.lampRef;
     if(lamp)lamp.riders.delete(this);
@@ -2194,7 +2183,8 @@ class Fighter{
     this.state='air';this.dive=false;
     if(reason==='jump'){
       this.vx=this.dir*230+swing*.55;this.vy=230;Snd.hop();
-    }else{this.vx=swing*.65;this.vy=-60;}
+    }else if(reason==='descend'){this.vx=0;this.vy=-50;}
+    else{this.vx=swing*.65;this.vy=-60;}
   }
   updateLampHang(dt,opponent){
     const lamp=this.lampRef;
@@ -2209,6 +2199,12 @@ class Fighter{
       for(const rider of lamp.riders)if(rider!==this&&rider.lampClimb>this.lampClimb)
         limit=Math.min(limit,Math.max(this.lampClimb,rider.lampClimb-90));
       this.lampClimb=Math.min(limit,this.lampClimb+205*dt);
+    }else if(this.lampAction==='descend'){
+      // Riders going down keep the same separation as riders going up.
+      let limit=0;
+      for(const rider of lamp.riders)if(rider!==this&&rider.lampClimb<this.lampClimb)
+        limit=Math.max(limit,Math.min(this.lampClimb,rider.lampClimb+90));
+      this.lampClimb=Math.max(limit,this.lampClimb-175*dt);
     }
     const settle=ease(clamp(this.st/.22,0,1));
     const lift=this.lampAction==='pullup'?
@@ -2224,11 +2220,15 @@ class Fighter{
       this.clearLamp();this.gy=BRIDGE_Y;this.y=0;this.vy=0;this.onBridge=true;
       this.state='idle';this.st=0;this.cur=null;this.fallPeak=0;return;
     }
+    if(this.lampAction==='descend'&&this.lampClimb<=0){
+      // The shade ends just above the floor; the final short step down is safe.
+      this.releaseLamp('descend');return;
+    }
     if(this.lampAction==='climb'&&opponent&&opponent.hp>0&&this.y>350){
       this.tackleCheck-=dt;
       if(this.tackleCheck<=0){
-        this.tackleCheck=rnd(1.2,2);
-        if(Math.random()<.22&&this.startHighTackle(opponent))return;
+        this.tackleCheck=rnd(3,6);
+        if(Math.random()<BRIDGE_TACKLE_CHANCE&&this.startHighTackle(opponent))return;
       }
     }
     if((this.lampAction==='pullup'||this.lampAction==='dive')&&this.st>=this.lampDiveAt){
@@ -3309,7 +3309,7 @@ class Fighter{
       const sway=lamp?clamp(lamp.omega,-.45,.45):0;
       p.tl+=(lamp?lamp.theta*20:0)-sway*5;
       p.f1x+=sway*12;p.f2x+=sway*9;
-      if(this.lampAction==='climb'){
+      if(this.lampAction==='climb'||this.lampAction==='descend'){
         const step=Math.sin(this.t*11);p.f1x+=step*12;p.f2x-=step*12;
         p.f1h+=Math.max(0,step)*15;p.f2h+=Math.max(0,-step)*15;
       }
@@ -3512,6 +3512,7 @@ class AutoCombat{
     this.rolled=false;this.intercept=false;this.afterHop=0;this.reactAction='hop';
     this.spaceCD=rnd(2,4);this.spaceDuration=0;
     this.openingSeen=Object.create(null);this.openingTarget=null;this.bridgeTackleCD=0;
+    this.bridgeDescentWait=8;this.bridgeDescentLamp=null;this.bridgeDescentDir=1;
     this.wanderAction='stand';this.wanderT=1.5;this.wanderDir=1;
     this.duckPlanTarget=null;this.duckPlanT=0;this.duckMaintain=false;this.duckIdeal=340;
     this.chargeDuckDecided=false;
@@ -3538,6 +3539,34 @@ class AutoCombat{
       c.mx=this.wanderDir;c.noFace=true;f.dir=this.wanderDir;
       c.run=this.wanderAction==='run';
     }
+  }
+  descendFromBridge(dt,f){
+    if(this.mode!=='bridge_descend'){
+      this.bridgeDescentWait-=dt;
+      if(this.bridgeDescentWait>0)return false;
+      this.bridgeDescentLamp=null;this.setMode('bridge_descend');
+    }
+    let lamp=this.bridgeDescentLamp,dir=this.bridgeDescentDir;
+    let plan=lamp&&f.bridgeRopeApproach(lamp,dir);
+    if(!lamp||!Game.lamps.includes(lamp)||!plan||!lamp.canDescendAt(plan.climb)){
+      // Never enter a rope occupied by an upward climber: head-on riders
+      // would otherwise block each other indefinitely.
+      const choices=Game.lamps.map(l=>{
+        const d=l.anchorX>=f.x?1:-1,p=f.bridgeRopeApproach(l,d);
+        return {lamp:l,dir:d,plan:p};
+      }).filter(c=>c.plan&&c.lamp.canDescendAt(c.plan.climb));
+      choices.sort((a,b)=>Math.abs(a.plan.x-f.x)-Math.abs(b.plan.x-f.x));
+      const choice=choices[0];
+      if(!choice){this.bridgeDescentLamp=null;this.bridgeDescentWait=2;this.setMode('engage');return false;}
+      lamp=this.bridgeDescentLamp=choice.lamp;dir=this.bridgeDescentDir=choice.dir;plan=choice.plan;
+    }
+    f.ctrl.noFace=true;f.dir=dir;
+    const delta=plan.x-f.x;
+    if(Math.abs(delta)>12){f.ctrl.mx=delta>0?1:-1;return true;}
+    if(f.state==='idle'&&f.startLampDescent(lamp)){
+      this.bridgeDescentLamp=null;this.bridgeDescentWait=rnd(7,14);this.setMode('engage');
+    }
+    return true;
   }
   planVault(f,body){
     if(!safeToVault(body,1.25))return false;
@@ -3604,6 +3633,12 @@ class AutoCombat{
       }
       c.mx=-side;c.run=true;return;
     }
+    // With nobody visible on the bridge, eventually walk to an available
+    // rope and climb down; fighters on the lower floor are not targets here.
+    if(this.mode==='bridge_descend'&&(!f.onBridge||o)){
+      this.bridgeDescentLamp=null;this.bridgeDescentWait=Math.max(4,this.bridgeDescentWait);this.setMode('engage');
+    }
+    if(f.onBridge&&!o&&['idle','run'].includes(st)&&this.descendFromBridge(dt,f))return;
     // Corpses are not valid combat targets, but they are still real obstacles
     // to inspect or jump over when there is no immediate living opponent.
     if(!o){
@@ -3642,8 +3677,9 @@ class AutoCombat{
     if(this.mode==='vertical_chase'){this.lampTarget=null;this.setMode('engage');}
     if(f.onBridge){
       const nearHeight=o.rig&&f.rig&&Math.abs(o.rig.pel.y-f.rig.pel.y)<125;
-      if(st==='idle'&&nearHeight&&dist>55&&dist<200&&this.bridgeTackleCD<=0&&Math.random()<dt*.32){
-        this.bridgeTackleCD=rnd(4,7);if(f.startHighTackle(o))return;
+      if(st==='idle'&&nearHeight&&dist>55&&dist<200&&this.bridgeTackleCD<=0){
+        this.bridgeTackleCD=rnd(4,7);
+        if(Math.random()<BRIDGE_TACKLE_CHANCE&&f.startHighTackle(o))return;
       }
       if(!o.onBridge){
         // Stay on the bridge rather than trying to punch or jump at an enemy
@@ -3933,7 +3969,10 @@ class HangingLamp{
   }
   get occupant(){return this.riders.values().next().value||null;}
   set occupant(f){if(f)this.riders.add(f);else this.riders.clear();}
-  canGrab(){return this.riders.size<3&&![...this.riders].some(f=>(f.lampClimb||0)<95);}
+  canGrab(){return this.riders.size<3&&![...this.riders].some(f=>f.lampAction==='descend'||(f.lampClimb||0)<95);}
+  canDescendAt(up){
+    return this.riders.size<3&&[...this.riders].every(f=>f.lampAction==='descend'&&Math.abs(f.lampClimb-up)>=95);
+  }
   point(up=0){
     const length=clamp(this.length-up,0,this.length);
     return {x:this.anchorX+Math.sin(this.theta)*length,y:this.anchorY+Math.cos(this.theta)*length};
@@ -4156,30 +4195,17 @@ function fighterStillFalling(f){
     f.state==='bridge_leap'||(f.state==='air'&&f.vy<0)||
     (f.state==='spawn'&&f.sp===1);
 }
-function drawSpeech(g,f,W){
-  if(!f.rig||!f.visible||f.hp<=0||!f.speech||f.speechTime<=0)return;
-  const text=f.speech,singing=f.skin==='chester'&&CHESTER_HUMS.includes(text);
-  const unit=3,w=Math.ceil((text.length*9+18+(singing?12:0))/unit)*unit,h=24;
-  const x=clamp(Math.round((f.rig.head.x-w/2)/unit)*unit,6,W-w-6);
-  const y=Math.round((f.rig.head.y-57)/unit)*unit;
-  const tail=clamp(Math.round((f.rig.head.x-x)/unit)*unit,9,w-15);
-  g.save();g.imageSmoothingEnabled=false;
-  // Stepped black outline and tail, with a plain white interior. There is no
-  // opacity or position animation: speech appears and disappears immediately.
-  g.fillStyle='#101014';g.fillRect(x,y,w,h);g.fillRect(x+tail,y+h,9,3);g.fillRect(x+tail+3,y+h+3,3,3);
-  g.fillStyle='#fff';g.fillRect(x+3,y+3,w-6,h-6);g.fillRect(x+tail+3,y+h-3,3,6);
-  g.fillStyle=f.col.hex;
-  if(singing){ // a tiny pixel note makes the sung fragments distinct from speech
-    g.fillRect(x+9,y+6,3,12);g.fillRect(x+12,y+6,6,3);g.fillRect(x+6,y+15,6,3);
-  }
-  g.font="9px 'Press Start 2P', monospace";g.textAlign='center';g.textBaseline='middle';
-  g.fillText(text,x+w/2+(singing?6:0),y+h/2+1);
-  g.restore();
-}
 /* ============================ SANDBOX GAME ENGINE ============================ */
+// The bridge blocks an observer's view of anyone below the deck. Climbers
+// become visible once their feet actually reach bridge height, not before.
+function canSeeFighter(observer,other){
+  if(!observer.onBridge||other.onBridge)return true;
+  const feet=other.state==='ragdoll'&&other.rig?Math.max(other.rig.aN.y,other.rig.aF.y):other.gy-other.y;
+  return feet<=BRIDGE_Y+4;
+}
 const Game={
   W:960,H:540,gy:468,S:1,cv:null,
-  shake:0,hs:0,ts:1,tsT:0,
+  shake:0,hs:0,ts:1,tsT:0,time:0,paused:false,
   fighters:[],lamps:[],detachedLamps:0,
   droppedBats:[],ducks:[],camera:null,audience:null,
   autoSpawn:true,shiftCrouch:false,
@@ -4191,7 +4217,7 @@ const Game={
     this.ctx=this.cv.getContext('2d');
     this.ctx.imageSmoothingEnabled=false;
     this.fighters=[];this.droppedBats=[];this.ducks=[];this.lamps=[];this.detachedLamps=0;
-    this.koCount=0;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;this.respawnTimer=0;this.autoSpawn=!sandbox;this.shiftCrouch=false;
+    this.koCount=0;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;this.time=0;this.paused=false;this.respawnTimer=0;this.autoSpawn=!sandbox;this.shiftCrouch=false;
     this.camera={x:this.W/2,y:270,targetY:270,zoom:1,vignette:0};this.audience=null;
     skinCursor=0;
     this.fx=new FX();
@@ -4336,9 +4362,28 @@ const Game={
     const c=this.camera;return c?(x-this.W/2)/c.zoom+c.x:x;
   },
   clearBodies(){
+    for(const f of this.fighters)if(f.hp<=0){f.clearLamp();f.breakChoke();}
     this.fighters=this.fighters.filter(f=>f.hp>0);
-    this.fx.gibs=[];
-    this.droppedBats=[];
+    this.fx.gibs=[];this.droppedBats=[];this.goreKey=null;
+  },
+  clearAll(){
+    for(const f of this.fighters){f.clearLamp();f.breakChoke();}
+    this.fighters=[];this.droppedBats=[];this.ducks=[];
+    this.fx.clearBlood();
+    for(const key of ['sm','sp','gibs','laserSparks','fl','rg'])this.fx[key]=[];
+    this.goreKey=null;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;
+    this.respawnTimer=0;this.autoSpawn=false;this.shiftCrouch=false;
+  },
+  restoreMap(){
+    // Preserve intact ropes and their riders; only broken fixtures are reset.
+    for(const lamp of this.lamps)if(lamp.detached){
+      lamp.detached=false;lamp.theta=0;lamp.omega=0;lamp.vx=0;lamp.vy=0;
+      lamp.spin=0;lamp.angle=0;lamp.settled=false;lamp.riders.clear();lamp.resize(this.W);
+    }
+    this.detachedLamps=0;this.fx.marks=[];
+    // The decal canvas contains impact cracks, not the separate blood field.
+    this.dctx.save();this.dctx.setTransform(1,0,0,1,0,0);
+    this.dctx.clearRect(0,0,this.dc.width,this.dc.height);this.dctx.restore();
   },
   clearBlood(){
     this.fx.clearBlood();
@@ -4443,7 +4488,7 @@ const Game={
   findBestOpponent(f){
     let best=null,bestScore=1e9;
     for(const o of this.fighters){
-      if(o===f||o.hp<=0)continue;
+      if(o===f||o.hp<=0||!canSeeFighter(f,o))continue;
       const dist=Math.abs(o.x-f.x);
       const vertical=f.rig&&o.rig?Math.abs(f.rig.pel.y-o.rig.pel.y):Math.abs((f.gy-f.y)-(o.gy-o.y));
       const downPenalty=(o.state==='ragdoll'||o.state==='getup'||o.state==='spawn')?280:0;
@@ -4453,7 +4498,8 @@ const Game={
     return best;
   },
   update(dt){
-    const rdt=dt;
+    if(this.paused)return;
+    const rdt=dt;this.time+=rdt;
     if(this.hs>0){this.hs-=rdt;dt*=.05;}
     if(this.tsT>0){this.tsT-=rdt;dt*=this.ts;if(this.tsT<=0)this.ts=1;}
     this.shake*=Math.exp(-rdt*9);
@@ -4484,12 +4530,12 @@ const Game={
         // releasing it returns the fighter to the normal autonomous AI.
         const c=f.ctrl;c.mx=0;c.jump=false;c.punch=false;c.run=false;c.hop=false;c.laser=false;c.noFace=false;c.crouch=true;
       }else if(f.hp>0){
-        f.autopilot.update(dt,f,opp,this.fighters);
+        const visible=f.onBridge?this.fighters.filter(o=>o===f||canSeeFighter(f,o)):this.fighters;
+        f.autopilot.update(dt,f,opp,visible);
       }else{
         const c=f.ctrl;c.mx=0;c.jump=false;c.punch=false;c.run=false;c.hop=false;c.laser=false;c.noFace=false;c.crouch=false;
       }
       f.update(dt,opp,this.fighters);
-      f.updateSpeech(dt,opp);
     }
     for(const f of this.fighters){
       if(f.state==='choke'&&f.chokeTarget&&f.chokeTarget.rig)f.buildRig(0);
@@ -4550,7 +4596,7 @@ const Game={
     ctx.setTransform(S,0,0,S,0,0);
     ctx.imageSmoothingEnabled=false;
     ctx.save();
-    const shakeX=this.shake>.3?rnd(-1,1)*this.shake:0,shakeY=this.shake>.3?rnd(-1,1)*this.shake:0;
+    const shakeX=this.shake>.3?Math.sin(this.time*61)*this.shake:0,shakeY=this.shake>.3?Math.sin(this.time*79+1)*this.shake:0;
     ctx.translate(shakeX,shakeY);
     const camera=this.camera;
     if(camera){ctx.translate(W/2,H/2);ctx.scale(camera.zoom,camera.zoom);ctx.translate(-camera.x,-camera.y);}
@@ -4696,7 +4742,7 @@ const Game={
     ctx.save();ctx.globalCompositeOperation='lighter';
     for(const lamp of this.lamps){
       if(lamp.detached)continue;
-      const lx=lamp.x,ly=lamp.y+18,fl=.85+Math.sin(performance.now()/90+lx)*.05;
+      const lx=lamp.x,ly=lamp.y+18,fl=.85+Math.sin(this.time*1000/90+lx)*.05;
       const g=ctx.createRadialGradient(lx,ly,4,lx,ly,380);
       g.addColorStop(0,`rgba(255,215,150,${.3*fl})`);
       g.addColorStop(1,'rgba(255,215,150,0)');
@@ -4706,12 +4752,6 @@ const Game={
     ctx.restore(); // Camera transform; vignettes stay fixed to the screen.
     ctx.imageSmoothingEnabled=true;
     ctx.drawImage(this.vig,0,0,W,H);
-    if(this.fighters.some(f=>f.speechTime>0)){
-      ctx.save();ctx.translate(shakeX,shakeY);
-      if(camera){ctx.translate(W/2,H/2);ctx.scale(camera.zoom,camera.zoom);ctx.translate(-camera.x,-camera.y);}
-      for(const f of this.fighters)drawSpeech(ctx,f,W);
-      ctx.restore();
-    }
     ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';ctx.filter='none';ctx.setTransform(S,0,0,S,0,0);
   }
 };
@@ -4720,13 +4760,13 @@ export function startGame(){
   // The public game starts empty; the legacy pair/auto-spawn setup remains
   // available to the engine's autonomous combat simulations.
   Game.init({sandbox:true});
-  if(document.fonts?.load)document.fonts.load("9px 'Press Start 2P'").catch(()=>{});
   const cv=Game.cv;
   let gesture=null,selectedSkin=null,menuOpen=false;
   const touches=new Set();
   const capture=e=>{if(cv.setPointerCapture)try{cv.setPointerCapture(e.pointerId);}catch{}};
   const cancelGesture=()=>{gesture=null;cv.classList?.remove('panning');};
   const onDown=e=>{
+    if(Game.paused)return;
     const touch=e.pointerType==='touch';
     if(touch){
       touches.add(e.pointerId);capture(e);
@@ -4744,7 +4784,7 @@ export function startGame(){
     e.preventDefault?.();
   };
   const onMove=e=>{
-    if(!gesture||e.pointerId!==gesture.id)return;
+    if(Game.paused||!gesture||e.pointerId!==gesture.id)return;
     const g=gesture,wasDragged=g.dragged;
     if(Math.hypot(e.clientX-g.startX,e.clientY-g.startY)>8)g.dragged=true;
     if(g.kind==='pan'||(g.kind==='touch'&&g.dragged)){
@@ -4756,6 +4796,7 @@ export function startGame(){
     g.lastY=e.clientY;
   };
   const onUp=e=>{
+    if(Game.paused)return;
     if(e.pointerType==='touch')touches.delete(e.pointerId);
     if(!gesture||e.pointerId!==gesture.id)return;
     const g=gesture;
@@ -4773,14 +4814,16 @@ export function startGame(){
     if(e.pointerType==='touch')touches.delete(e.pointerId);
     if(gesture&&e.pointerId===gesture.id)cancelGesture();
   };
-  const onResize=()=>{touches.clear();cancelGesture();Game.resize();};
+  const onResize=()=>{touches.clear();cancelGesture();Game.resize();if(Game.paused)Game.render();};
   const onCtx=e=>e.preventDefault();
   const onWheel=e=>{
     e.preventDefault();
+    if(Game.paused)return;
     const unit=e.deltaMode===1?28:e.deltaMode===2?VIEW_H:1;
     Game.moveCamera(e.deltaY*unit);
   };
   const onKeyDown=e=>{
+    if(Game.paused)return;
     if(e.key==='Shift'&&!e.ctrlKey&&!e.altKey&&!e.metaKey)Game.shiftCrouch=true;
     if(!e.ctrlKey&&!e.altKey&&!e.metaKey&&!['INPUT','TEXTAREA','SELECT','BUTTON'].includes(e.target?.tagName)){
       if(e.key==='ArrowUp'||e.key==='PageUp'){e.preventDefault();Game.moveCamera(-180);}
@@ -4798,12 +4841,30 @@ export function startGame(){
   const frame=ts=>{
     if(!running)return;
     raf=requestAnimationFrame(frame);
-    const dt=Math.min(.033,(ts-last)/1000);last=ts;if(!(dt>0))return;
+    const dt=Math.min(.033,(ts-last)/1000);last=ts;if(!(dt>0)||Game.paused)return;
     Game.update(dt);
     Game.render();
   };
   raf=requestAnimationFrame(frame);
+  const redrawPaused=()=>{if(Game.paused)Game.render();};
   return {
+    setPaused(paused){
+      const next=!!paused;if(Game.paused===next)return;
+      Game.paused=next;touches.clear();cancelGesture();Game.shiftCrouch=false;
+      // Suspend already-scheduled Web Audio too, rather than merely silencing
+      // new effects. Resume from the user's play-button gesture.
+      const method=next?'suspend':'resume';
+      if(Snd.ac&&Snd.ac.state!=='closed'){
+        // Queue both operations even if the previous asynchronous state change
+        // has not settled yet (for rapid pause / resume clicks).
+        try{Snd.ac[method]?.()?.catch?.(()=>{});}catch{}
+      }
+      if(next)Game.render();
+    },
+    clearAll(){Game.clearAll();redrawPaused();},
+    clearBodies(){Game.clearBodies();redrawPaused();},
+    clearBlood(){Game.clearBlood();redrawPaused();},
+    restoreMap(){Game.restoreMap();redrawPaused();},
     selectSkin(skin){selectedSkin=SKIN_META[skin]?skin:null;cancelGesture();},
     setMenuOpen(open){menuOpen=!!open;cancelGesture();},
     destroy(){
