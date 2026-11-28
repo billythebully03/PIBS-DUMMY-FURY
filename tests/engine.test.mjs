@@ -58,12 +58,12 @@ const source = await readFile(new URL('../src/game/engine.ts', import.meta.url),
 // the test-only exports out of the production entry point.
 const { outputFiles } = await build({
   stdin: {
-    contents: `${source}\nexport { Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, drawSkinHead, skinHeads, drawSpeech, fighterStillFalling, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y, laserCutGeometry, makeLaserPieces, updateGorePieces, goreSurfacePoint, gorePartCanvas, updateDucks, launchDuck };`,
+    contents: `${source}\nexport { Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, drawSkinHead, skinHeads, Snd, BRIDGE_TACKLE_CHANCE, fighterStillFalling, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y, laserCutGeometry, makeLaserPieces, updateGorePieces, goreSurfacePoint, gorePartCanvas, updateDucks, launchDuck };`,
     resolveDir: fileURLToPath(new URL('../src/game/', import.meta.url)), sourcefile: 'engine.ts', loader: 'ts',
   },
   bundle: true, write: false, platform: 'browser', format: 'esm', target: 'es2020',
 });
-const { startGame, Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, drawSkinHead, skinHeads, drawSpeech, fighterStillFalling, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y, laserCutGeometry, makeLaserPieces, updateGorePieces, goreSurfacePoint, gorePartCanvas, updateDucks, launchDuck } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`);
+const { startGame, Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, drawSkinHead, skinHeads, Snd, BRIDGE_TACKLE_CHANCE, fighterStillFalling, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y, laserCutGeometry, makeLaserPieces, updateGorePieces, goreSurfacePoint, gorePartCanvas, updateDucks, launchDuck } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`);
 const originalRandom = Math.random;
 const originalWarn = console.warn;
 let warnings = [];
@@ -2547,6 +2547,7 @@ test('new: seeded autonomous matches can really reach the upper bridge and use f
   } finally { Fighter.prototype.grabLamp = grab; Fighter.prototype.startHighTackle = tackle; Game.ko = ko; }
   console.log('new autonomous arena events:', counts);
   for (const [action, count] of Object.entries(counts)) assert.ok(count > 0, `${action} should occur in real autonomous combat`);
+  assert.ok(counts.tackles < counts.bridge * .35, 'high tackles remain rare during seeded autonomous play');
 });
 
 test('new: the bridge deck blocks a laser ray between the two levels', () => {
@@ -3200,38 +3201,25 @@ test('sandbox: solo AI can stand, walk, crouch, run and jump without treating th
   }
 });
 
-test('sandbox: short pixel speech tracks the head, uses accents, and distinguishes calm, down and rare reactions', () => {
+test('sandbox: fighters have no speech or dialogue, including when knocked down', () => {
   Game.init({ sandbox: true });
-  const f = Game.spawnFighter(400, 1, 0, 'chester'); f.reset(400, 1); disableAI(f); f.update(1 / 60, null, [f]);
-  f.ambientRandom = () => .99; f.speechWait = 0; f.updateSpeech(1 / 60, null);
-  assert.equal(f.speech, "I've become so numb", 'Chester can hum a short recognisable line');
-  const g = makeCanvas().getContext('2d'); drawSpeech(g, f, Game.W);
-  assert.equal(g.stats.texts[0].text, f.speech); assert.equal(g.stats.texts[0].color, f.col.hex);
-  assert.match(g.stats.texts[0].font, /Press Start 2P/);
-  assert.ok(g.stats.colors.has('#fff') && g.stats.colors.has('#101014'), 'white block and black pixel outline');
-  const x = g.stats.texts[0].x; f.x += 120; f.buildRig(1 / 60); drawSpeech(g, f, Game.W);
-  assert.ok(g.stats.texts[1].x > x + 100, 'the bubble follows the moving head');
-  f.updateSpeech(3, null); assert.equal(f.speech, ''); assert.equal(f.speechTime, 0);
-  const textCount = g.stats.texts.length; drawSpeech(g, f, Game.W); assert.equal(g.stats.texts.length, textCount);
-
-  f.toRagdoll(0, 0, true); f.updateSpeech(1 / 60, null);
-  assert.ok(['Ouch!', 'Damn!', 'Ow!', 'Ugh!'].includes(f.speech), 'short exclamation on temporary knockdown');
-  const observer = fighter(520, -1, 'jane'); disableAI(observer);
-  observer.ambientRandom = () => .1; observer.speechWait = 0;
-  observer.updateSpeech(1 / 60, f);
-  assert.ok(['You okay?', 'Need a hand?', 'Take it easy.', 'That looked rough.'].includes(observer.speech));
-  observer.speech = ''; observer.speechTime = 0; observer.speechWait = 0;
-  observer.updateSpeech(1 / 60, f); assert.equal(observer.speech, '', 'only one decision per knockdown');
-  f.hp = 0; f.updateSpeech(1 / 60, null); assert.equal(f.speech, '', 'dead bodies do not speak');
+  const f = fighter(400, 1, 'chester'); disableAI(f);
+  const texts = gameCanvas.getContext('2d').stats.texts.length;
+  tick(15); f.toRagdoll(0, 0, true); tick(2); Game.render();
+  assert.equal('speech' in f, false);
+  assert.equal(typeof f.speak, 'undefined');
+  assert.equal(gameCanvas.getContext('2d').stats.texts.length, texts, 'no dialogue is drawn above fighters');
+  for (const removed of ['drawSpeech', 'updateSpeech', 'CASUAL_LINES', 'DOWN_LINES', 'CHECK_LINES', 'CHESTER_HUMS'])
+    assert.ok(!source.includes(removed), `${removed} should be removed from the engine`);
 });
 
-test('sandbox: ambient speech and wandering do not consume the combat random stream', () => {
+test('sandbox: wandering does not consume the combat random stream', () => {
   Game.init({ sandbox: true });
-  const f = fighter(480, 1, 'jane'); f.speechWait = 0; f.autopilot.wanderT = 0;
+  const f = fighter(480, 1, 'jane'); f.autopilot.wanderT = 0;
   const saved = Math.random;
   try {
     Math.random = () => { throw new Error('ambient behaviour consumed combat RNG'); };
-    f.updateSpeech(1 / 60, null); f.autopilot.wander(1 / 60, f, 'idle');
+    f.autopilot.wander(1 / 60, f, 'idle');
   } finally { Math.random = saved; }
 });
 
@@ -3265,4 +3253,200 @@ test('sandbox: each settled severed piece is behind the duck while falling piece
   };
   try { Game.render(); } finally { ctx.drawImage = original; }
   assert.deepEqual(events, ['gore', 'duck', 'gore']);
+});
+
+test('bridge: an observer cannot target or react to anybody below the deck', () => {
+  Game.init({ sandbox: true });
+  const upper = fighter(600, -1, 'walt'), lower = fighter(720, -1, 'jane');
+  disableAI(lower);
+  upper.onBridge = true; upper.gy = BRIDGE_Y; upper.buildRig(0);
+  upper.autopilot.wanderT = 10; upper.autopilot.wanderAction = 'stand';
+  assert.equal(Game.findBestOpponent(upper), null);
+  assert.equal(Game.findBestOpponent(lower), upper, 'pursuit from below remains possible');
+  tick(1);
+  assert.equal(upper.peaceful, true); assert.equal(upper.dir, -1, 'no facing or pursuit of the lower fighter');
+  assert.notEqual(upper.state, 'attack');
+  lower.y = Game.gy - (BRIDGE_Y + 70); lower.buildRig(0);
+  assert.equal(Game.findBestOpponent(upper), null, 'even a nearby climber below the deck is hidden');
+  lower.y = Game.gy - (BRIDGE_Y - 5); lower.buildRig(0);
+  assert.equal(Game.findBestOpponent(upper), lower, 'a fighter who reaches bridge height can be seen');
+});
+
+test('bridge: the rare tackle is decided at a cooldown, not every frame', () => {
+  assert.equal(BRIDGE_TACKLE_CHANCE, .04);
+  const a = fighter(400, 1, 'jane'), b = fighter(530, -1, 'walt');
+  for (const f of [a, b]) { f.onBridge = true; f.gy = BRIDGE_Y; f.cur = null; f.buildRig(0); }
+  const ai = a.autopilot;
+  ai.bridgeTackleCD = 0; ai.attackWait = ai.lampCheck = ai.spaceCD = ai.farCD = 100;
+  const random = Math.random;
+  try {
+    Math.random = () => .9;
+    ai.update(1 / 60, a, b, Game.fighters);
+    assert.equal(a.onBridge, true, 'ordinary bridge combat does not force a fall');
+    assert.ok(ai.bridgeTackleCD >= 4);
+    Math.random = () => 0;
+    ai.update(1 / 60, a, b, Game.fighters);
+    assert.equal(a.onBridge, true, 'a failed roll cannot be repeated next frame');
+    ai.bridgeTackleCD = 0;
+    ai.update(1 / 60, a, b, Game.fighters);
+    assert.equal(a.state, 'bridge_leap', 'a successful rare roll can still cause a fall');
+    assert.equal(a.onBridge, false);
+  } finally { Math.random = random; }
+});
+
+test('bridge: a lone fighter autonomously reaches a rope and descends safely at 30, 60 and 120 FPS', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.init({ sandbox: true });
+    const f = fighter(110, 1, 'walt');
+    f.onBridge = true; f.gy = BRIDGE_Y; f.buildRig(0);
+    f.autopilot.bridgeDescentWait = .1; f.autopilot.wanderT = 10;
+    const hp = f.hp; let hanging = 0, previousFoot = BRIDGE_Y, landed = false;
+    for (let i = 0; i < Math.ceil(20 / dt); i++) {
+      Game.update(dt);
+      if (f.state === 'lamp_hang' && f.lampAction === 'descend') {
+        hanging++;
+        const foot = f.gy - f.y, grip = f.lampRef.point(30 + f.lampClimb);
+        assert.ok(Math.abs(foot - previousFoot) < 30, `no teleport during descent at ${dt}`);
+        assert.ok(distance(f.rig.wN, grip) < 7 && distance(f.rig.wF, grip) < 7, `hands stay on the rope at ${dt}`);
+        previousFoot = foot;
+      }
+      if (hanging && !f.onBridge && f.state === 'idle' && f.y === 0) { landed = true; break; }
+    }
+    assert.ok(hanging > 60, `a real sustained rope descent happened at ${dt}`);
+    assert.ok(landed, `fighter lands on the lower floor at ${dt}`);
+    assert.equal(f.hp, hp, 'controlled descent does not cause fall damage');
+    assert.equal(f.gy, Game.gy); assert.equal(f.lampRef, null);
+    assert.ok(Game.lamps.every(l => !l.riders.has(f)));
+    Game.render();
+  }
+});
+
+test('bridge: rope riders cannot collide head-on and multiple descending riders keep their distance', () => {
+  Game.init({ sandbox: true });
+  const lamp = Game.lamps[1], lower = fighter(lamp.x, 1, 'jane'); disableAI(lower);
+  assert.equal(lower.startLampJump(lamp), true);
+  advanceUntil(() => lower.state === 'lamp_hang', 180);
+  lower.lampAction = 'climb'; lower.lampStamina = 20; lower.lampBreakAt = Infinity;
+  const first = fighter(lamp.anchorX, 1, 'walt'); disableAI(first);
+  first.onBridge = true; first.gy = BRIDGE_Y; first.buildRig(0);
+  first.x = first.bridgeRopeApproach(lamp).x; first.buildRig(0);
+  assert.equal(first.startLampDescent(lamp), false, 'do not descend into an ascending rider');
+  lower.clearLamp(); lower.state = 'idle'; lower.y = 0; lower.gy = Game.gy;
+  assert.equal(first.startLampDescent(lamp), true);
+  assert.equal(lamp.canGrab(), false, 'a ground fighter cannot start an opposing climb');
+  tick(1);
+  const second = fighter(lamp.anchorX, 1, 'saul'); disableAI(second);
+  second.onBridge = true; second.gy = BRIDGE_Y; second.buildRig(0);
+  second.x = second.bridgeRopeApproach(lamp).x; second.buildRig(0);
+  assert.equal(second.startLampDescent(lamp), true, 'a second person can follow from the top');
+  for (let i = 0; i < 90; i++) {
+    Game.update(1 / 60);
+    assert.ok(second.lampClimb - first.lampClimb >= 89, 'riders cannot pass through each other');
+  }
+  assert.equal(lamp.riders.size, 2);
+});
+
+test('sandbox: cleanup actions are independent and restore broken map fixtures without ejecting riders', () => {
+  Game.init({ sandbox: true });
+  const live = fighter(220, 1, 'jane'), dead = fighter(780, -1, 'negan');
+  disableAI(live, dead); dead.hp = 0; dead.toRagdoll(0, 0, true);
+  Game.fx.gibs.push({ owner: dead.id }); Game.droppedBats.push({ kind: 'bat' });
+  Game.ducks.push({ owner: live });
+  Game.fx.bloodField.add(400, Game.gy + 8, 'seep'); Game.fx.bl.push({});
+  live.bloodStains.push({ kind: 'blood' }); live.footBlood.N = 2;
+  const broken = Game.lamps[0], kept = Game.lamps[1];
+  assert.equal(Game.detachLamp(broken), true);
+  Game.fx.marks.push({ surf: 'floor' });
+
+  Game.clearBodies();
+  assert.deepEqual(Game.fighters, [live]); assert.equal(Game.fx.gibs.length, 0);
+  assert.equal(Game.droppedBats.length, 0); assert.equal(Game.ducks.length, 1);
+  assert.ok(Game.fx.bloodField.cells.size > 0); assert.equal(broken.detached, true);
+
+  Game.clearBlood();
+  assert.equal(Game.fx.bl.length, 0); assert.equal(Game.fx.bloodField.cells.size, 0);
+  assert.equal(live.bloodStains.length, 0); assert.equal(live.footBlood.N, 0);
+  assert.equal(Game.fx.marks.length, 1, 'cleaning blood does not restore the map');
+  assert.equal(Game.fighters.length, 1); assert.equal(Game.ducks.length, 1);
+
+  // Set up an actual rider on an intact rope. The detached fixture is the
+  // only one that should be rebuilt; blood, entities and riders survive.
+  Game.ducks = []; live.x = kept.x; live.buildRig(0);
+  assert.equal(live.startLampJump(kept), true);
+  advanceUntil(() => live.state === 'lamp_hang', 180);
+  live.lampBreakAt = Infinity; live.lampAction = 'climb'; live.lampStamina = 20;
+  Game.ducks.push({ owner: live }); Game.fx.bloodField.add(420, Game.gy + 8, 'seep');
+  let clears = 0; const clearRect = Game.dctx.clearRect;
+  Game.dctx.clearRect = (...args) => { clears++; clearRect(...args); };
+  Game.restoreMap(); Game.dctx.clearRect = clearRect;
+  assert.ok(clears > 0, 'impact-crack canvas is cleared');
+  assert.equal(broken.detached, false); assert.equal(Game.detachedLamps, 0);
+  assert.equal(Game.fx.marks.length, 0); assert.equal(live.lampRef, kept); assert.ok(kept.riders.has(live));
+  assert.equal(Game.fighters.length, 1); assert.equal(Game.ducks.length, 1);
+  assert.ok(Game.fx.bloodField.cells.size > 0, 'map restoration does not clean blood');
+
+  assert.equal(Game.detachLamp(broken), true);
+  Game.fx.gibs.push({}); Game.droppedBats.push({}); Game.fx.sm.push({});
+  Game.clearAll();
+  assert.equal(Game.fighters.length, 0); assert.equal(Game.ducks.length, 0);
+  assert.equal(Game.droppedBats.length, 0); assert.equal(Game.fx.gibs.length, 0);
+  assert.equal(Game.fx.sm.length, 0); assert.equal(Game.fx.bloodField.cells.size, 0);
+  assert.equal(kept.riders.size, 0); assert.equal(live.lampRef, null);
+  assert.equal(broken.detached, true, 'clear all does not secretly repair the map');
+  Game.update(1); assert.equal(Game.fighters.length, 0, 'clear all never auto-respawns fighters');
+});
+
+test('sandbox: pause freezes physics, visual clocks, sound and input; cleanup still redraws', () => {
+  const listeners = new Map();
+  const saved = {
+    add: gameCanvas.addEventListener, remove: gameCanvas.removeEventListener,
+    rect: gameCanvas.getBoundingClientRect, capture: gameCanvas.setPointerCapture,
+    classList: gameCanvas.classList, raf: globalThis.requestAnimationFrame,
+    cancel: globalThis.cancelAnimationFrame, removeWindow: globalThis.removeEventListener,
+    audio: Snd.ac,
+  };
+  gameCanvas.addEventListener = (type, handler) => listeners.set(type, handler);
+  gameCanvas.removeEventListener = (type, handler) => { if (listeners.get(type) === handler) listeners.delete(type); };
+  gameCanvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 960, height: 540 });
+  gameCanvas.setPointerCapture = () => {};
+  gameCanvas.classList = { add() {}, remove() {} };
+  let frame; globalThis.requestAnimationFrame = cb => { frame = cb; return 1; };
+  globalThis.cancelAnimationFrame = () => {}; globalThis.removeEventListener = () => {};
+  const audio = { state: 'running', calls: [], suspend() { this.calls.push('suspend'); this.state = 'suspended'; return Promise.resolve(); },
+    resume() { this.calls.push('resume'); this.state = 'running'; return Promise.resolve(); } };
+  let api;
+  try {
+    api = startGame(); Snd.ac = audio; api.selectSkin('jane');
+    const f = fighter(400, 1, 'jane'); disableAI(f); f.ctrl.mx = 1;
+    const base = performance.now(); frame(base + 20);
+    api.setPaused(true);
+    assert.equal(Game.paused, true); assert.deepEqual(audio.calls, ['suspend']);
+    const snapshot = { x: f.x, t: f.t, time: Game.time, audience: Game.audience.time,
+      theta: Game.lamps[1].theta, camera: Game.camera.y };
+    const pixels = gameCanvas.getContext('2d').stats.drawImage;
+    for (let i = 1; i <= 12; i++) frame(base + 20 + i * 100);
+    Game.update(2);
+    assert.deepEqual({ x: f.x, t: f.t, time: Game.time, audience: Game.audience.time,
+      theta: Game.lamps[1].theta, camera: Game.camera.y }, snapshot);
+    assert.equal(gameCanvas.getContext('2d').stats.drawImage, pixels, 'paused RAF does not repaint flickering frames');
+    const event = { button: 0, pointerType: 'mouse', pointerId: 1, clientX: 650, clientY: 300, preventDefault() {} };
+    listeners.get('pointerdown')(event); listeners.get('pointerup')(event);
+    assert.equal(Game.fighters.length, 1, 'paused canvas does not add a fighter');
+    const oldTarget = Game.camera.targetY;
+    listeners.get('wheel')({ deltaY: -100, deltaMode: 0, preventDefault() {} });
+    assert.equal(Game.camera.targetY, oldTarget, 'paused camera does not move');
+    Game.fx.bloodField.add(400, Game.gy + 5, 'seep'); api.clearBlood();
+    assert.equal(Game.fx.bloodField.cells.size, 0);
+    assert.ok(gameCanvas.getContext('2d').stats.drawImage > pixels, 'an explicit cleanup redraws the paused frame');
+    api.setPaused(false); assert.deepEqual(audio.calls, ['suspend', 'resume']);
+    frame(base + 1240);
+    assert.ok(f.t > snapshot.t && f.x > snapshot.x, 'simulation resumes without a large catch-up step');
+    assert.ok(f.t - snapshot.t <= .034);
+  } finally {
+    api?.destroy(); Snd.ac = saved.audio;
+    gameCanvas.addEventListener = saved.add; gameCanvas.removeEventListener = saved.remove;
+    gameCanvas.getBoundingClientRect = saved.rect; gameCanvas.setPointerCapture = saved.capture;
+    gameCanvas.classList = saved.classList; globalThis.requestAnimationFrame = saved.raf;
+    globalThis.cancelAnimationFrame = saved.cancel; globalThis.removeEventListener = saved.removeWindow;
+  }
 });
