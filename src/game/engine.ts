@@ -10,7 +10,6 @@ const BODY_PIXEL=3, HEAD_PIXEL=1.5;
 const clamp=(v,a,b)=>v<a?a:v>b?b:v, lerp=(a,b,t)=>a+(b-a)*t;
 const rnd=(a,b)=>b===undefined?Math.random()*a:a+Math.random()*(b-a);
 const ease=t=>t*t*(3-2*t);
-const $=s=>document.querySelector(s);
 const DIRX=[1,-1,0,0], DIRY=[0,0,1,-1];
 const TIE_N=6, TIE_SEG=9;
 const CAPE_N=7, CAPE_SEG=19;
@@ -25,6 +24,20 @@ const SHOVE_DUR=.58, SHOVE_IMPACT=.25, SHOVE_REACH=105;
 const BLEED_DPS=2, BLEED_AFTER_DEATH=3;
 const STAGGER_KNOCKDOWN_CHANCE=.4, STAGGER_KO_CHANCE=.4;
 const LAMP_PULL_DUR=.7;
+// Short ambient lines are deliberately separate from combat AI and have a
+// long cooldown so a quiet sandbox feels alive without becoming a chat log.
+const CHESTER_HUMS=['In the end...','I tried so hard','I\'ve become so numb'];
+const CASUAL_LINES={
+  walt:['A quiet moment.','Time to think.','Nice and easy.','Looks peaceful.'],
+  homelander:['Lovely day.','All under control.','Looking good.','Nice and quiet.'],
+  saul:['No worries.','Better call Saul.','What a day.','Taking a break.'],
+  tubtrooper:['All clear.','Nice and easy.','Where is my duck?','Just chilling.'],
+  negan:['Well, well.','Not a bad day.','Taking it easy.','Nice and quiet.'],
+  jane:['Interesting.','Lovely day.','Just observing.','Take it easy.'],
+  chester:['Just humming.',...CHESTER_HUMS],
+};
+const DOWN_LINES=['Ouch!','Damn!','Ow!','Ugh!'];
+const CHECK_LINES=['You okay?','Need a hand?','Take it easy.','That looked rough.'];
 // PibsPhy6/WeightPhysic: вес/рост/хп и множители. Тяжелее = медленнее и
 // сложнее сбить с ног; легче = быстрее и проще сбить. Масса в регдолле.
 const WSTATS={
@@ -692,7 +705,8 @@ function drawBat(g,f){
   g.restore();
 }
 function stowsBat(f){
-  return f.boxing||(f.bleed&&f.bleed.pressing)||['guard','guard_recoil','shove','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull'].includes(f.state);
+  const relaxed=f.peaceful&&!f.dive&&['spawn','idle','run','hop','air'].includes(f.state);
+  return relaxed||f.boxing||(f.bleed&&f.bleed.pressing)||['guard','guard_recoil','shove','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull'].includes(f.state);
 }
 function drawStowedBat(g,f){
   const R=f.rig;if(!R||f.batLost||f.hp<=0)return;
@@ -1074,7 +1088,8 @@ function drawSkinHead(g, R, f) {
     g.restore();return;
   }
   const angle = Math.atan2(head.y - neck.y, head.x - neck.x) + Math.PI / 2;
-  const height = 44; // heads are ~2% larger than before
+  // The helmet sits over a head rather than having the same silhouette as one.
+  const height = f.skin === 'tubtrooper' ? 49 : 44;
   const aspect = clamp(data.aspect || .8, .55, 1.35);
   const width = height * aspect;
   g.save();
@@ -1986,13 +2001,15 @@ class Fighter{
   }
   reset(x,dir){
     Object.assign(this,{
-      x,y:0,vx:0,vy:0,dir,hp:100,lagHp:100,
+      x,y:0,vx:0,vy:0,dir,hp:100,
       state:'idle',st:0,t:0,walkPh:0,comboStep:0,comboT:9,
       dashCD:0,invT:0,landT:0,stunT:0,cur:null,blend:0,
       visible:true,rig:null,atk:null,ak:0,atkStamp:0,
       connected:false,lastHitTarget:null,lastAttackEnd:-Infinity,lastSign:1,rag:null,hitZone:'head',
       poolT:0,sp:0,spT:0,dashW:0,dashF:true,dashT:0,
-      hitDone:false,queued:false,lungeDone:false,wh:false,dustT:0,calmT:0,tie:null,cape:null,pvx:0,pvy:0,corpseFade:0,
+      hitDone:false,queued:false,lungeDone:false,wh:false,dustT:0,peaceful:false,tie:null,cape:null,pvx:0,pvy:0,corpseFade:0,
+      speech:'',speechTime:0,speechWait:5+(this.seed%1)*6,speechWasDown:false,spokenDownTarget:null,
+      ambientSeed:(Math.floor(this.seed*429496729)>>>0)||1,
       lz:null,lzSnd:false,burns:[],dive:false,diveT:0,diveHit:false,kickExt:0,bodyJump:false,fastGetup:false,
       hoverY:0,hlBrake:0,hlBrakeDir:1,hlBrakeFrom:null,hlLiftFx:false,hopDur:.38,
       batLost:false,guitarDamage:0,guitarFlex:0,guitarFlexVel:0,dizzyAlpha:0,dizzyPh:Math.random()*TAU,
@@ -2015,6 +2032,33 @@ class Fighter{
   spawn(delay){this.state='spawn';this.sp=0;this.spT=delay||.05;this.visible=false;this.y=this.spawnY;this.vy=0;this.vx=0;this.st=0;this.cur=null;this.hoverY=0;}
   canBeHit(){return this.hp>0&&this.state!=='ragdoll'&&this.state!=='getup'&&this.state!=='spawn'&&this.state!=='win'&&this.invT<=0;}
   faceOpp(o){if(this.ctrl.noFace)return;if(this.skin==='homelander'&&this.hlBrake>.42)return;if(o&&this.y<2&&Math.abs(o.x-this.x)>10)this.dir=o.x>this.x?1:-1;}
+  // Ambient choices use their own deterministic stream; dialogue and solo
+  // wandering must not change the random decisions in an ongoing fight.
+  ambientRandom(){this.ambientSeed=(Math.imul(this.ambientSeed,1664525)+1013904223)>>>0;return this.ambientSeed/4294967296;}
+  ambientBetween(a,b){return a+this.ambientRandom()*(b-a);}
+  ambientLine(lines){return lines[Math.floor(this.ambientRandom()*lines.length)];}
+  speak(text,duration=2.4){this.speech=text;this.speechTime=duration;}
+  updateSpeech(dt,target){
+    if(this.speechTime>0){this.speechTime=Math.max(0,this.speechTime-dt);if(!this.speechTime)this.speech='';}
+    this.speechWait-=dt;
+    if(this.hp<=0){this.speech='';this.speechTime=0;return;}
+    const down=this.state==='ragdoll';
+    if(down&&!this.speechWasDown){
+      this.speak(this.ambientLine(DOWN_LINES),1.5);this.speechWait=this.ambientBetween(5,9);
+    }
+    this.speechWasDown=down;
+    if(down)return;
+    const unconscious=target&&target.hp>0&&target.state==='ragdoll'&&Math.abs(target.x-this.x)<280;
+    if(!unconscious)this.spokenDownTarget=null;
+    else if(this.spokenDownTarget!==target&&this.speechWait<=0&&!this.speechTime){
+      this.spokenDownTarget=target;this.speechWait=this.ambientBetween(9,16);
+      if(this.ambientRandom()<.3)this.speak(this.ambientLine(CHECK_LINES),2.3);
+    }
+    if(!target&&['idle','run'].includes(this.state)&&this.speechWait<=0&&!this.speechTime){
+      this.speak(this.ambientLine(CASUAL_LINES[this.skin]||CASUAL_LINES.jane),2.8);
+      this.speechWait=this.ambientBetween(11,20);
+    }
+  }
   bloodStrength(){
     if(!this.bleed)return 1;
     const weakness=clamp((this.bleed.lost+Math.max(0,30-this.hp)*.55)/32,0,1);
@@ -2787,8 +2831,7 @@ class Fighter{
     this.t+=dt;this.st+=dt;const c=this.ctrl;
     if(this.skin==='chester'){this.guitarFlexVel+=(-38*this.guitarFlex-9*this.guitarFlexVel)*dt;this.guitarFlex=clamp(this.guitarFlex+this.guitarFlexVel*dt,-.25,.32);}
     const isHL=this.skin==='homelander';
-    if(!targetOpp&&this.hp>0&&this.state==='idle')this.calmT+=dt;else this.calmT=0;
-    this.lagHp=Math.max(this.hp,this.lagHp-dt*28);
+    this.peaceful=this.hp>0&&!targetOpp;
     this.dashCD=Math.max(0,this.dashCD-dt);
     this.boxCD=Math.max(0,this.boxCD-dt);this.guardCD=Math.max(0,this.guardCD-dt);this.shoveCD=Math.max(0,this.shoveCD-dt);
     if(this.skin==='tubtrooper')this.duckCD=Math.max(0,this.duckCD-dt);
@@ -2849,7 +2892,7 @@ class Fighter{
       }else{
         this.vx+=(tgtVx-this.vx)*Math.min(1,dt*14);
       }
-      if(!isHL&&Math.abs(this.vx)>8){
+      if((!isHL||this.peaceful)&&Math.abs(this.vx)>8){
         this.walkPh+=(this.vx*this.dir>=0?1:-1)*Math.abs(this.vx)*dt*.08;
         const sg=Math.sin(this.walkPh)>0?1:-1;
         if(sg!==this.lastSign){
@@ -2869,7 +2912,7 @@ class Fighter{
       break;}
      case 'run':{
       if(!c.run||!c.mx){
-        if(isHL&&Math.abs(this.vx)>210){
+        if(isHL&&!this.peaceful&&Math.abs(this.vx)>210){
           this.hlBrake=clamp(Math.abs(this.vx)/RUN_SPD,.35,1);
           this.hlBrakeDir=this.vx>=0?1:-1;
           this.hlBrakeFrom=this.runPose();
@@ -2882,7 +2925,7 @@ class Fighter{
       const tgt=this.dir*RUN_SPD*(this.hp<30?.9:1)*this.bloodStrength(),A=RUN_ACC*dt;
       this.vx+=clamp(tgt-this.vx,-A,A);
       const rs=clamp(Math.abs(this.vx)/RUN_SPD,0,1);
-      if(isHL){
+      if(isHL&&!this.peaceful){
         if(rs>.45&&this.fx){
           if(Math.random()<dt*13)this.fx.smoke(this.x-this.dir*26,this.gy-96+rnd(-14,14),-this.dir*rnd(115,190),rnd(-8,8),rnd(3,6),rnd(7,13),rnd(.14,.24),.24);
           if(Math.random()<dt*10)this.fx.dash(this.x-this.dir*8,this.gy,this.dir);
@@ -3151,22 +3194,22 @@ class Fighter{
       this.x=clamp(this.x,min,max);
     }
     c.jump=c.punch=false;
-    // Homelander hover height: lies flat on the floor in ragdoll, stands onto his feet on getup and immediately lifts off.
+    // Homelander walks on the ground while peaceful and resumes hovering in combat.
     if(!isHL||this.state==='ragdoll'){
       this.hoverY=0;
     }else if(this.state==='spawn'){
-      this.hoverY=this.sp<3?0:HL_HOVER*ease(clamp(1-this.spT/.45,0,1));
+      this.hoverY=this.peaceful||this.sp<3?0:HL_HOVER*ease(clamp(1-this.spT/.45,0,1));
     }else if(['stagger_fall','push_stagger','shove','lamp_jump','lamp_hang','lamp_pull','bleed_collapse'].includes(this.state)){
       this.hoverY=0;
     }else if(this.state==='getup'){
-      if(this.st<1.76){this.hoverY=0;}
+      if(this.peaceful||this.st<1.76){this.hoverY=0;}
       else{
         if(!this.hlLiftFx){this.hlLiftFx=true;if(this.fx)this.fx.landing(this.x,this.gy,.32);}
         const lift=ease(clamp((this.st-1.76)/(GETUP_DUR-1.76),0,1));
         this.hoverY=(HL_HOVER+Math.sin(this.t*2.7+this.seed)*2.2)*lift;
       }
     }else{
-      const grounded=['choke','choked','counter_throw','counter_carried'].includes(this.state)||
+      const grounded=this.peaceful||['choke','choked','counter_throw','counter_carried'].includes(this.state)||
         (this.state==='idle'&&c.crouch);
       const baseH=grounded?0:this.state==='run'?HL_HOVER+8:HL_HOVER;
       const tgtH=baseH+(grounded?0:Math.sin(this.t*2.7+this.seed)*2.2);
@@ -3201,7 +3244,7 @@ class Fighter{
   }
   runPose(){
     const rs=clamp(Math.abs(this.vx)/RUN_SPD,0,1);
-    if(this.skin==='homelander'){
+    if(this.skin==='homelander'&&!this.peaceful){
       const bob=Math.sin(this.t*7.5+this.seed)*1.1;
       // Forward-leaning power-glide: arms swept back at sides, legs nearly straight and slightly bent backward behind the spine.
       return P({
@@ -3347,6 +3390,20 @@ class Fighter{
         f1x:25+step*10,f1h:Math.max(0,step)*5,f2x:-20-step*10,f2h:Math.max(0,-step)*5,
         gx:48,gy:22,bt:145,mo:.15});
     }
+    if(this.peaceful&&s==='idle'){
+      // Neutral, upright posture with relaxed elbows. Walking swings the arms
+      // and legs gently instead of reverting to a raised fighting guard.
+      const p=P({H:85,tl:2,hd:1,px:0,a1:5,e1:22,c1:0,a2:-5,e2:25,c2:0,
+        f1x:19,f2x:-17,bg:0});
+      const w=clamp(Math.abs(this.vx)/210,0,1),b=t*2+this.seed,step=Math.sin(this.walkPh);
+      p.tl+=Math.sin(b)*.7+w*2;p.hd+=Math.sin(b*.7)*.7;
+      p.a1+=Math.sin(b)*1.4*(1-w)+step*13*w;p.a2+=Math.sin(b+1)*1.4*(1-w)-step*13*w;
+      p.f1x+=Math.cos(this.walkPh)*21*w;p.f2x-=Math.cos(this.walkPh)*21*w;
+      p.f1h=Math.max(0,-step)*14*w;p.f2h=Math.max(0,step)*14*w;
+      p.H+=Math.abs(step)*2*w;
+      if(this.landT>0)return mix(p,LAND,clamp(this.landT/.12,0,1));
+      return p;
+    }
     if(isHL){
       const p=Object.assign({},HL_IDLE),sp=Math.abs(this.vx),w=clamp(sp/210,0,1),b=t*3.1+this.seed;
       p.tl+=Math.sin(b+1)*.9*(1-w);
@@ -3378,11 +3435,6 @@ class Fighter{
       return p;
     }
     const p=Object.assign({},D),sp=Math.abs(this.vx),w=clamp(sp/140,0,1),b=t*5.6+this.seed;
-    if(this.calmT>2.8&&sp<12){
-      p.a1=54+Math.sin(t*1.2)*2;p.a2=54+Math.sin(t*1.2+1)*2;p.e1=105;p.e2=105;p.tl+=Math.sin(t*1.4)*.5;p.H-=1.5;p.hd+=Math.sin(t*.8)*1.2;
-      p.gx=50;p.gy=22;p.bt=150;
-      return p;
-    }
     p.H+=Math.sin(b)*1.7*(1-w);p.tl+=Math.sin(b+1)*1.2*(1-w);p.a1+=Math.sin(b+.6)*3*(1-w);p.a2+=Math.sin(b+1.2)*3*(1-w);
     p.f1x+=Math.sin(t*2.8)*2*(1-w);p.f2x-=Math.sin(t*2.8)*2*(1-w);
     p.bt+=Math.sin(b+.6)*3*(1-w);p.gy+=Math.sin(b)*1.2*(1-w);
@@ -3460,8 +3512,33 @@ class AutoCombat{
     this.rolled=false;this.intercept=false;this.afterHop=0;this.reactAction='hop';
     this.spaceCD=rnd(2,4);this.spaceDuration=0;
     this.openingSeen=Object.create(null);this.openingTarget=null;this.bridgeTackleCD=0;
+    this.wanderAction='stand';this.wanderT=1.5;this.wanderDir=1;
+    this.duckPlanTarget=null;this.duckPlanT=0;this.duckMaintain=false;this.duckIdeal=340;
+    this.chargeDuckDecided=false;
   }
   setMode(m){this.mode=m;this.modeT=0;}
+  wander(dt,f,st){
+    if(st!=='idle'&&st!=='run')return;
+    const c=f.ctrl;
+    this.wanderT-=dt;
+    if(this.wanderT<=0){
+      const r=f.ambientRandom();
+      this.wanderAction=r<.32?'stand':r<.68?'walk':r<.83?'crouch':r<.95?'run':'jump';
+      this.wanderT=this.wanderAction==='run'?f.ambientBetween(.6,1.3):f.ambientBetween(1.5,4);
+      this.wanderDir=f.ambientRandom()<.5?-1:1;
+    }
+    if(this.wanderAction==='crouch'){c.crouch=true;return;}
+    if(this.wanderAction==='jump'){
+      if(st==='idle'){c.jump=true;this.wanderAction='stand';this.wanderT=f.ambientBetween(2,4);}
+      return;
+    }
+    if(this.wanderAction==='walk'||this.wanderAction==='run'){
+      if(f.x<f.minX+90)this.wanderDir=1;
+      if(f.x>f.maxX-90)this.wanderDir=-1;
+      c.mx=this.wanderDir;c.noFace=true;f.dir=this.wanderDir;
+      c.run=this.wanderAction==='run';
+    }
+  }
   planVault(f,body){
     if(!safeToVault(body,1.25))return false;
     const side=f.x>=body.x?1:-1;
@@ -3473,7 +3550,7 @@ class AutoCombat{
     return true;
   }
   startCharge(dist){
-    this.setMode('charge');
+    this.setMode('charge');this.chargeDuckDecided=false;
     const r=Math.random();
     // 10%: never jumps and runs into the enemy; 12%: jumps too early; 10%: too late; otherwise a good timing
     let jd=r<.10?-1:r<.22?rnd(350,440):r<.32?rnd(30,70):rnd(190,300);
@@ -3483,7 +3560,7 @@ class AutoCombat{
   update(dt,f,o,all){
     const c=f.ctrl;
     c.mx=0;c.jump=false;c.punch=false;c.run=false;c.laser=false;c.hop=false;c.noFace=false;c.crouch=false;
-    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.lampCheck-=dt;this.spaceCD-=dt;this.bridgeTackleCD-=dt;this.modeT+=dt;
+    this.attackWait-=dt;this.hopCD-=dt;this.farCD-=dt;this.laserCD-=dt;this.lampCheck-=dt;this.spaceCD-=dt;this.bridgeTackleCD-=dt;this.duckPlanT-=dt;this.modeT+=dt;
     this.pendingShoveT=Math.max(0,this.pendingShoveT-dt);
     if(f.hp<=0){this.mode='engage';this.openingTarget=null;this.lampTarget=null;return;}
     const st=f.state;
@@ -3536,11 +3613,8 @@ class AutoCombat{
         Math.abs(e.x-f.x)<350&&safeToVault(e,0)).sort((a,b)=>Math.abs(a.x-f.x)-Math.abs(b.x-f.x))[0]||null;
     }
     if(!o){
-      if(f.onBridge&&st==='idle'){
-        const direction=Math.sin(f.t*.32+f.seed)>0?1:-1;
-        c.mx=f.x<f.minX+90?1:f.x>f.maxX-90?-1:direction;c.noFace=true;f.dir=c.mx;
-      }
-      this.mode='engage';this.openingTarget=null;this.lampTarget=null;this.downTarget=null;this.downDecided=false;return;
+      this.mode='engage';this.openingTarget=null;this.lampTarget=null;this.downTarget=null;this.downDecided=false;
+      this.duckPlanTarget=null;this.wander(dt,f,st);return;
     }
     const dx=o.x-f.x,dist=Math.abs(dx),toward=dx>=0?1:-1;
     if(['guard','guard_recoil','shove','overextend','flank','choke','choked','counter_throw','counter_carried','lamp_jump','lamp_hang','lamp_pull','duck_throw'].includes(st)){
@@ -3698,6 +3772,16 @@ class AutoCombat{
     }
     if(this.mode==='charge'){
       if(oppDown||this.modeT>5){this.setMode('engage');return;}
+      // Sometimes abort the flying kick while there is still room to stop,
+      // plant the feet and use a ready duck instead.
+      if(f.skin==='tubtrooper'&&!this.chargeDuckDecided&&f.duckCD<=0&&st==='run'&&dist>=260&&dist<=620&&
+         Math.abs((f.gy-f.y)-(o.gy-o.y))<150){
+        this.chargeDuckDecided=true;
+        if(Math.random()<.48){
+          this.duckPlanTarget=o;this.duckPlanT=rnd(2,3.5);this.duckMaintain=true;this.duckIdeal=320;
+          this.setMode('engage');return;
+        }
+      }
       c.mx=toward;c.run=true;
       if(st==='run'&&this.jumpDist>0&&dist<=this.jumpDist&&Math.abs(f.vx)>=RUN_SPD*(dist>260?.88:.5)){
         c.jump=true;this.setMode('engage');
@@ -3784,11 +3868,32 @@ class AutoCombat{
     // cooldown is unchanged; the longer pose can absorb a series of punches.
     if(dist>=138&&dist<=240&&f.guardCD<=0&&o.y<40&&o.state!=='lamp_hang'&&
        Math.random()<dt*.35&&f.startGuard(o))return;
-    // A ranged throw is a committed, interruptible action with a cooldown;
-    // ordinary close combat still uses the same punches as the others.
-    if(f.skin==='tubtrooper'&&st==='idle'&&f.duckCD<=0&&this.attackWait<=0&&
-       dist>=200&&dist<=760&&o.canBeHit()&&Math.random()<dt*1.3&&f.startDuckThrow(o)){
-      this.attackWait=rnd(.9,1.3);return;
+    // Tubtrooper usually makes room for a clear throw instead of blindly
+    // charging. The plan is rolled occasionally, not once per frame; at the
+    // wall or at punching range he can still defend and fight normally.
+    if(f.skin==='tubtrooper'&&o.canBeHit()&&!(f.bleed&&f.bleed.pressing)&&
+       Math.abs((f.gy-f.y)-(o.gy-o.y))<150){
+      if(this.duckPlanTarget!==o||this.duckPlanT<=0){
+        this.duckPlanTarget=o;this.duckPlanT=rnd(2,3.5);
+        this.duckMaintain=Math.random()<.78;this.duckIdeal=rnd(300,410);
+      }
+      const room=toward>0?f.x-f.minX:f.maxX-f.x;
+      if(this.duckMaintain){
+        const hasRange=dist>=Math.max(200,this.duckIdeal-65)||room<40;
+        if(hasRange&&dist>=200&&dist<=760&&f.duckCD<=0&&this.attackWait<=0&&f.startDuckThrow(o)){
+          this.attackWait=rnd(.9,1.3);return;
+        }
+        if(dist>105&&dist<this.duckIdeal-35&&room>35){
+          c.noFace=true;f.dir=toward;c.mx=-toward;return;
+        }
+        if(dist>this.duckIdeal+140){c.mx=toward;return;}
+        if(dist>=190&&room>35)return;
+      }
+      // Even an aggressive plan can occasionally choose the ranged action.
+      if(f.duckCD<=0&&this.attackWait<=0&&dist>=200&&dist<=760&&
+         Math.random()<dt*.9&&f.startDuckThrow(o)){
+        this.attackWait=rnd(.9,1.3);return;
+      }
     }
     const incoming=(o.state==='run'||o.dive)&&dist<230&&((f.x-o.x)*o.dir>0);
     if(incoming){
@@ -4042,6 +4147,35 @@ function drawDizzyStars(g,f){
   }
   g.restore();
 }
+function fighterStillFalling(f){
+  if(f.state==='ragdoll'&&f.rag){
+    return !(f.rag.frozen||f.rag.sleeping||
+      (f.rag.grounded()&&f.rag.p.neck.y>f.gy-100&&f.rag.settle>.12));
+  }
+  return f.state==='stagger_fall'||f.state==='bleed_collapse'||(f.state==='push_stagger'&&f.shoveWillFall)||
+    f.state==='bridge_leap'||(f.state==='air'&&f.vy<0)||
+    (f.state==='spawn'&&f.sp===1);
+}
+function drawSpeech(g,f,W){
+  if(!f.rig||!f.visible||f.hp<=0||!f.speech||f.speechTime<=0)return;
+  const text=f.speech,singing=f.skin==='chester'&&CHESTER_HUMS.includes(text);
+  const unit=3,w=Math.ceil((text.length*9+18+(singing?12:0))/unit)*unit,h=24;
+  const x=clamp(Math.round((f.rig.head.x-w/2)/unit)*unit,6,W-w-6);
+  const y=Math.round((f.rig.head.y-57)/unit)*unit;
+  const tail=clamp(Math.round((f.rig.head.x-x)/unit)*unit,9,w-15);
+  g.save();g.imageSmoothingEnabled=false;
+  // Stepped black outline and tail, with a plain white interior. There is no
+  // opacity or position animation: speech appears and disappears immediately.
+  g.fillStyle='#101014';g.fillRect(x,y,w,h);g.fillRect(x+tail,y+h,9,3);g.fillRect(x+tail+3,y+h+3,3,3);
+  g.fillStyle='#fff';g.fillRect(x+3,y+3,w-6,h-6);g.fillRect(x+tail+3,y+h-3,3,6);
+  g.fillStyle=f.col.hex;
+  if(singing){ // a tiny pixel note makes the sung fragments distinct from speech
+    g.fillRect(x+9,y+6,3,12);g.fillRect(x+12,y+6,6,3);g.fillRect(x+6,y+15,6,3);
+  }
+  g.font="9px 'Press Start 2P', monospace";g.textAlign='center';g.textBaseline='middle';
+  g.fillText(text,x+w/2+(singing?6:0),y+h/2+1);
+  g.restore();
+}
 /* ============================ SANDBOX GAME ENGINE ============================ */
 const Game={
   W:960,H:540,gy:468,S:1,cv:null,
@@ -4052,12 +4186,12 @@ const Game={
   respawnTimer:0,
   koCount:0,
   fx:null,
-  init(){
+  init({sandbox=false}={}){
     this.cv=document.querySelector('#gameCv');
     this.ctx=this.cv.getContext('2d');
     this.ctx.imageSmoothingEnabled=false;
     this.fighters=[];this.droppedBats=[];this.ducks=[];this.lamps=[];this.detachedLamps=0;
-    this.koCount=0;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;this.respawnTimer=0;this.autoSpawn=true;this.shiftCrouch=false;
+    this.koCount=0;this.shake=0;this.hs=0;this.ts=1;this.tsT=0;this.respawnTimer=0;this.autoSpawn=!sandbox;this.shiftCrouch=false;
     this.camera={x:this.W/2,y:270,targetY:270,zoom:1,vignette:0};this.audience=null;
     skinCursor=0;
     this.fx=new FX();
@@ -4069,7 +4203,7 @@ const Game={
     this.camera.x=this.W/2;
     this.fx.decal=this.dctx;
     this.fx.floorY=this.gy;
-    this.spawnPair();
+    if(!sandbox)this.spawnPair();
   },
   resize(){
     const iw=innerWidth,ih=innerHeight;if(!iw||!ih)return;
@@ -4135,7 +4269,7 @@ const Game={
     for(const rider of riders)rider.releaseLamp('break');
     Snd.thud();return true;
   },
-  spawnFighter(x,dir,delay,skin){
+  spawnFighter(x,dir,delay,skin,options={}){
     const dead=this.fighters.filter(f=>f.hp<=0);
     if(dead.length>6){
       const idx=this.fighters.indexOf(dead[0]);
@@ -4146,15 +4280,38 @@ const Game={
     const meta=SKIN_META[chosenSkin];
     const px=clamp(x!==undefined?x:rnd(130,this.W-130),80,this.W-80);
     const d=dir||(px<this.W/2?1:-1);
+    const onBridge=!!options.onBridge;
     const f=new Fighter({
-      fx:this.fx,gy:this.gy,minX:70,maxX:this.W-70,spawnY:620,
+      fx:this.fx,gy:onBridge?BRIDGE_Y:this.gy,minX:70,maxX:this.W-70,spawnY:options.spawnY??620,
       skin:chosenSkin,col:{hex:meta.color},x:px,dir:d,
       name:`#${NEXT_ID} · ${meta.label}`
     });
-    f.spawn(delay!==undefined?delay:.05);
+    f.spawn(delay!==undefined?delay:.05);f.onBridge=onBridge;
     this.fighters.push(f);
-    this.syncHudCards();
     return f;
+  },
+  spawnAt(x,y,skin){
+    if(!Number.isFinite(x)||!Number.isFinite(y)||!SKIN_META[skin])return null;
+    const px=clamp(x,80,this.W-80),onBridge=y<=BRIDGE_Y;
+    const floor=onBridge?BRIDGE_Y:this.gy;
+    // Keep the head inside the ceiling/under the bridge while dropping the
+    // fighter onto the level actually clicked, not through the bridge.
+    const maxHeight=onBridge?BRIDGE_Y-WORLD_TOP-180:this.gy-(BRIDGE_Y+18+170);
+    const height=clamp(floor-y,70,maxHeight);
+    const occupied=this.fighters.some(f=>{
+      if(f.state==='spawn'&&Math.abs(f.x-px)<65&&Math.abs(f.gy-floor)<50)return true;
+      if(!f.visible||!f.rig)return false;
+      const R=f.rig,top=Math.min(R.head.y-30,R.pel.y-15),bottom=Math.max(R.aN.y,R.aF.y,R.pel.y)+20;
+      return Math.abs(R.pel.x-px)<55&&y>=top&&y<=bottom;
+    });
+    if(occupied)return null;
+    const alive=this.fighters.filter(f=>f.hp>0&&Math.abs(f.gy-floor)<100);
+    let dir=px<this.W/2?1:-1;
+    if(alive.length){
+      const nearest=alive.reduce((a,b)=>Math.abs(a.x-px)<=Math.abs(b.x-px)?a:b);
+      dir=nearest.x>=px?1:-1;
+    }
+    return this.spawnFighter(px,dir,0,skin,{onBridge,spawnY:height});
   },
   spawnPair(){
     this.spawnFighter(this.W*.32,1,.08);
@@ -4182,7 +4339,6 @@ const Game={
     this.fighters=this.fighters.filter(f=>f.hp>0);
     this.fx.gibs=[];
     this.droppedBats=[];
-    this.syncHudCards();
   },
   clearBlood(){
     this.fx.clearBlood();
@@ -4333,6 +4489,7 @@ const Game={
         const c=f.ctrl;c.mx=0;c.jump=false;c.punch=false;c.run=false;c.hop=false;c.laser=false;c.noFace=false;c.crouch=false;
       }
       f.update(dt,opp,this.fighters);
+      f.updateSpeech(dt,opp);
     }
     for(const f of this.fighters){
       if(f.state==='choke'&&f.chokeTarget&&f.chokeTarget.rig)f.buildRig(0);
@@ -4386,41 +4543,6 @@ const Game={
     this.fx.update(dt);
     if(this.audience)this.audience.update(rdt);
     this.updateCamera(rdt);
-    this.updateHud();
-  },
-  syncHudCards(){
-    const wrap=$('#rosterHud');
-    if(!wrap)return;
-    wrap.innerHTML='';
-    const list=this.fighters.slice(-6);
-    for(const f of list){
-      const el=document.createElement('div');
-      el.className='fcard'+(f.hp<=0?' dead':'');
-      el.id='fc_'+f.id;
-      el.innerHTML=`
-        <div class="top"><span>${f.name}</span><span class="hpv">${Math.ceil(f.hp)} HP</span></div>
-        <div class="bar">
-          <div class="lag" style="width:${f.lagHp}%"></div>
-          <div class="fill" style="width:${f.hp}%;background:${f.col.hex}"></div>
-        </div>`;
-      wrap.appendChild(el);
-    }
-  },
-  updateHud(){
-    const aliveCount=this.fighters.filter(f=>f.hp>0).length;
-    const st=$('#statTxt');
-    if(st)st.textContent=`В бою: ${aliveCount} · Нокаутов: ${this.koCount} · Бойцы сражаются самостоятельно`;
-    for(const f of this.fighters){
-      const el=document.getElementById('fc_'+f.id);
-      if(!el)continue;
-      el.classList.toggle('dead',f.hp<=0);
-      const hpv=el.querySelector('.hpv');
-      if(hpv)hpv.textContent=f.hp>0?Math.ceil(f.hp)+' HP':'K.O.';
-      const fill=el.querySelector('.fill');
-      if(fill)fill.style.width=f.hp+'%';
-      const lag=el.querySelector('.lag');
-      if(lag)lag.style.width=f.lagHp+'%';
-    }
   },
   render(){
     const ctx=this.ctx,S=this.S,W=this.W,H=540;
@@ -4472,23 +4594,36 @@ const Game={
     }
 
     const severed=this.fighters.filter(f=>f.gorePieces&&f.rig);
-    if(severed.length){
-      const moving=severed.some(f=>f.gorePieces.some(p=>!p.settled));
-      const key=`${viewY}|${severed.map(goreVisualKey).join('|')}`;
+    // A duck is visible over resting remains, but falling bodies/fragments
+    // pass in front of it. Keep the old cache for settled gore.
+    const fallingGore=this.ducks.length?severed.map(f=>({f,pieces:f.gorePieces.filter(p=>!p.settled)})).filter(e=>e.pieces.length):[];
+    const earlyGore=severed.map(f=>({f,pieces:this.ducks.length?f.gorePieces.filter(p=>p.settled):f.gorePieces})).filter(e=>e.pieces.length);
+    if(earlyGore.length){
+      const moving=earlyGore.some(e=>e.pieces.some(p=>!p.settled));
+      const key=`${viewY}|${earlyGore.map(e=>goreVisualKey(e.f)+':'+e.pieces.map(p=>e.f.gorePieces.indexOf(p)).join(',')).join('|')}`;
       if(moving||key!==this.goreKey){
         clearPixelLayer(this.goreLayer);
-        for(const f of severed)drawGorePieces(this.goreLayer.ctx,f.gorePieces,f);
+        for(const e of earlyGore)drawGorePieces(this.goreLayer.ctx,e.pieces,e.f);
         this.goreKey=moving?null:key;
       }
       ctx.drawImage(this.goreLayer.canvas,0,viewY,W,H);
     }else this.goreKey=null;
 
     const dependent=f=>['choked','counter_carried'].includes(f.state);
-    const ordered=[...this.fighters.filter(f=>f.hp<=0),
+    const baseOrder=[...this.fighters.filter(f=>f.hp<=0),
       ...this.fighters.filter(f=>f.hp>0&&!dependent(f)),
       ...this.fighters.filter(f=>f.hp>0&&dependent(f))];
+    const ordered=this.ducks.length?[...baseOrder.filter(f=>!fighterStillFalling(f)),...baseOrder.filter(f=>fighterStillFalling(f))]:baseOrder;
+    let ducksDrawn=false;
+    const paintDucks=()=>{
+      if(ducksDrawn||!this.ducks.length)return;
+      clearPixelLayer(this.batLayer);
+      for(const d of this.ducks)drawDuck(this.batLayer.ctx,d.x,d.y,d.angle,d.facing);
+      ctx.drawImage(this.batLayer.canvas,0,viewY,W,H);ducksDrawn=true;
+    };
     for(const f of ordered){
       if(!f.rig||(f.state==='spawn'&&f.sp===0)||f.gorePieces)continue;
+      if(this.ducks.length&&fighterStillFalling(f))paintDucks();
       f.visible=true;
       ctx.save();
       const tintLayer=(layer)=>{if(f.hp<=0&&f.rag&&f.rag.frozen&&f.corpseFade>.015){const q=layer.ctx;q.save();q.setTransform(1,0,0,1,0,0);q.globalCompositeOperation='source-atop';q.globalAlpha=Math.min(.18,f.corpseFade);q.fillStyle='#17151A';q.fillRect(0,0,layer.canvas.width,layer.canvas.height);q.restore();}};
@@ -4535,10 +4670,11 @@ const Game={
       ctx.restore();
     }
 
-    if(this.ducks.length){
-      clearPixelLayer(this.batLayer);
-      for(const d of this.ducks)drawDuck(this.batLayer.ctx,d.x,d.y,d.angle,d.facing);
-      ctx.drawImage(this.batLayer.canvas,0,viewY,W,H);
+    paintDucks();
+    if(fallingGore.length){
+      clearPixelLayer(this.goreLayer);
+      for(const e of fallingGore)drawGorePieces(this.goreLayer.ctx,e.pieces,e.f);
+      ctx.drawImage(this.goreLayer.canvas,0,viewY,W,H);this.goreKey=null;
     }
     clearPixelLayer(this.fxLayer);
     for(const f of this.fighters){
@@ -4570,53 +4706,80 @@ const Game={
     ctx.restore(); // Camera transform; vignettes stay fixed to the screen.
     ctx.imageSmoothingEnabled=true;
     ctx.drawImage(this.vig,0,0,W,H);
+    if(this.fighters.some(f=>f.speechTime>0)){
+      ctx.save();ctx.translate(shakeX,shakeY);
+      if(camera){ctx.translate(W/2,H/2);ctx.scale(camera.zoom,camera.zoom);ctx.translate(-camera.x,-camera.y);}
+      for(const f of this.fighters)drawSpeech(ctx,f,W);
+      ctx.restore();
+    }
     ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';ctx.filter='none';ctx.setTransform(S,0,0,S,0,0);
   }
 };
 /* ============================ ENTRY POINT ============================ */
 export function startGame(){
-  Game.init();
+  // The public game starts empty; the legacy pair/auto-spawn setup remains
+  // available to the engine's autonomous combat simulations.
+  Game.init({sandbox:true});
+  if(document.fonts?.load)document.fonts.load("9px 'Press Start 2P'").catch(()=>{});
   const cv=Game.cv;
-  let gesture=null,cameraMode=false;
+  let gesture=null,selectedSkin=null,menuOpen=false;
+  const touches=new Set();
+  const capture=e=>{if(cv.setPointerCapture)try{cv.setPointerCapture(e.pointerId);}catch{}};
+  const cancelGesture=()=>{gesture=null;cv.classList?.remove('panning');};
   const onDown=e=>{
-    // Track only one pointer: another finger must not turn a camera gesture
-    // into a tap (or replace the pointer whose release we are waiting for).
-    if(gesture||(e.button!==undefined&&e.button!==0))return;
-    Snd.init();gesture={id:e.pointerId,startX:e.clientX,startY:e.clientY,lastY:e.clientY,dragged:false,cameraOnly:cameraMode};
-    if(cv.setPointerCapture)cv.setPointerCapture(e.pointerId);
+    const touch=e.pointerType==='touch';
+    if(touch){
+      touches.add(e.pointerId);capture(e);
+      // A second finger can never turn a pan or a multi-touch gesture into a tap.
+      if(touches.size>1){if(gesture)gesture.suppressSpawn=true;return;}
+    }
+    if(gesture)return;
+    const button=e.button??0;
+    if(!touch&&button!==0&&button!==2)return;
+    const kind=touch?'touch':button===2?'pan':'place';
+    Snd.init();
+    gesture={id:e.pointerId,kind,startX:e.clientX,startY:e.clientY,lastY:e.clientY,dragged:false,suppressSpawn:menuOpen};
+    if(!touch)capture(e);
+    if(kind==='pan')cv.classList?.add('panning');
+    e.preventDefault?.();
   };
   const onMove=e=>{
     if(!gesture||e.pointerId!==gesture.id)return;
-    if(Math.hypot(e.clientX-gesture.startX,e.clientY-gesture.startY)>8)gesture.dragged=true;
-    // In camera mode even a tiny movement pans, and a tap never spawns.
-    // The normal mode retains the previous drag-to-pan and tap-to-spawn.
-    if(gesture.cameraOnly||gesture.dragged){
+    const g=gesture,wasDragged=g.dragged;
+    if(Math.hypot(e.clientX-g.startX,e.clientY-g.startY)>8)g.dragged=true;
+    if(g.kind==='pan'||(g.kind==='touch'&&g.dragged)){
       const rect=cv.getBoundingClientRect();
-      Game.moveCamera(-(e.clientY-gesture.lastY)*VIEW_H/rect.height);
+      // Include the initial movement when a touch crosses the drag threshold.
+      const fromY=g.kind==='touch'&&!wasDragged?g.startY:g.lastY;
+      if(rect.height)Game.moveCamera(-(e.clientY-fromY)*VIEW_H/(rect.height*Game.camera.zoom));
     }
-    gesture.lastY=e.clientY;
+    g.lastY=e.clientY;
   };
   const onUp=e=>{
+    if(e.pointerType==='touch')touches.delete(e.pointerId);
     if(!gesture||e.pointerId!==gesture.id)return;
-    const moved=Math.hypot(e.clientX-gesture.startX,e.clientY-gesture.startY)>8;
-    const spawn=!gesture.cameraOnly&&!gesture.dragged&&!moved;gesture=null;
-    if(!spawn)return;
+    const g=gesture;
+    const moved=g.dragged||Math.hypot(e.clientX-g.startX,e.clientY-g.startY)>8;
+    cancelGesture();
+    if(g.kind==='pan'||moved||g.suppressSpawn||menuOpen||!selectedSkin)return;
     const rect=cv.getBoundingClientRect();
+    if(!rect.width||!rect.height||e.clientX<rect.left||e.clientX>rect.left+rect.width||
+       e.clientY<rect.top||e.clientY>rect.top+rect.height)return;
     const screenX=(e.clientX-rect.left)/rect.width*Game.W;
-    const worldX=clamp(Game.screenToWorldX(screenX),80,Game.W-80);
-    const alive=Game.fighters.filter(f=>f.hp>0);
-    let dir=worldX<Game.W/2?1:-1;
-    if(alive.length){
-      let nearest=alive[0],bestD=1e9;
-      for(const a of alive){const d=Math.abs(a.x-worldX);if(d<bestD){bestD=d;nearest=a;}}
-      dir=nearest.x>=worldX?1:-1;
-    }
-    Game.spawnFighter(worldX,dir,0);
+    const screenY=(e.clientY-rect.top)/rect.height*VIEW_H;
+    Game.spawnAt(Game.screenToWorldX(screenX),Game.screenToWorldY(screenY),selectedSkin);
   };
-  const onResize=()=>Game.resize();
+  const onCancel=e=>{
+    if(e.pointerType==='touch')touches.delete(e.pointerId);
+    if(gesture&&e.pointerId===gesture.id)cancelGesture();
+  };
+  const onResize=()=>{touches.clear();cancelGesture();Game.resize();};
   const onCtx=e=>e.preventDefault();
-  const onWheel=e=>{e.preventDefault();Game.moveCamera(e.deltaY*(e.deltaMode===1?28:1));};
-  const onCancel=e=>{if(gesture&&e.pointerId===gesture.id)gesture=null;};
+  const onWheel=e=>{
+    e.preventDefault();
+    const unit=e.deltaMode===1?28:e.deltaMode===2?VIEW_H:1;
+    Game.moveCamera(e.deltaY*unit);
+  };
   const onKeyDown=e=>{
     if(e.key==='Shift'&&!e.ctrlKey&&!e.altKey&&!e.metaKey)Game.shiftCrouch=true;
     if(!e.ctrlKey&&!e.altKey&&!e.metaKey&&!['INPUT','TEXTAREA','SELECT','BUTTON'].includes(e.target?.tagName)){
@@ -4626,12 +4789,11 @@ export function startGame(){
     }
   };
   const onKeyUp=e=>{if(e.key==='Shift')Game.shiftCrouch=false;};
-  const onBlur=()=>{Game.shiftCrouch=false;gesture=null;};
+  const onBlur=()=>{Game.shiftCrouch=false;touches.clear();cancelGesture();};
   cv.addEventListener('pointerdown',onDown);cv.addEventListener('pointermove',onMove);cv.addEventListener('pointerup',onUp);cv.addEventListener('pointercancel',onCancel);cv.addEventListener('lostpointercapture',onCancel);
-  cv.addEventListener('wheel',onWheel,{passive:false});
+  cv.addEventListener('contextmenu',onCtx);cv.addEventListener('wheel',onWheel,{passive:false});
   addEventListener('resize',onResize);
   addEventListener('keydown',onKeyDown);addEventListener('keyup',onKeyUp);addEventListener('blur',onBlur);
-  document.addEventListener('contextmenu',onCtx);
   let raf=0,last=performance.now(),running=true;
   const frame=ts=>{
     if(!running)return;
@@ -4642,29 +4804,15 @@ export function startGame(){
   };
   raf=requestAnimationFrame(frame);
   return {
-    spawnOne(){Snd.init();Snd.ui();Game.spawnFighter(rnd(120,Game.W-120),undefined,0);},
-    spawnSkin(skin){Snd.init();Snd.ui();Game.spawnFighter(rnd(120,Game.W-120),undefined,0,skin);},
-    spawnPair(){Snd.init();Snd.ui();Game.spawnPair();},
-    setAutoSpawn(v){Snd.init();Snd.ui();Game.autoSpawn=v;},
-    clearBodies(){Snd.init();Snd.ui();Game.clearBodies();},
-    clearBlood(){Snd.init();Snd.ui();Game.clearBlood();},
-    setSound(on){Snd.init();Snd.on=on;if(on)Snd.ui();},
-    setCameraMode(on){
-      const next=!!on;
-      // Never reinterpret an in-flight press under a different mode.
-      if(next!==cameraMode)gesture=null;
-      cameraMode=next;cv.classList.toggle('cameraMode',cameraMode);
-    },
-    moveCamera(delta){Game.moveCamera(delta);},
-    resetCamera(){Game.resetCamera();},
+    selectSkin(skin){selectedSkin=SKIN_META[skin]?skin:null;cancelGesture();},
+    setMenuOpen(open){menuOpen=!!open;cancelGesture();},
     destroy(){
-      running=false;cancelAnimationFrame(raf);gesture=null;cv.classList.remove('cameraMode');
+      running=false;cancelAnimationFrame(raf);touches.clear();cancelGesture();
       cv.removeEventListener('pointerdown',onDown);cv.removeEventListener('pointermove',onMove);cv.removeEventListener('pointerup',onUp);cv.removeEventListener('pointercancel',onCancel);cv.removeEventListener('lostpointercapture',onCancel);
-      cv.removeEventListener('wheel',onWheel);
+      cv.removeEventListener('contextmenu',onCtx);cv.removeEventListener('wheel',onWheel);
       removeEventListener('resize',onResize);
       removeEventListener('keydown',onKeyDown);removeEventListener('keyup',onKeyUp);removeEventListener('blur',onBlur);
       Game.shiftCrouch=false;
-      document.removeEventListener('contextmenu',onCtx);
     }
   };
 }

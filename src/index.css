@@ -1,108 +1,70 @@
 @import "tailwindcss";
 
-:root{--amber:#ffb300;--red:#e11d2e;--blue:#2f7bff;--ink:#09090d}
-*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;touch-action:none}
-html,body{margin:0;height:100%;overflow:hidden;background:#05050a;color:#fff;font-family:'Russo One','Segoe UI',system-ui,sans-serif;overscroll-behavior:none}
-canvas{display:block}
-#game{position:fixed;inset:0;overflow:hidden;background:#000}
-#gameCv{position:absolute;top:0;left:50%;transform:translateX(-50%);height:100%;cursor:crosshair;image-rendering:pixelated}
-#gameCv.cameraMode{cursor:grab}
-#gameCv.cameraMode:active{cursor:grabbing}
-#topBar{
-  position:absolute;left:0;right:0;top:0;
-  display:flex;align-items:center;justify-content:space-between;gap:12px;
-  padding:max(10px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) 10px max(16px,env(safe-area-inset-left));
-  background:linear-gradient(180deg,rgba(5,5,10,.82) 0%,rgba(5,5,10,.35) 70%,transparent 100%);
-  pointer-events:none;z-index:6;flex-wrap:wrap;
-}
-#topBar > *{pointer-events:auto}
-.ctrlGroup{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.sbtn{
-  display:inline-flex;align-items:center;gap:6px;
-  padding:7px 13px;border-radius:6px;
-  font-family:inherit;font-size:clamp(11px,1.7vh,13px);letter-spacing:.06em;text-transform:uppercase;
-  color:#fff;background:rgba(20,20,28,.82);border:1px solid rgba(255,255,255,.18);
-  cursor:pointer;transition:transform .1s,background .15s,border-color .15s;
-  backdrop-filter:blur(4px);
-}
-.sbtn:hover{background:rgba(38,38,52,.92);border-color:rgba(255,179,0,.55)}
-.sbtn:active{transform:scale(.95)}
-.sbtn.primary{
-  color:#1a0f00;background:linear-gradient(180deg,#ffd45a,#ff9d00 60%,#e07800);
-  border-color:#ffe28a;box-shadow:0 0 14px rgba(255,157,0,.28);
-}
-.sbtn.activeToggle{border-color:var(--amber);color:var(--amber);background:rgba(255,179,0,.14)}
-.sbtn svg{width:15px;height:15px}
-.hintBadge{
-  font-family:'Segoe UI',system-ui,sans-serif;font-weight:600;
-  font-size:clamp(11px,1.6vh,13px);color:rgba(255,255,255,.7);
-  background:rgba(10,10,16,.65);border:1px solid rgba(255,255,255,.12);
-  padding:5px 12px;border-radius:20px;pointer-events:none;
-  display:flex;align-items:center;gap:8px;
-}
-.hintBadge .dot{width:7px;height:7px;border-radius:50%;background:#ff3b4e;box-shadow:0 0 8px #ff3b4e;animation:pulse 1.4s infinite}
-.shiftHint{white-space:nowrap;color:rgba(255,255,255,.48)}
-@media (pointer:coarse),(max-width:900px){.shiftHint{display:none}}
-@keyframes pulse{50%{opacity:.35;transform:scale(.85)}}
-#rosterHud{
-  position:absolute;left:max(16px,env(safe-area-inset-left));right:max(16px,env(safe-area-inset-right));top:max(54px,7.2vh);
-  display:flex;justify-content:center;gap:10px;flex-wrap:wrap;pointer-events:none;z-index:5;
-}
-.fcard{
-  width:clamp(130px,16vw,190px);background:rgba(8,8,14,.72);
-  border:1px solid rgba(255,255,255,.18);padding:5px 8px;
-  transform:skewX(-12deg);backdrop-filter:blur(2px);
-  transition:opacity .25s,transform .2s;
-}
-.fcard.dead{opacity:.38;border-color:rgba(255,60,60,.3)}
-.fcard .top{display:flex;justify-content:space-between;align-items:center;font-size:10px;letter-spacing:.1em;margin-bottom:3px;color:#ddd}
-.fcard .bar{position:relative;height:8px;background:#000a;border:1px solid rgba(255,255,255,.65);overflow:hidden}
-.fcard .lag{position:absolute;inset:0;background:#fff;width:100%;transition:width .25s ease}
-.fcard .fill{position:absolute;inset:0;width:100%}
-/* Spawn menu (character picker next to «Спавн бойца») */
-.spawnWrap{position:relative;display:inline-flex;align-items:stretch}
-.spawnMenuWrap{position:static;display:inline-flex;align-items:center}
-.spawnArrow{padding:7px 8px;flex-shrink:0}
-.spawnMenu{
-  position:absolute;top:calc(100% + 6px);left:0;z-index:20;
-  display:flex;flex-direction:column;gap:4px;min-width:190px;
-  background:rgba(8,8,14,.96);border:1px solid rgba(255,255,255,.18);
-  border-radius:8px;padding:6px;backdrop-filter:blur(6px);
-  box-shadow:0 10px 30px rgba(0,0,0,.55);
-}
-.spawnMenuItem{
-  display:flex;align-items:center;gap:8px;
-  padding:7px 10px;border-radius:5px;cursor:pointer;
-  font-family:inherit;font-size:clamp(11px,1.6vh,13px);letter-spacing:.06em;text-transform:uppercase;
-  color:#fff;background:transparent;border:1px solid transparent;
-  transition:background .12s,border-color .12s;
-}
-.spawnMenuItem:hover{background:rgba(255,179,0,.16);border-color:rgba(255,179,0,.5)}
-.spawnDot{width:10px;height:10px;border-radius:50%;flex-shrink:0;box-shadow:0 0 6px currentColor}
-@media (max-width:600px) and (orientation:portrait){
-  /* Keep the roster out from underneath the wrapping control bar. */
-  #rosterHud{top:auto;bottom:max(12px,env(safe-area-inset-bottom))}
+@font-face {
+  font-family: "Press Start 2P";
+  src: url("/fonts/PressStart2P-Regular.ttf") format("truetype");
+  font-display: swap;
 }
 
-/* Vertical camera controls remain reachable on touch screens as well as desktop. */
-#cameraControls{position:absolute;right:max(10px,env(safe-area-inset-right));top:50%;transform:translateY(-50%);z-index:7;
-  display:flex;flex-direction:column;align-items:center;gap:5px;padding:7px 5px;border:1px solid rgba(255,255,255,.17);
-  border-radius:8px;background:rgba(8,8,13,.75);backdrop-filter:blur(4px)}
-#cameraControls > span{font:600 9px 'Segoe UI',sans-serif;letter-spacing:.07em;color:#c3c2c7}
-.camModeBtn{min-width:48px;min-height:52px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
-  padding:4px;border:1px solid rgba(255,255,255,.24);border-radius:5px;color:#ddd;background:rgba(35,35,43,.9);cursor:pointer}
-.camModeBtn span{font:700 8px/1.15 'Segoe UI',sans-serif;letter-spacing:.02em;text-align:center}
-.camModeBtn svg{width:17px;height:17px}
-.camModeBtn[aria-pressed="true"]{color:#ffd375;border-color:#ffb300;background:rgba(255,179,0,.2);box-shadow:0 0 9px rgba(255,179,0,.15)}
-.camModeBtn:hover,.camModeBtn:focus-visible{border-color:#ffb300;outline:none}
-.camModeBtn:active{transform:scale(.95)}
-.camBtn{width:34px;height:34px;display:grid;place-items:center;border:1px solid rgba(255,255,255,.18);border-radius:5px;
-  color:#eee;background:rgba(35,35,43,.9);cursor:pointer}
-.camBtn:hover,.camBtn:focus-visible{color:#ffca5d;border-color:#ffb300;outline:none}
-.camBtn:active{transform:scale(.94)}
-.camBtn svg{width:18px;height:18px}
-@media (max-width:600px) and (orientation:portrait){
-  #cameraControls{right:6px;top:50%;gap:3px;padding:5px 3px}
-  #cameraControls > span{font-size:8px}
-  .camBtn{width:32px;height:32px}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { background: #05050a; color: #fff; overscroll-behavior: none; user-select: none; }
+button { font: inherit; }
+#game { position: fixed; inset: 0; overflow: hidden; background: #000; }
+#gameCv {
+  display: block; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+  height: 100%; cursor: crosshair; image-rendering: pixelated; touch-action: none;
+}
+#gameCv.panning { cursor: grabbing; }
+
+/* The handle stays visible and travels alongside the panel when it opens. */
+.characterPicker {
+  --edge-right: max(14px, env(safe-area-inset-right));
+  --edge-left: max(12px, env(safe-area-inset-left));
+  --edge-top: max(14px, env(safe-area-inset-top));
+  --edge-bottom: max(14px, env(safe-area-inset-bottom));
+  --panel-width: min(286px, calc(100vw - var(--edge-right) - var(--edge-left) - 52px));
+  position: absolute; z-index: 10;
+  top: var(--edge-top); right: var(--edge-right);
+  font-family: "Press Start 2P", monospace;
+}
+.pickerToggle {
+  position: absolute; right: 0; top: 0; width: 44px; height: 44px;
+  display: grid; place-items: center; padding: 7px; border: 0; border-radius: 0;
+  background: transparent; cursor: pointer;
+  transition: transform 260ms ease;
+}
+.pickerToggle img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.characterPicker.is-open .pickerToggle { transform: translateX(calc(-1 * (var(--panel-width) + 8px))); }
+.pickerToggle:focus-visible, .characterCard:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.characterMenu {
+  position: absolute; top: 0; right: 0; width: var(--panel-width);
+  max-height: calc(100dvh - var(--edge-top) - var(--edge-bottom));
+  overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y;
+  padding: 10px; border: 1px solid rgba(255, 255, 255, .26); border-radius: 0;
+  background: rgba(13, 13, 19, .86);
+  transform: translateX(calc(100% + var(--edge-right)));
+  visibility: hidden; pointer-events: none;
+  transition: transform 260ms ease, visibility 0s linear 260ms;
+}
+.characterPicker.is-open .characterMenu {
+  transform: translateX(0); visibility: visible; pointer-events: auto;
+  transition: transform 260ms ease, visibility 0s;
+}
+.characterGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.characterCard {
+  min-width: 0; padding: 3px 2px 6px; border: 2px solid transparent; border-radius: 0;
+  background: rgba(0, 0, 0, .28); color: #fff; cursor: pointer;
+}
+.characterCard:hover { background: rgba(255, 255, 255, .1); }
+.characterCard[aria-pressed="true"] { border-color: var(--accent); }
+.characterPortrait { display: block; width: 100%; aspect-ratio: 1; background: rgba(0, 0, 0, .22); }
+.characterPortrait img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.characterName { display: block; margin-top: 7px; font-size: 8px; line-height: 1.4; text-align: center; white-space: nowrap; }
+@media (max-width: 360px) {
+  .characterGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .characterPortrait { width: min(100%, 74px); margin-inline: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pickerToggle, .characterMenu { transition-duration: 0s; }
 }
