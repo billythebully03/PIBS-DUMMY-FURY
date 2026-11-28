@@ -58,12 +58,12 @@ const source = await readFile(new URL('../src/game/engine.ts', import.meta.url),
 // the test-only exports out of the production entry point.
 const { outputFiles } = await build({
   stdin: {
-    contents: `${source}\nexport { Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y };`,
+    contents: `${source}\nexport { Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y, laserCutGeometry, makeLaserPieces, updateGorePieces, goreSurfacePoint, gorePartCanvas, updateDucks, launchDuck };`,
     resolveDir: fileURLToPath(new URL('../src/game/', import.meta.url)), sourcefile: 'engine.ts', loader: 'ts',
   },
   bundle: true, write: false, platform: 'browser', format: 'esm', target: 'es2020',
 });
-const { startGame, Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`);
+const { startGame, Game, Fighter, surfacePoint, locateSurface, stainedSkinSprite, addLaserRip, drawLimbRips, drawBeam, drawEyeGlow, SK_, Audience, BloodField, HEAD_URL, WORLD_TOP, BRIDGE_Y, laserCutGeometry, makeLaserPieces, updateGorePieces, goreSurfacePoint, gorePartCanvas, updateDucks, launchDuck } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`);
 const originalRandom = Math.random;
 const originalWarn = console.warn;
 let warnings = [];
@@ -1684,7 +1684,7 @@ test('autonomous fights remain stable and use the new behavior at 30, 60 and 120
 
 test('seeded unattended fights actually use the new actions while preserving existing mechanics', () => {
   const counts = {
-    stagger: 0, staggerKO: 0, kos: 0, getup: 0, jump: 0, grab: 0, pull: 0, dive: 0, lampLeap: 0,
+    stagger: 0, staggerKO: 0, kos: 0, getup: 0, jump: 0, verticalChase: 0, grab: 0, pull: 0, dive: 0, lampLeap: 0,
     retreat: 0, wait: 0, keepDistance: 0, inspect: 0, vault: 0, vaultCross: 0,
     shove: 0, shoveAfterHit: 0, shoveContact: 0, shoveFall: 0, shoveRecover: 0, proactiveGuard: 0,
   };
@@ -1699,7 +1699,10 @@ test('seeded unattended fights actually use the new actions while preserving exi
         if (this.hp <= 0) counts.staggerKO++;
       }
       if (name === 'startGetup' && this.state === 'getup') counts.getup++;
-      if (name === 'startLampJump' && result) counts.jump++;
+      if (name === 'startLampJump' && result) {
+        counts.jump++;
+        if (this.autopilot.mode === 'vertical_chase') counts.verticalChase++;
+      }
       if (name === 'grabLamp' && result) counts.grab++;
       if (name === 'startLampPull' && result) counts.pull++;
       if (name === 'releaseLamp' && args[0] === 'dive') counts.dive++;
@@ -1756,7 +1759,11 @@ test('seeded unattended fights actually use the new actions while preserving exi
     }
     console.log('autonomous combat and downed-opponent events:', counts);
     for (const [name, count] of Object.entries(counts)) assert.ok(count > 0, `${name} never happened autonomously`);
-    assert.ok(counts.jump < 35, 'lamp attempts stay rare over many complete matches');
+    // Pursuit of someone on the upper bridge is purposeful navigation, not a
+    // random lamp stunt. Keep the rarity limit on optional same-level jumps.
+    const optionalJumps = counts.jump - counts.verticalChase;
+    assert.ok(optionalJumps < 35 && optionalJumps < counts.kos * .4,
+      'optional lamp stunts stay rare while fighters can pursue up the bridge');
   } finally {
     for (const name of names) Fighter.prototype[name] = original[name];
   }
@@ -2339,6 +2346,7 @@ test('new: local face names and Chester selection, guitar impacts, breakage cap 
   assert.deepEqual(HEAD_URL, {
     jane: '/faces/patrick.png', negan: '/faces/negan.png', chester: '/faces/chester.png',
     homelander: '/faces/homelander.png', saul: '/faces/saul.png', walt: '/faces/walt.png',
+    tubtrooper: '/faces/stormtrooper.png',
   });
   assert.match(await readFile(new URL('../public/faces/README.md', import.meta.url), 'utf8'), /chester\.png/);
   const selected = Game.spawnFighter(360, 1, 0, 'chester');
@@ -2383,7 +2391,7 @@ test('new: a lethal Negan head blow winds up and breaks the head, spraying nearb
   Game.clearBodies(); assert.equal(Game.fx.gibs.length, 0);
 });
 
-test('new: a real lethal laser needs time to cut and separates into three independently moving hot pieces', () => {
+test('new: a real lethal laser needs time to cut and separates into independently moving hot pieces', () => {
   const shooter = fighter(240, 1, 'homelander'), victim = fighter(510, -1, 'walt');
   disableAI(shooter, victim); victim.hp = 3;
   assert.equal(shooter.startAttack(3), true);
@@ -2391,16 +2399,18 @@ test('new: a real lethal laser needs time to cut and separates into three indepe
   assert.ok(victim.laserSlice && victim.laserSlice.progress < 1);
   assert.equal(victim.gorePieces, null, 'separation is not instantaneous');
   advanceUntil(() => victim.gorePieces !== null, 240);
-  assert.equal(victim.gorePieces.length, 3);
-  assert.ok(victim.gorePieces.every(p => p.canvas.getContext('2d').stats.colors.has('#ff8219')),
-    'each exposed part has its own lasting orange cut');
+  const pieceCount = victim.gorePieces.length;
+  assert.ok(pieceCount >= 3, 'multiple severed pieces, including separated limbs, are possible');
+  assert.ok(victim.gorePieces.flatMap(p => p.parts).filter(p => p.cutA || p.cutB)
+    .every(p => p.canvas.getContext('2d').stats.colors.has('#ff8219')),
+    'every severed segment has its own lasting orange cut');
   const positions = victim.gorePieces.map(p => [p.x, p.y]);
   tick(.5);
   assert.ok(victim.gorePieces.some((p, i) => Math.hypot(p.x - positions[i][0], p.y - positions[i][1]) > 10));
   assert.ok(new Set(victim.gorePieces.map(p => Math.round(p.vx))).size > 1, 'fragments are not linked');
   Game.render(); tick(5); Game.render();
   assert.equal(victim.burns.length, 0, 'ordinary burns cool quickly');
-  assert.equal(victim.gorePieces.length, 3, 'the cut and pieces persist after ordinary burns fade');
+  assert.equal(victim.gorePieces.length, pieceCount, 'the cut and pieces persist after ordinary burns fade');
   Game.clearBodies(); assert.ok(!Game.fighters.includes(victim));
 });
 
@@ -2648,5 +2658,368 @@ test('camera mode pans even on small movements and never spawns from the canvas'
     gameCanvas.classList = original.classList; globalThis.cancelAnimationFrame = original.cancelFrame;
     globalThis.removeEventListener = original.removeWindow;
     document.addEventListener = original.addDoc; document.removeEventListener = original.removeDoc;
+  }
+});
+
+test('tubtrooper has the requested helmet path, bare-skin sprite and normal punches', () => {
+  const f = Game.spawnFighter(320, 1, 0, 'tubtrooper'); f.reset(320, 1); disableAI(f); f.buildRig(0);
+  assert.match(f.name, /ТАБТРУПЕР/); assert.equal(HEAD_URL.tubtrooper, '/faces/stormtrooper.png');
+  assert.ok(SK_.tubtrooper.chest && SK_.tubtrooper.uArmF && SK_.tubtrooper.thighF);
+  assert.ok(f.startAttack(0)); assert.equal(f.atk.n, 'jab'); assert.equal(f.atk.fist, 'N');
+  Game.render();
+});
+
+test('tubtrooper aims, holds the duck behind him, then throws a ballistic projectile at a distant opponent', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const dir of [1, -1]) {
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const a = fighter(dir === 1 ? 220 : 780, dir, 'tubtrooper');
+    const v = fighter(dir === 1 ? 700 : 300, -dir, 'jane'); disableAI(a, v);
+    a.duckCD = 0; assert.equal(a.startDuckThrow(v), true);
+    tick(.55, dt);
+    assert.equal(a.state, 'duck_throw'); assert.equal(Game.ducks.length, 0, 'hold aim before throwing');
+    assert.ok((a.rig.wN.x-a.rig.sh.x)*dir > 40 && a.rig.wN.y<a.rig.sh.y, 'front arm points upward and forward');
+    assert.ok((a.rig.wF.x-a.rig.sh.x)*dir < -25, 'duck hand is behind the body');
+    advanceUntil(() => Game.ducks.length === 1, Math.ceil(1 / dt), dt);
+    const d = Game.ducks[0], target = { ...d.targetAtRelease };
+    assert.equal(d.hits, 0); assert.ok(d.vx*dir > 0);
+    advanceUntil(() => d.hits > 0, Math.ceil(2 / dt), dt);
+    assert.ok(v.hp < 100, `duck hits at ${dt}, facing ${dir}`);
+    assert.ok(d.vx*dir < 0, 'the duck rebounds away after impact');
+    assert.deepEqual(d.targetAtRelease, target, 'the solved target is never updated in flight');
+  }
+});
+
+test('duck impacts have a 50 percent knockdown decision and progressively weaker damage', () => {
+  const a = fighter(220, 1, 'tubtrooper'), v = fighter(600, -1, 'jane'); disableAI(a, v);
+  const d = { owner: a, x: 570, y: 350 };
+  const random = Math.random;
+  try {
+    Math.random = () => .49; v.takeDuckHit(d, 8, 1, 800);
+    assert.equal(v.state, 'ragdoll'); assert.equal(v.hp, 92);
+    v.reset(600, -1); v.buildRig(0);
+    Math.random = () => .51; v.takeDuckHit(d, 4, 1, 500);
+    assert.equal(v.state, 'push_stagger'); assert.ok(v.vx > 0); assert.equal(v.hp, 96);
+  } finally { Math.random = random; }
+});
+
+test('a dangerous high drop reacts in flight and keeps accelerating at 30, 60 and 120 FPS', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const f = fighter(480, 1, 'jane'); disableAI(f);
+    f.y = 960; f.vy = -220; f.vx = 100; f.state = 'air'; f.cur = null; f.buildRig(0);
+    advanceUntil(() => f.state === 'ragdoll', Math.ceil(.3 / dt), dt);
+    assert.ok(f.rag.highFall && f.fallDamage?.severe);
+    const start = f.rag.p.pel.y;
+    tick(.45, dt);
+    const distance = f.rag.p.pel.y - start;
+    assert.ok(distance > 260, `fast airborne ragdoll should not glide at ${dt}: ${distance}`);
+    advanceUntil(() => f.hp < 100, Math.ceil(1.8 / dt), dt);
+    assert.ok(f.hp < 45, 'a full-height impact causes a severe injury or death');
+  }
+});
+
+test('laser fragments preserve uncut joints and fall independently instead of freezing in the air', () => {
+  for (const dt of [1/30, 1/60, 1/120]) {
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const f = fighter(480, 1, 'chester'); disableAI(f);
+    f.rig = {
+      dir:1,head:{x:480,y:-500},neck:{x:480,y:-480},sh:{x:480,y:-475},pel:{x:480,y:-415},
+      eN:{x:515,y:-466},wN:{x:545,y:-455},eF:{x:445,y:-466},wF:{x:415,y:-455},
+      kN:{x:500,y:-365},aN:{x:500,y:-320},kF:{x:460,y:-365},aF:{x:460,y:-320},
+      fdN:{x:1,y:0},fdF:{x:1,y:0},cN:0,cF:0,mo:0,ey:0,bd:null,
+    };
+    const pieces=makeLaserPieces(f,{slope:0,dir:1});
+    assert.ok(pieces.length>=3);
+    const upper=pieces.find(p=>p.parts.some(s=>s.name==='uN'&&s.t0===0&&s.t1===1));
+    const u=upper.parts.find(s=>s.name==='uN'),fore=upper.parts.find(s=>s.name==='fN');
+    assert.ok(fore && u.b===fore.a, 'an intact elbow joins upper arm and forearm in one ragdoll');
+    const lower=pieces.find(p=>p.parts.some(s=>s.name==='sN'&&s.t0===0&&s.t1===1));
+    const thigh=lower.parts.find(s=>s.name==='tN'&&s.t1===1),shin=lower.parts.find(s=>s.name==='sN');
+    assert.ok(thigh && thigh.b===shin.a, 'the severed lower leg still has its knee joint');
+    assert.notEqual(upper,lower, 'different fragments do not share the parent body');
+    const start=pieces.map(p=>p.y);
+    for(let i=0;i<Math.ceil(.45/dt);i++)updateGorePieces(pieces,dt,Game.W);
+    for(let i=0;i<pieces.length;i++){
+      assert.ok(!pieces[i].settled && pieces[i].y>start[i]+100, `piece ${i} falls at ${dt}`);
+    }
+    for(let i=0;i<Math.ceil(5/dt);i++)updateGorePieces(pieces,dt,Game.W);
+    for(const p of pieces){
+      assert.ok(p.nodes.some(n=>n.y>=p.floor-n.r-2), 'each piece reaches a solid floor');
+      assert.ok(p.nodes.every(n=>Number.isFinite(n.x)&&Number.isFinite(n.y)&&n.y<=p.floor-n.r+.1));
+      for(const l of p.links)assert.ok(Math.abs(Math.hypot(l.b.x-l.a.x,l.b.y-l.a.y)-l.length)<5, 'joint constraints remain attached');
+    }
+  }
+});
+
+test('the duck leads a steadily moving target without steering in flight', () => {
+  for(const dt of [1/30,1/60,1/120]) for(const dir of [1,-1]) {
+    Game.init(); Game.autoSpawn=false; Game.fighters=[];
+    const a=fighter(dir===1?150:810,dir,'tubtrooper'),v=fighter(dir===1?480:480,-dir,'jane');
+    disableAI(a,v);v.vx=dir*170;v.buildRig(0);
+    const d=launchDuck(Game,a,v,{x:a.x+dir*50,y:v.rig.pel.y-24});
+    assert.ok((d.targetAtRelease.x-v.x)*dir>25, 'aim predicts where the opponent will be');
+    const vx=d.vx;
+    for(let i=0;i<Math.ceil(1.4/dt)&&!d.hits;i++){
+      v.x+=dir*170*dt;v.buildRig(0);updateDucks(Game,dt,BRIDGE_Y,WORLD_TOP);
+      if(!d.hits)assert.equal(d.vx,vx,'no in-flight homing or horizontal acceleration');
+    }
+    assert.equal(d.hits,1,`moving opponent hit at ${dt}, facing ${dir}`);
+  }
+});
+
+test('the rubber duck bounces off fighters, wall, floor and bridge and loses damaging energy', () => {
+  Game.init();Game.autoSpawn=false;Game.fighters=[];
+  const a=fighter(130,1,'tubtrooper'),v1=fighter(480,-1,'jane'),v2=fighter(760,-1,'walt');disableAI(a,v1,v2);
+  const d=launchDuck(Game,a,v1,{x:390,y:v1.rig.pel.y-25});
+  d.vx=750;d.vy=0;d.age=1;
+  const hp1=v1.hp;
+  for(let i=0;i<30&&!d.hits;i++)updateDucks(Game,1/120,BRIDGE_Y,WORLD_TOP);
+  const damage1=hp1-v1.hp;assert.ok(damage1>0);assert.ok(d.vx<0);assert.ok(d.power<1);
+  // Drive the same, already rebounded duck into a second fighter at lower speed.
+  d.x=670;d.y=v2.rig.pel.y-25;d.vx=600;d.vy=0;d.age+=.3;const hp2=v2.hp;
+  for(let i=0;i<30&&d.hits<2;i++)updateDucks(Game,1/120,BRIDGE_Y,WORLD_TOP);
+  assert.equal(d.hits,2);assert.ok(hp2-v2.hp<damage1,'later impacts deal less damage');
+  Game.fighters=[];d.settled=false;d.x=Game.W-55;d.y=0;d.vx=700;d.vy=0;
+  const p=d.power;updateDucks(Game,.04,BRIDGE_Y,WORLD_TOP);
+  assert.ok(d.vx<0 && d.power<p,'the wall reflects and absorbs energy');
+  d.x=Game.W/2;d.y=BRIDGE_Y-16;d.vx=50;d.vy=500;
+  updateDucks(Game,.04,BRIDGE_Y,WORLD_TOP);
+  assert.ok(d.vy<0 && d.y<BRIDGE_Y,'the duck bounces off the bridge deck');
+  d.x=Game.W/2;d.y=Game.gy-16;d.vx=50;d.vy=500;d.floor=Game.gy;
+  updateDucks(Game,.04,BRIDGE_Y,WORLD_TOP);
+  assert.ok(d.vy<0 && d.y<Game.gy,'the floor reflects the duck');
+  for(let i=0;i<1200&&!d.settled;i++)updateDucks(Game,1/120,BRIDGE_Y,WORLD_TOP);
+  assert.equal(d.settled,true,'the rubber duck eventually comes to rest on a surface');
+  assert.ok(Math.abs(d.y+13-d.floor)<1);
+});
+
+test('tubtrooper naturally chooses the ranged duck in autonomous combat', () => {
+  let throws=0;
+  for(let seed=1;seed<=20;seed++){
+    seedRandom(seed);Game.init();Game.autoSpawn=false;Game.fighters=[];
+    const a=fighter(210,1,'tubtrooper'),v=fighter(760,-1,'jane');disableAI(v);
+    a.duckCD=0;a.autopilot.attackWait=0;a.autopilot.farCD=100;a.autopilot.lampCheck=100;
+    for(let i=0;i<180;i++){
+      Game.update(1/60);if(Game.ducks.length){throws++;break;}
+    }
+  }
+  assert.ok(throws>=3,`ranged throws should occur without forcing the action, got ${throws}`);
+});
+
+test('a thrown duck can naturally rebound into another fighter with reduced damage', () => {
+  const random = Math.random;
+  try {
+    for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+      Math.random = () => .8; // standing recoil makes the collision sequence repeatable
+      Game.init(); Game.autoSpawn = false; Game.fighters = [];
+      const owner = fighter(80, 1, 'tubtrooper');
+      const first = fighter(700, -1, 'jane'), second = fighter(200, 1, 'walt');
+      disableAI(owner, first, second);
+      const duck = launchDuck(Game, owner, first, {x: 275, y: first.rig.pel.y - 80});
+      const firstHP = first.hp, secondHP = second.hp;
+      for (let i = 0; i < Math.ceil(3 / dt) && first.hp === firstHP; i++) Game.update(dt);
+      assert.ok(first.hp < firstHP, `the outbound duck hits its intended target at ${dt}`);
+      assert.equal(second.hp, secondHP, 'the fighter behind the launch point is not hit first');
+      assert.ok(duck.vx < 0 && duck.power < 1, 'the first collision reflects and weakens it');
+      for (let i = 0; i < Math.ceil(5 / dt) && second.hp === secondHP; i++) Game.update(dt);
+      assert.ok(second.hp < secondHP, `the same duck naturally reaches the second fighter at ${dt}`);
+      assert.ok(secondHP - second.hp < firstHP - first.hp, 'the later impact is weaker');
+      assert.ok(duck.hits >= 2);
+    }
+  } finally { Math.random = random; }
+});
+
+
+test('the visible laser cut and articulated fragments agree for sideways and inverted bodies', () => {
+  for (const angle of [0, Math.PI / 2, Math.PI, -Math.PI / 2, .73]) {
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const f = fighter(480, 1, 'chester'); disableAI(f);
+    const R = spreadRig(), origin = { ...R.neck }, c = Math.cos(angle), s = Math.sin(angle);
+    for (const key of ['head','neck','sh','pel','eN','wN','eF','wF','kN','aN','kF','aF']) {
+      const p = R[key], x = p.x - origin.x, y = p.y - origin.y;
+      R[key] = { x: 480 + x * c - y * s, y: -400 + x * s + y * c };
+    }
+    f.rig = R;
+    const job = { slope: .35, dir: 1 }, geometry = laserCutGeometry(R, job.slope);
+    const pieces = makeLaserPieces(f, job), torso = pieces.flatMap(p => p.parts).filter(p => p.name === 'torso');
+    assert.ok(torso.length >= 2, `the cut crosses the torso at ${angle} radians`);
+    assert.ok(new Set(pieces.filter(p => p.parts.some(s => s.name === 'torso'))).size >= 2,
+      'opposite sides of a cut do not share a physical body');
+    const onCut = p => geometry.cuts.some(cut => Math.abs(geometry.project(p) - cut) < 1e-5);
+    const exposed = pieces.flatMap(p => p.parts).filter(p => p.cutA || p.cutB);
+    assert.ok(exposed.length >= 2);
+    for (const part of exposed) {
+      if (part.cutA) assert.ok(onCut(part.a), 'the visible cut edge begins on the swept plane');
+      if (part.cutB) assert.ok(onCut(part.b), 'the visible cut edge ends on the swept plane');
+    }
+  }
+});
+
+test('a real high rope release triggers an airborne reaction instead of a slow standing fall', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const lamp = Game.lamps[1], f = fighter(lamp.x, 1, 'jane'); disableAI(f);
+    assert.equal(f.startLampJump(lamp), true);
+    advanceUntil(() => f.state === 'lamp_hang', Math.ceil(3 / dt), dt);
+    f.lampAction = 'climb'; f.lampStamina = 12; f.lampBreakAt = Infinity; f.tackleCheck = Infinity;
+    advanceUntil(() => f.y > 600, Math.ceil(7 / dt), dt);
+    assert.equal(f.state, 'lamp_hang');
+    f.releaseLamp('tired'); assert.equal(f.state, 'air');
+    advanceUntil(() => f.state === 'ragdoll', Math.ceil(.4 / dt), dt);
+    assert.ok(f.rag.highFall && f.fallDamage?.severe);
+    assert.ok(f.rag.p.pel.y < Game.gy - 350, 'the reaction starts high above the floor');
+    assert.ok(!lamp.riders.has(f), 'the released fighter is no longer attached to the rope');
+  }
+});
+
+test('blood stains and reflections follow severed pieces and can still be washed away', () => {
+  const f = fighter(480, 1, 'jane'); disableAI(f);
+  f.rig = spreadRig(); f.hp = 0;
+  f.gorePieces = makeLaserPieces(f, {slope: 0, dir: 1});
+  const mark = {seg: 'uN', layer: 'front', t: .25, s: 2, kind: 'blood', age: 0, sz: .8};
+  f.bloodStains = [mark]; f.jointBlood.eN = 3; f.footBlood.N = 2;
+  const part = f.gorePieces.flatMap(p => p.parts).find(p => p.name === mark.seg && p.t0 <= mark.t && p.t1 >= mark.t);
+  const before = goreSurfacePoint(f, mark);
+  part.a.x += 70; part.b.x += 70;
+  const after = goreSurfacePoint(f, mark);
+  assert.ok(Math.abs(after.x - before.x - 70) < .01, 'the wound is anchored to its own fragment');
+  Game.render();
+  const markedTexture = gorePartCanvas(part, f, f.bloodStains);
+  assert.notEqual(markedTexture, part.canvas);
+  assert.ok(markedTexture.getContext('2d').stats.colors.has('#8c1724'), 'joint blood is drawn on a fragment');
+  assert.equal(gorePartCanvas(part, f, f.bloodStains), markedTexture, 'unchanged fragment stains are cached');
+
+  const field = Game.fx.bloodField;
+  for (let i = 0; i < 16; i++) field.add(after.x, Game.gy + 9, 'seep');
+  const paths = [], g = makeCanvas().getContext('2d');
+  g.moveTo = (x, y) => paths.push(x); g.lineTo = (x, y) => paths.push(x);
+  const oldRigX = f.rig.sh.x;
+  field.drawReflections(g, [f], [], 0, makeCanvas());
+  assert.ok(paths.some(x => Math.abs(x - part.a.x) < 2), 'a moving piece appears in the reflection');
+  assert.ok(Math.abs(part.a.x - oldRigX) > 40, 'the tested piece moved away from the parent skeleton');
+
+  Game.clearBlood(); Game.render();
+  assert.equal(f.bloodStains.length, 0); assert.equal(f.jointBlood.eN, 0); assert.equal(f.footBlood.N, 0);
+  assert.equal(gorePartCanvas(part, f, f.bloodStains), part.canvas, 'washed blood is not baked into a severed limb');
+});
+
+test('a laser-severed corpse deposits blood at landed fragments, not at an invisible parent body', () => {
+  const shooter = fighter(220, 1, 'homelander'), victim = fighter(500, -1, 'walt');
+  disableAI(shooter, victim); victim.hp = 1;
+  victim.takeLaser(shooter, {x: victim.rig.pel.x, y: victim.rig.pel.y - 20}, true);
+  advanceUntil(() => !!victim.gorePieces, 240);
+  assert.ok(victim.rag.frozen, 'the hidden whole-body solver stops at the split');
+  const oldPelvis = {x: victim.rag.p.pel.x, y: victim.rag.p.pel.y};
+  const deposits = [], pool = Game.fx.pool.bind(Game.fx);
+  Game.fx.pool = (x, y, size) => {
+    const contacts = victim.gorePieces.flatMap(piece => piece.parts.flatMap(part => [
+      ...(part.cutA ? [part.a] : []), ...(part.cutB ? [part.b] : []),
+    ])).filter(n => n.y + n.r >= Game.gy - 3);
+    deposits.push({x, nearest: Math.min(...contacts.map(n => Math.abs(n.x - x)))});
+    pool(x, y, size);
+  };
+  tick(5);
+  assert.deepEqual({x: victim.rag.p.pel.x, y: victim.rag.p.pel.y}, oldPelvis);
+  assert.ok(deposits.length > 0, 'exposed pieces can feed the dynamic blood field');
+  assert.ok(deposits.every(d => d.nearest < .01), 'blood comes from a real grounded cut');
+});
+
+test('the settled severed-body layer is cached and invalidated by movement, blood and camera changes', () => {
+  const f = fighter(480, 1, 'walt'); disableAI(f); f.hp = 0; f.rig = spreadRig();
+  f.gorePieces = makeLaserPieces(f, {slope: 0, dir: 1});
+  for (const p of f.gorePieces) p.settled = true;
+  f.bloodStains = [
+    {seg:'torso', layer:'body', t:.3, s:0, kind:'blood', age:0, sz:.5},
+    {seg:'head', layer:'head', lx:1, ly:-3, kind:'blood', age:0, sz:.5},
+  ];
+  Game.render();
+  const ctx = Game.goreLayer.ctx, first = ctx.stats.drawImage;
+  const head = f.gorePieces.flatMap(p => p.heads)[0];
+  const headCtx = head.texture.getContext('2d'), headPaints = headCtx.stats.fillRect;
+  assert.ok(first > 0);
+  assert.ok(headCtx.stats.colors.has('rgb(168,23,38)'), 'the head stain is composited onto its own texture');
+  assert.ok(!ctx.stats.composites.has('source-atop'), 'head stains cannot paint over neighbouring fragments');
+  Game.render(); assert.equal(ctx.stats.drawImage, first, 'stationary fragments do not redraw every frame');
+  assert.equal(headCtx.stats.fillRect, headPaints, 'unchanged head marks reuse the texture');
+  Game.clearBlood(); Game.render();
+  assert.ok(headCtx.stats.fillRect > headPaints, 'washing redraws the head texture');
+  const afterWash = ctx.stats.drawImage;
+  assert.ok(afterWash > first, 'washing blood invalidates the cached layer');
+  f.gorePieces[0].settled = false; Game.render();
+  const airborne = ctx.stats.drawImage; Game.render();
+  assert.ok(ctx.stats.drawImage > airborne, 'moving fragments are redrawn each frame');
+  f.gorePieces[0].settled = true; Game.render();
+  const settled = ctx.stats.drawImage; Game.moveCamera(-200); Game.updateCamera(1 / 60); Game.render();
+  assert.ok(ctx.stats.drawImage > settled, 'moving the camera redraws at the correct world height');
+});
+
+test('severed bodies of every character reach the ground at different frame rates', () => {
+  const skins = ['jane', 'negan', 'homelander', 'walt', 'saul', 'chester', 'tubtrooper'];
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) for (const [index, skin] of skins.entries()) {
+    seedRandom(1000 + index * 13 + Math.round(1 / dt));
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const shooter = fighter(180, 1, 'homelander'), victim = fighter(500, index % 2 ? -1 : 1, skin);
+    disableAI(shooter, victim);
+    victim.y = 700; victim.vx = index % 2 ? -120 : 120; victim.vy = -250;
+    victim.state = 'air'; victim.cur = null; victim.buildRig(0);
+    victim.toRagdoll(victim.vx, victim.vy);
+    for (let i = 0; i < Math.ceil((.08 + index * .025) / dt); i++) Game.update(dt);
+    victim.hp = 1;
+    victim.takeLaser(shooter, {x: victim.rig.pel.x, y: victim.rig.pel.y - 10}, true);
+    advanceUntil(() => !!victim.gorePieces, Math.ceil(3 / dt), dt);
+    const pieces = victim.gorePieces;
+    assert.ok(pieces.length >= 3, `${skin} separates into physical bodies`);
+    tick(6, dt);
+    for (const p of pieces) {
+      assert.ok(p.nodes.every(n => Number.isFinite(n.x) && Number.isFinite(n.y)), `${skin}: finite joints at ${dt}`);
+      assert.ok(p.nodes.some(n => n.y + n.r >= p.floor - 2), `${skin}: no fragment hangs at ${dt}`);
+      for (const link of p.links) {
+        assert.ok(Math.abs(Math.hypot(link.b.x - link.a.x, link.b.y - link.a.y) - link.length) < 7,
+          `${skin}: intact joints remain connected at ${dt}`);
+      }
+    }
+  }
+});
+
+test('an interrupted duck wind-up cannot release a projectile later', () => {
+  for (const impact of ['punch', 'laser']) {
+    Game.init(); Game.autoSpawn = false; Game.fighters = [];
+    const thrower = fighter(220, 1, 'tubtrooper'), attacker = fighter(700, -1, 'homelander');
+    disableAI(thrower, attacker); thrower.duckCD = 0;
+    assert.ok(thrower.startDuckThrow(attacker)); tick(.45);
+    if (impact === 'punch') {
+      assert.ok(attacker.startAttack(0)); thrower.takeHit(attacker, attacker.atk);
+    } else {
+      thrower.takeLaser(attacker, {x: thrower.rig.pel.x, y: thrower.rig.pel.y - 10}, true);
+    }
+    assert.notEqual(thrower.state, 'duck_throw', `${impact} interrupts the aim`);
+    assert.equal(thrower.duckTarget, null, 'the old target is released');
+    tick(2);
+    assert.equal(Game.ducks.length, 0, `no duck appears after the ${impact} interruption`);
+  }
+});
+
+test('head-impact blood splashes real severed fragments rather than the hidden original rig', () => {
+  const attacker = fighter(180, 1, 'negan'), body = fighter(480, 1, 'jane');
+  disableAI(attacker, body); body.hp = 0; body.rig = spreadRig();
+  body.gorePieces = makeLaserPieces(body, {slope: 0, dir: 1});
+  const oldHead = { ...body.rig.head };
+  for (const piece of body.gorePieces) for (const node of piece.nodes) node.x += 1500;
+
+  const distantExplosion = fighter(700, -1, 'walt'); disableAI(distantExplosion);
+  distantExplosion.rig.head = oldHead;
+  Game.explodeHead(distantExplosion, attacker, oldHead.x, oldHead.y);
+  assert.equal(body.bloodStains.length, 0, 'the invisible original body cannot receive splashes');
+
+  const part = body.gorePieces.flatMap(p => p.parts).find(p => p.name === 'torso');
+  const nearbyExplosion = fighter(750, -1, 'saul'); disableAI(nearbyExplosion);
+  nearbyExplosion.rig.head = {x: part.a.x, y: part.a.y};
+  Game.explodeHead(nearbyExplosion, attacker, part.a.x, part.a.y);
+  assert.ok(body.bloodStains.length > 0, 'nearby physical fragments receive blood');
+  for (const mark of body.bloodStains) {
+    const surface = goreSurfacePoint(body, mark);
+    assert.ok(surface, 'each splash has a real fragment to follow');
+    assert.ok(Math.hypot(surface.x - part.a.x, surface.y - part.a.y) < 280,
+      'the splash stays in the vicinity of the impact');
   }
 });

@@ -28,4 +28,5 @@ export const RIP: Record<string, { cloth: string; torso: string; arm: string | n
   walt:       { cloth: '#526B3D', torso: '#E0A67F', arm: '#E0A67F', leg: null },
   saul:       { cloth: '#17191F', torso: '#EF5B9A', arm: '#EF5B9A', leg: '#B58C73' },
   chester:    { cloth: '#191a1d', torso: '#D89B72', arm: null, leg: '#B58C73' },
+  tubtrooper: { cloth: '#d12e21', torso: '#d99f76', arm: null, leg: null },
 };

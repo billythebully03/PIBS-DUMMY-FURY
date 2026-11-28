@@ -196,7 +196,14 @@ export class BloodField {
       const R = f.rig;
       if (!R || !f.visible || (f.state === 'spawn' && f.sp === 0)) continue;
       g.strokeStyle = 'rgba(241,183,160,.16)'; g.beginPath();
-      for (const [a, b] of [['sh','pel'],['pel','kN'],['kN','aN'],['pel','kF'],['kF','aF'],['sh','eN'],['eN','wN'],['sh','eF'],['eF','wF'],['sh','head']]) {
+      if (f.gorePieces) {
+        // Reflect the actual independent segments, not the invisible original
+        // skeleton left behind when the laser cut it apart.
+        for (const piece of f.gorePieces) for (const part of piece.parts) {
+          if (!part.canvas) continue;
+          const p = mirror(part.a), q = mirror(part.b); g.moveTo(p.x, p.y); g.lineTo(q.x, q.y);
+        }
+      } else for (const [a, b] of [['sh','pel'],['pel','kN'],['kN','aN'],['pel','kF'],['kF','aF'],['sh','eN'],['eN','wN'],['sh','eF'],['eF','wF'],['sh','head']]) {
         if (!R[a] || !R[b]) continue;
         const p = mirror(R[a]), q = mirror(R[b]); g.moveTo(p.x, p.y); g.lineTo(q.x, q.y);
       }
